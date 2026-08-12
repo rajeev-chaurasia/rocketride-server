@@ -2,7 +2,7 @@
 # MIT License
 # Copyright (c) 2026 Aparavi Software AG
 # =============================================================================
-"""Tests for the tool_filesystem sink: services.json contract, config, and the
+"""Tests for the tool_filesystem sink: services*.json contracts, config, and the
 per-lane naming/path helpers.
 """
 
@@ -20,29 +20,43 @@ import pytest
 _NODE_DIR = Path(__file__).resolve().parent.parent.parent / 'src' / 'nodes' / 'tool_filesystem'
 
 
-def _load_services():
-    return json.loads((_NODE_DIR / 'services.json').read_text())
+def _load_services(name='services.tool.json'):
+    return json.loads((_NODE_DIR / name).read_text())
 
 
 class TestServicesContract:
-    def test_classtype_is_store_and_tool(self):
-        # Convention across the codebase is domain-first, "tool" last.
+    def test_tool_variant_reverted_to_tool_only(self):
         d = _load_services()
-        assert d['classType'] == ['store', 'tool']
+        assert d['classType'] == ['tool']
+        assert d['lanes'] == {}
+        assert d['protocol'] == 'tool_filesystem://'
+        # Sink config must be gone from the tool surface.
+        for key in ('filesystem.targetDir', 'filesystem.emitUrl', 'filesystem.urlExpiresIn'):
+            assert key not in d['fields']
+            assert key not in d['shape'][0]['properties']
 
-    def test_all_input_lanes_emit_documents(self):
-        d = _load_services()
+    def test_store_variant_identity(self):
+        d = _load_services('services.store.json')
+        assert d['protocol'] == 'filestore://'
+        assert d['title'] == 'File Store'
+        assert d['classType'] == ['store']
+        assert d['register'] == 'filter'
+        assert d['path'] == 'nodes.tool_filesystem'
+
+    def test_store_variant_lanes_all_emit_json(self):
+        d = _load_services('services.store.json')
         assert d['lanes'] == {
-            'documents': ['documents'],
-            'text': ['documents'],
-            'table': ['documents'],
-            'image': ['documents'],
-            'audio': ['documents'],
-            'video': ['documents'],
+            'documents': ['json'],
+            'text': ['json'],
+            'table': ['json'],
+            'image': ['json'],
+            'audio': ['json'],
+            'video': ['json'],
         }
 
-    def test_new_config_fields_present_with_defaults(self):
-        f = _load_services()['fields']
+    def test_store_variant_fields(self):
+        d = _load_services('services.store.json')
+        f = d['fields']
         assert f['filesystem.targetDir']['type'] == 'string'
         assert f['filesystem.targetDir']['default'] == 'output/'
         assert f['filesystem.emitUrl']['type'] == 'boolean'
@@ -51,6 +65,36 @@ class TestServicesContract:
         assert f['filesystem.urlExpiresIn']['default'] == 3600
         assert f['filesystem.urlExpiresIn']['minimum'] == 1
         assert f['filesystem.urlExpiresIn']['maximum'] == 3600
+        # No agent-tool toggles on the store surface.
+        assert not any(k.startswith('filesystem.allow') for k in f)
+
+    def test_source_variant_identity(self):
+        d = _load_services('services.source.json')
+        assert d['protocol'] == 'filestore_source://'
+        assert d['title'] == 'File Store Source'
+        assert d['classType'] == ['source']
+        assert d['register'] == 'endpoint'
+        assert d['capabilities'] == ['noinclude']
+        assert d['path'] == 'nodes.tool_filesystem'
+        # Raw objects go out on the tags lane for a downstream Parser.
+        assert d['lanes'] == {'_source': ['tags']}
+        # The shape must route the declared fields through the source-parameters
+        # wrapper (telegram/dropper convention) — fields listed directly in the
+        # Pipe section never reach serviceConfig['parameters'] at runtime.
+        assert d['shape'][0]['properties'] == ['type', 'Pipe.source.parameters']
+
+    def test_source_variant_fields(self):
+        d = _load_services('services.source.json')
+        f = d['fields']
+        assert f['filesystem.path']['type'] == 'string'
+        assert f['filesystem.recursive']['type'] == 'boolean'
+        assert f['filesystem.recursive']['default'] is False
+        # Source-parameters wrapper: the engine strips the 'filesystem.' prefix
+        # and delivers these flat under serviceConfig['parameters'].
+        assert f['Pipe.source.parameters'] == {
+            'section': 'parameters',
+            'properties': ['filesystem.path', 'filesystem.recursive'],
+        }
 
 
 def _install_stubs():
@@ -264,7 +308,7 @@ def _sink_instance(
     url_expires_in=3600,
     allow_write=True,
     path_patterns=None,
-    listeners=('documents',),
+    listeners=('json',),
 ):
     """Build an IInstance wired to a stub IGlobal + mocked engine ``instance``."""
     _install_iinstance_stubs()
