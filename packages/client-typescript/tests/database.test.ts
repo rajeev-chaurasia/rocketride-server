@@ -25,6 +25,13 @@
 import { describe, it, expect, jest } from '@jest/globals';
 import { DatabaseApi } from '../src/client/database';
 
+// Compile-time regression check (CodeRabbit, PR #1908): a caller holding a
+// union-typed rowMode must be able to call query() — never executed.
+async function _rowModeUnionCompiles(db: DatabaseApi, rowMode: 'object' | 'array'): Promise<void> {
+	void (await db.query({ token: 't', sql: 'select 1', rowMode }));
+}
+void _rowModeUnionCompiles;
+
 function fakeClient() {
 	return { tool: jest.fn(async (a: unknown) => ({ ok: true, a })) } as any;
 }

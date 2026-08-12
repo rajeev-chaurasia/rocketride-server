@@ -46,6 +46,7 @@ export interface DatabaseLike {
 	/** Execute a raw SQL statement. `rowMode: 'array'` returns positional rows. */
 	query(options: { token: string; sql: string; nodeId?: string; sessionId?: string; params?: unknown[]; rowMode: 'array' }): Promise<{ rows: unknown[][]; affected_rows: number }>;
 	query(options: { token: string; sql: string; nodeId?: string; sessionId?: string; params?: unknown[]; rowMode?: 'object' }): Promise<{ rows: Record<string, unknown>[]; affected_rows: number }>;
+	query(options: { token: string; sql: string; nodeId?: string; sessionId?: string; params?: unknown[]; rowMode?: 'object' | 'array' }): Promise<{ rows: unknown[][] | Record<string, unknown>[]; affected_rows: number }>;
 	/** Begin a database transaction. */
 	beginTransaction(options: { token: string; nodeId?: string }): Promise<{ session_id: string }>;
 	/** Commit an open transaction. */
@@ -107,6 +108,7 @@ export class DatabaseApi {
 	 */
 	async query(options: { token: string; sql: string; nodeId?: string; sessionId?: string; params?: unknown[]; rowMode: 'array' }): Promise<{ rows: unknown[][]; affected_rows: number }>;
 	async query(options: { token: string; sql: string; nodeId?: string; sessionId?: string; params?: unknown[]; rowMode?: 'object' }): Promise<{ rows: Record<string, unknown>[]; affected_rows: number }>;
+	async query(options: { token: string; sql: string; nodeId?: string; sessionId?: string; params?: unknown[]; rowMode?: 'object' | 'array' }): Promise<{ rows: unknown[][] | Record<string, unknown>[]; affected_rows: number }>;
 	async query(options: { token: string; sql: string; nodeId?: string; sessionId?: string; params?: unknown[]; rowMode?: 'object' | 'array' }): Promise<{ rows: unknown[][] | Record<string, unknown>[]; affected_rows: number }> {
 		if (typeof options.token !== 'string' || options.token.trim() === '') {
 			throw new Error('token must be a non-empty string');
