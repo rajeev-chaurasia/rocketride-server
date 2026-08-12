@@ -777,6 +777,9 @@ class TestDocumentationLinks:
         )
 
         if host == DOCS_HOST:
+            assert parts.port in (None, 443), (
+                f'{service.test_id}: documentation uses unsupported HTTPS port {parts.port!r}; use port 443'
+            )
             # Classify by hostname, not string prefix, so root URLs dressed up
             # with a query or fragment cannot slip past as "external".
             path = parts.path.rstrip('/')
