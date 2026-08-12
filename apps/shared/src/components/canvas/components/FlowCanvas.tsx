@@ -57,6 +57,7 @@ import { useFlowPreferences, NavigationMode } from '../context/FlowPreferencesCo
 import FloatingToolbar, { type IToolbarPosition } from './toolbar/FloatingToolbar';
 import { useToolbarOrientation } from './toolbar';
 import CreateNodePanel from './panels/create-node/CreateNodePanel';
+import CloudCanvasPrompt from './CloudCanvasPrompt';
 import EmptyCanvasPrompt from './EmptyCanvasPrompt';
 import NodeConfigPanel from './panels/node-config';
 import FitIcon from '../../../assets/icons/FitIcon';
@@ -92,6 +93,8 @@ const nodeTypes: Record<string, any> = {
 const edgeTypes = {
 	default: FlowEdge,
 };
+
+const CLOUD_CANVAS_PROMPT_DISMISSED_KEY = 'cloudCanvasPromptDismissed';
 
 // =============================================================================
 // Default zoom
@@ -218,8 +221,26 @@ export default function Canvas(): ReactElement {
 		[setPref]
 	);
 
-	const { onUndo, onRedo, onViewportChange, isDirty, isNew, onSave, onExport, initialViewport } = useFlowProject();
+	const { onUndo, onRedo, onViewportChange, isDirty, isNew, onSave, onExport, initialViewport, isConnected, cloudConnectionConfigured, onOpenCloudSetup } = useFlowProject();
 	const { fitView, zoomIn, zoomOut, setViewport } = useReactFlow();
+
+	const [cloudPromptDismissedForActivation, setCloudPromptDismissedForActivation] = useState(false);
+	const cloudPromptDismissedForever = getPref(CLOUD_CANVAS_PROMPT_DISMISSED_KEY) === true;
+	const shouldShowCloudPrompt = Boolean(isConnected && !isReadonly && onOpenCloudSetup && !cloudConnectionConfigured && !cloudPromptDismissedForever && !cloudPromptDismissedForActivation);
+
+	const handleOpenCloudSetup = useCallback(() => {
+		setCloudPromptDismissedForActivation(true);
+		onOpenCloudSetup?.();
+	}, [onOpenCloudSetup]);
+
+	const handleDismissCloudPrompt = useCallback(() => {
+		setCloudPromptDismissedForActivation(true);
+	}, []);
+
+	const handleDismissCloudPromptForever = useCallback(() => {
+		setPref(CLOUD_CANVAS_PROMPT_DISMISSED_KEY, true);
+		setCloudPromptDismissedForActivation(true);
+	}, [setPref]);
 
 	// Keep a ref so the restore handler always sees the latest viewport value
 	// without needing to re-register the event listener.
@@ -255,6 +276,7 @@ export default function Canvas(): ReactElement {
 	// is dispatched by ProjectView when it receives shell:viewActivated).
 	useEffect(() => {
 		const handler = () => {
+			setCloudPromptDismissedForActivation(false);
 			if (initialViewportRef.current) {
 				setViewport(initialViewportRef.current, { duration: 0 });
 			}
@@ -470,6 +492,8 @@ export default function Canvas(): ReactElement {
 
 			{/* Empty canvas prompt — shown when no nodes and create panel is closed */}
 			{nodes.length === 0 && !showCreatePanel && isFlowReady && <EmptyCanvasPrompt instantiateTemplate={instantiateTemplate} onNodeAdded={onNodeAdded} />}
+
+			{shouldShowCloudPrompt && <CloudCanvasPrompt onOpenCloudSetup={handleOpenCloudSetup} onDismiss={handleDismissCloudPrompt} onDismissForever={handleDismissCloudPromptForever} />}
 
 			{/* Quick-add popup — appears at handle click position */}
 			<QuickAddPopup />

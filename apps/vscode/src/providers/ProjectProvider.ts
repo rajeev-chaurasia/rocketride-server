@@ -27,6 +27,7 @@ import { PipelineFileParser } from '../shared/util/pipelineParser';
 import { isSubscribed } from '../shared/util/subscriptionGate';
 import { isDeployRunBody } from '../shared/util/runClassification';
 import { handleMissingEnvVars } from '../shared/util/envVarCheck';
+import { isCloudConnectionConfigured as hasCloudConnectionConfigured } from '../shared/util/connectionModeAuth';
 import { savePipelineDocument } from '../shared/util/pipelineSave';
 import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo } from '../shared/util/deployMapping';
 import type { DeploymentWebviewToHost, DeploymentLoadPayload } from './types/deployTypes';
@@ -77,6 +78,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	private disposables: vscode.Disposable[] = [];
 	private editorStates: Map<vscode.WebviewPanel, EditorState> = new Map();
 	private connectionManager = ConnectionManager.getInstance();
+	private configManager = ConfigManager.getInstance();
 	private logger = getLogger();
 	private savesForRun: Set<string> = new Set();
 	// OAuth tokens that arrived while no live webview existed for their
@@ -161,7 +163,11 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			this.broadcastServicesToAllEditors(payload);
 		});
 
-		this.disposables.push(eventListener, accountUpdateListener, envKeysChangedListener, connectionStateListener, servicesUpdatedListener);
+		const configChangeListener = this.configManager.onConfigurationChanged(() => {
+			this.broadcastCloudConnectionConfigured();
+		});
+
+		this.disposables.push(eventListener, accountUpdateListener, envKeysChangedListener, connectionStateListener, servicesUpdatedListener, configChangeListener);
 	}
 
 	// =========================================================================
@@ -239,6 +245,31 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			if (editorState.isReady && !editorState.isDisposed && editorState.webviewPanel.webview) {
 				editorState.webviewPanel.webview.postMessage({ type: 'shell:connectionChange', isConnected, isSubscribed: subscribed, serverHost: this.connectionManager.getHttpUrl() }).then(undefined, (err: unknown) => {
 					this.logger.error(`Failed to post connectionState to webview: ${err}`);
+				});
+			}
+		}
+	}
+
+	private isCloudConnectionConfigured(): boolean {
+		return hasCloudConnectionConfigured(this.configManager.getConfig());
+	}
+
+	private broadcastCloudConnectionConfigured(): void {
+		const cloudConnectionConfigured = this.isCloudConnectionConfigured();
+		for (const editorState of this.editorStates.values()) {
+			if (editorState.isReady && !editorState.isDisposed && editorState.webviewPanel.webview) {
+				editorState.webviewPanel.webview.postMessage({ type: 'project:cloudConnectionConfigured', cloudConnectionConfigured }).then(undefined, (err: unknown) => {
+					this.logger.error(`Failed to post cloudConnectionConfigured to webview: ${err}`);
+				});
+			}
+		}
+	}
+
+	private broadcastPreferences(prefs: Record<string, unknown>): void {
+		for (const editorState of this.editorStates.values()) {
+			if (editorState.isReady && !editorState.isDisposed && editorState.webviewPanel.webview) {
+				editorState.webviewPanel.webview.postMessage({ type: 'project:prefsUpdate', prefs }).then(undefined, (err: unknown) => {
+					this.logger.error(`Failed to post preferences to webview: ${err}`);
 				});
 			}
 		}
@@ -560,6 +591,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 						icons: cached.icons,
 						isConnected: this.connectionManager.isConnected(),
 						isSubscribed: isSubscribed(client, PIPE_BUILDER_APP_ID),
+						cloudConnectionConfigured: this.isCloudConnectionConfigured(),
 						statuses: editorState.cachedStatuses,
 						serverHost: this.connectionManager.getHttpUrl(),
 						// The OAuth broker only allows https://*.rocketride.ai redirect URLs,
@@ -664,6 +696,11 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 					} catch (error) {
 						vscode.window.showErrorMessage(`Failed to save pipeline: ${error instanceof Error ? error.message : String(error)}`);
 					}
+					break;
+				}
+
+				case 'project:openCloudSetup': {
+					await vscode.commands.executeCommand('rocketride.page.settings.open', 'development', 'cloud');
 					break;
 				}
 
@@ -805,9 +842,13 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				// Prefs change — persist globally
 				case 'project:prefsChange': {
 					if (data.prefs) {
-						this.context.workspaceState.update(PREFS_KEY, data.prefs).then(undefined, (err: unknown) => {
-							this.logger.error(`Failed to persist prefs: ${err}`);
-						});
+						const storedPrefs = this.context.workspaceState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
+						const prefs = { ...storedPrefs, ...data.prefs };
+						if (storedPrefs.cloudCanvasPromptDismissed === true) {
+							prefs.cloudCanvasPromptDismissed = true;
+						}
+						await this.context.workspaceState.update(PREFS_KEY, prefs);
+						this.broadcastPreferences(prefs);
 					}
 					break;
 				}
@@ -960,6 +1001,12 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			}
 		});
 
+		const viewStateSubscription = webviewPanel.onDidChangeViewState((event) => {
+			if (event.webviewPanel.visible && editorState.isReady) {
+				webview.postMessage({ type: 'shell:viewActivated', viewId: document.uri.toString() });
+			}
+		});
+
 		// Clean up when panel is disposed
 		webviewPanel.onDidDispose(async () => {
 			await this.stopMonitoring(webviewPanel);
@@ -970,6 +1017,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			this.editorStates.delete(webviewPanel);
 			changeDocumentSubscription.dispose();
 			saveDocumentSubscription.dispose();
+			viewStateSubscription.dispose();
 		});
 
 		// Start monitoring immediately if connected

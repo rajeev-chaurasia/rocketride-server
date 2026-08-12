@@ -81,6 +81,7 @@ const ProjectWebview: React.FC = () => {
 	const [isReadonly, setIsReadonly] = useState(false);
 	const [showCheckout, setShowCheckout] = useState(false);
 	const [envKeys, setEnvKeys] = useState<string[]>([]);
+	const [cloudConnectionConfigured, setCloudConnectionConfigured] = useState(false);
 
 	// Deploy lifecycle: LIVE rows pushed by deploy:data (badges/where-live);
 	// the panel's registry snapshot resolves through pendingLifecycleFetches.
@@ -167,6 +168,7 @@ const ProjectWebview: React.FC = () => {
 				if (msg.isSubscribed !== undefined) setSubscribed(msg.isSubscribed);
 				setIsReadonly(msg.isReadonly ?? false);
 				setStatusMap(msg.statuses ?? {});
+				setCloudConnectionConfigured(msg.cloudConnectionConfigured ?? false);
 				setViewState({
 					mode: vs?.mode ?? 'design',
 					flowViewMode: vs?.flowViewMode ?? 'pipeline',
@@ -278,6 +280,12 @@ const ProjectWebview: React.FC = () => {
 			}
 			case 'project:envKeysUpdate':
 				setEnvKeys(msg.envKeys);
+				break;
+			case 'project:cloudConnectionConfigured':
+				setCloudConnectionConfigured(msg.cloudConnectionConfigured);
+				break;
+			case 'project:prefsUpdate':
+				setPrefs(msg.prefs);
 				break;
 			case 'shell:connectionChange':
 				if (msg.isConnected) {
@@ -550,6 +558,10 @@ const ProjectWebview: React.FC = () => {
 		setPendingOAuthTokens(undefined);
 	}, []);
 
+	const handleOpenCloudSetup = useCallback(() => {
+		sendMessage({ type: 'project:openCloudSetup' });
+	}, [sendMessage]);
+
 	const handleSave = useCallback(() => {
 		sendMessage({ type: 'project:requestSave' });
 	}, [sendMessage]);
@@ -795,6 +807,7 @@ const ProjectWebview: React.FC = () => {
 				project={project}
 				servicesJson={servicesJson}
 				isConnected={isConnected}
+				cloudConnectionConfigured={cloudConnectionConfigured}
 				isSubscribed={subscribed}
 				statusMap={statusMap}
 				serverHost={serverHost}
@@ -810,6 +823,7 @@ const ProjectWebview: React.FC = () => {
 				onViewStateChange={handleViewStateChange}
 				onPrefsChange={handlePrefsChange}
 				onOpenLink={handleOpenLink}
+				onOpenCloudSetup={handleOpenCloudSetup}
 				oauthReturnUrl={oauthReturnUrl}
 				onOpenExternal={handleOpenExternal}
 				pendingOAuthTokens={pendingOAuthTokens}

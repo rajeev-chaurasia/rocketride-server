@@ -602,7 +602,14 @@ export const Settings: React.FC = () => {
 				}
 
 				case 'setFocus' as any:
-					if ((message as any).focus) setActiveTab((message as any).focus);
+					if ((message as any).focus) {
+						const focus = (message as any).focus as 'development' | 'deployment';
+						setActiveTab(focus);
+						const connectionMode = (message as any).connectionMode as ConnectionMode | undefined;
+						if (connectionMode && (focus === 'development' || focus === 'deployment')) {
+							handleSettingsChange({ [focus]: { connectionMode } } as Partial<SettingsData>);
+						}
+					}
 					break;
 
 				case 'authError' as any:

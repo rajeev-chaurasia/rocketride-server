@@ -123,6 +123,7 @@ export class ConfigManager {
 	private disposables: vscode.Disposable[] = [];
 	/** While true, config-change listeners are suppressed (inside applyAllSettings). */
 	private isBatchApplying: boolean = false;
+	private readonly configurationChangedEmitter = new vscode.EventEmitter<ConfigManagerInfo>();
 
 	/** Default per-group config. */
 	private static readonly DEFAULT_GROUP: ConnectionGroupConfig = {
@@ -169,6 +170,7 @@ export class ConfigManager {
 				if (this.isBatchApplying) return;
 				if (event.affectsConfiguration(this.configSection)) {
 					await this.refreshConfig();
+					this.configurationChangedEmitter.fire(this.getConfig());
 				}
 			})
 		);
@@ -179,6 +181,7 @@ export class ConfigManager {
 				if (this.isBatchApplying) return;
 				if (event.key === 'rocketride.development.apiKey' || event.key === 'rocketride.deployment.apiKey') {
 					await this.refreshConfig();
+					this.configurationChangedEmitter.fire(this.getConfig());
 				}
 			})
 		);
@@ -187,6 +190,7 @@ export class ConfigManager {
 		this.disposables.push(
 			vscode.workspace.onDidChangeWorkspaceFolders(async () => {
 				await this.refreshConfig();
+				this.configurationChangedEmitter.fire(this.getConfig());
 			})
 		);
 	}
@@ -486,6 +490,7 @@ export class ConfigManager {
 			throw error;
 		} finally {
 			this.isBatchApplying = false;
+			this.configurationChangedEmitter.fire(this.getConfig());
 		}
 	}
 
@@ -518,13 +523,7 @@ export class ConfigManager {
 	 * @returns Disposable for cleanup
 	 */
 	public onConfigurationChanged(callback: (config: ConfigManagerInfo) => void): vscode.Disposable {
-		return vscode.workspace.onDidChangeConfiguration(async (event) => {
-			if (this.isBatchApplying) return;
-			if (event.affectsConfiguration(this.configSection)) {
-				const config = this.getConfig();
-				callback(config);
-			}
-		});
+		return this.configurationChangedEmitter.event(callback);
 	}
 
 	/**
@@ -542,5 +541,6 @@ export class ConfigManager {
 			}
 		});
 		this.disposables = [];
+		this.configurationChangedEmitter.dispose();
 	}
 }

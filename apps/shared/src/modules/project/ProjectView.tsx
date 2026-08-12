@@ -23,7 +23,7 @@
  * player, and DVR session (sorted A→Z by source name).
  */
 
-import React, { useState, useCallback, useRef, useMemo, ComponentProps, CSSProperties, ReactNode } from 'react';
+import React, { useState, useCallback, useRef, useMemo, useEffect, ComponentProps, CSSProperties, ReactNode } from 'react';
 
 import { TabPanel } from 'shell';
 import { ContentHeader } from 'shell';
@@ -74,6 +74,8 @@ export interface IProjectViewProps {
 	servicesJson: Record<string, any>;
 	/** Whether the host is connected to the RocketRide server. */
 	isConnected: boolean;
+	/** Whether a connection is configured to use RocketRide Cloud. */
+	cloudConnectionConfigured?: boolean;
 	/** Per-source task status map (source ID → status). */
 	statusMap: Record<string, TaskStatus>;
 	/** Server host URL for {host} placeholder replacement in endpoint URLs. */
@@ -111,6 +113,8 @@ export interface IProjectViewProps {
 	onPrefsChange?: (prefs: Record<string, unknown>) => void;
 	/** Called when the user clicks an external link in the canvas. */
 	onOpenLink?: (url: string, displayName?: string) => void;
+	/** Opens the host's RocketRide Cloud setup flow. */
+	onOpenCloudSetup?: () => void;
 	/**
 	 * OAuth broker base URL for the social-login buttons. Defaults to the
 	 * built-in {@link OAUTH_ROOT_URL}; hosts may override (e.g. for staging).
@@ -295,7 +299,7 @@ function migrateViewMode(mode: string | undefined): ProjectViewMode {
 // COMPONENT
 // =============================================================================
 
-const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, servicesJson, isConnected, isSubscribed = true, statusMap, serverHost = '', isDirty = false, isNew = false, initialViewState, initialPrefs, onContentChanged, onValidate, getNodeSchema, onPipelineAction, onViewStateChange, onPrefsChange, onOpenLink, oauth2RootUrl = OAUTH_ROOT_URL, oauthReturnUrl, onOpenExternal, pendingOAuthTokens, clearPendingOAuthTokens, onSave, onExport, isReadonly = false, envKeys, onMissingEnvVars, liveLogEvents = [], openEventStream, fetchTimeline, fetchDeployLifecycle, teamDeployments = [], deployTeams = [], onDeployPublish, onDeployVersion, onOpenDeployment, onDeploySetDisabled, onDeploySetSchedule, onDeploySetSchedulePaused, onDeployPreviewSchedule, fetchDeployArtifact, onSaveDocument }) => {
+const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, servicesJson, isConnected, cloudConnectionConfigured, isSubscribed = true, statusMap, serverHost = '', isDirty = false, isNew = false, initialViewState, initialPrefs, onContentChanged, onValidate, getNodeSchema, onPipelineAction, onViewStateChange, onPrefsChange, onOpenLink, onOpenCloudSetup, oauth2RootUrl = OAUTH_ROOT_URL, oauthReturnUrl, onOpenExternal, pendingOAuthTokens, clearPendingOAuthTokens, onSave, onExport, isReadonly = false, envKeys, onMissingEnvVars, liveLogEvents = [], openEventStream, fetchTimeline, fetchDeployLifecycle, teamDeployments = [], deployTeams = [], onDeployPublish, onDeployVersion, onOpenDeployment, onDeploySetDisabled, onDeploySetSchedule, onDeploySetSchedulePaused, onDeployPreviewSchedule, fetchDeployArtifact, onSaveDocument }) => {
 	// --- Local view state (initialized from props, managed locally) -----------
 
 	const [viewState, setViewState] = useState<ViewState>(() => ({
@@ -307,6 +311,9 @@ const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, serv
 	}));
 
 	const [prefs, setPrefs] = useState<Record<string, unknown>>(() => initialPrefs ?? {});
+	useEffect(() => {
+		setPrefs(initialPrefs ?? {});
+	}, [initialPrefs]);
 
 	// --- Stable callback refs ------------------------------------------------
 
@@ -601,7 +608,7 @@ const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, serv
 		design: {
 			content: (
 				<div style={styles.canvasPadding}>
-					<PrefsProvider value={prefsApi}>{project && <CanvasPanel oauth2RootUrl={oauth2RootUrl} oauthReturnUrl={oauthReturnUrl} onOpenExternal={onOpenExternal} pendingOAuthTokens={pendingOAuthTokens} clearPendingOAuthTokens={clearPendingOAuthTokens} project={project} servicesJson={servicesJson} getNodeSchema={getNodeSchema ? handleGetNodeSchema : undefined} taskStatuses={statusMap} handleValidatePipeline={handleValidate} onContentChanged={isReadonly ? undefined : handleContentChanged} onViewportChange={handleViewportChange} onRunPipeline={isReadonly ? undefined : handleRunPipeline} onStopPipeline={isReadonly ? undefined : handleStopPipeline} onOpenLink={handleOpenLink} serverHost={serverHost} isConnected={isConnected} isSubscribed={isSubscribed} initialViewport={viewState.viewport} isDirty={isReadonly ? false : isDirty} isNew={isReadonly ? false : isNew} onSave={isReadonly ? undefined : handleSave} onExport={isReadonly ? undefined : onExport} isReadonly={isReadonly} envKeys={envKeys} />}</PrefsProvider>
+					<PrefsProvider value={prefsApi}>{project && <CanvasPanel oauth2RootUrl={oauth2RootUrl} oauthReturnUrl={oauthReturnUrl} onOpenExternal={onOpenExternal} pendingOAuthTokens={pendingOAuthTokens} clearPendingOAuthTokens={clearPendingOAuthTokens} project={project} servicesJson={servicesJson} getNodeSchema={getNodeSchema ? handleGetNodeSchema : undefined} taskStatuses={statusMap} handleValidatePipeline={handleValidate} onContentChanged={isReadonly ? undefined : handleContentChanged} onViewportChange={handleViewportChange} onRunPipeline={isReadonly ? undefined : handleRunPipeline} onStopPipeline={isReadonly ? undefined : handleStopPipeline} onOpenLink={handleOpenLink} onOpenCloudSetup={onOpenCloudSetup} serverHost={serverHost} isConnected={isConnected} cloudConnectionConfigured={cloudConnectionConfigured} isSubscribed={isSubscribed} initialViewport={viewState.viewport} isDirty={isReadonly ? false : isDirty} isNew={isReadonly ? false : isNew} onSave={isReadonly ? undefined : handleSave} onExport={isReadonly ? undefined : onExport} isReadonly={isReadonly} envKeys={envKeys} />}</PrefsProvider>
 				</div>
 			),
 		},

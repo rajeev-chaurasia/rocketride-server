@@ -34,7 +34,7 @@
  */
 
 import * as vscode from 'vscode';
-import { ConfigManager, SettingsSnapshot } from '../config';
+import { ConfigManager, SettingsSnapshot, type ConnectionMode } from '../config';
 import { getConnectionManager, getEngineRegistry } from '../extension';
 import { AgentManager } from '../agents/agent-manager';
 import { DeployManager } from '../connection/deploy-manager';
@@ -71,8 +71,11 @@ export class SettingsProvider {
 	 */
 	private registerCommands(): void {
 		const commands = [
-			vscode.commands.registerCommand('rocketride.page.settings.open', async (focus?: string, authError?: string) => {
-				await this.openSettings(focus, authError);
+			vscode.commands.registerCommand('rocketride.page.settings.open', async (focus?: string, connectionModeOrAuthError?: ConnectionMode | string, authError?: string) => {
+				const connectionMode = connectionModeOrAuthError === 'cloud' || connectionModeOrAuthError === 'docker' || connectionModeOrAuthError === 'service' || connectionModeOrAuthError === 'onprem' || connectionModeOrAuthError === 'local'
+					? connectionModeOrAuthError
+					: undefined;
+				await this.openSettings(focus, connectionMode, connectionMode ? authError : connectionModeOrAuthError);
 			}),
 
 			vscode.commands.registerCommand('rocketride.page.settings.setupCredentials', async () => {
@@ -105,22 +108,25 @@ export class SettingsProvider {
 	 */
 	/** Pending focus section — sent to webview after view:ready. */
 	private pendingFocus?: string;
+	private pendingConnectionMode?: ConnectionMode;
 	/** Pending auth error — shown as a banner when the page opens due to auth failure. */
 	private pendingAuthError?: string;
 
 	/**
 	 * Opens the settings page, optionally focused on a single section.
 	 * @param focus - If set ('development' or 'deployment'), shows only that section.
+	 * @param connectionMode - If set, preselects the focused section's mode.
 	 * @param authError - If set, displays an auth-failure banner that clears on successful test.
 	 */
-	public async openSettings(focus?: string, authError?: string): Promise<void> {
+	public async openSettings(focus?: string, connectionMode?: ConnectionMode, authError?: string): Promise<void> {
 		this.pendingFocus = focus;
+		this.pendingConnectionMode = connectionMode;
 		this.pendingAuthError = authError;
 		if (this.panel) {
 			this.panel.reveal(vscode.ViewColumn.One);
 			// Panel already open — send focus update directly
 			if (focus) {
-				this.panel.webview.postMessage({ type: 'setFocus', focus });
+				this.panel.webview.postMessage({ type: 'setFocus', focus, connectionMode });
 			}
 			if (authError) {
 				this.panel.webview.postMessage({ type: 'authError', message: authError });
@@ -148,8 +154,9 @@ export class SettingsProvider {
 						await this.loadAllSettings(panel.webview);
 						// Server probe is triggered by CloudPanel when cloud mode is selected
 						if (this.pendingFocus) {
-							panel.webview.postMessage({ type: 'setFocus', focus: this.pendingFocus });
+							panel.webview.postMessage({ type: 'setFocus', focus: this.pendingFocus, connectionMode: this.pendingConnectionMode });
 							this.pendingFocus = undefined;
+							this.pendingConnectionMode = undefined;
 						}
 						if (this.pendingAuthError) {
 							panel.webview.postMessage({ type: 'authError', message: this.pendingAuthError });
