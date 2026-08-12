@@ -546,8 +546,11 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 	// Local hover state — per-card, like home-ui's DesktopAppCard
 	const [hover, setHover] = React.useState(false);
 
-	// First manifest category, formatted for display (may be absent)
-	const category = app.categories?.[0] ? formatCategory(app.categories[0]) : null;
+	// Who makes it, with the first manifest category as a fallback. The line
+	// under an app's name is where a launcher says who is behind it; the category
+	// stood in there only because the registry carried no publisher, so a card
+	// read "Crm" where a maker's name belongs. An app without one is unchanged.
+	const maker = app.publisher || (app.categories?.[0] ? formatCategory(app.categories[0]) : null);
 
 	return (
 		<div
@@ -559,7 +562,7 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 			onMouseEnter={() => setHover(true)}
 			onMouseLeave={() => setHover(false)}
 		>
-			{/* Top row — icon chip + name/category */}
+			{/* Top row — icon chip + name/publisher */}
 			<div style={styles.cardHeader}>
 				<div style={styles.iconChip}>
 					{app.icon
@@ -568,7 +571,7 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 				</div>
 				<div style={styles.nameWrap}>
 					<h2 style={styles.appName}>{app.name}</h2>
-					{category && <div style={styles.appCategory}>{category}</div>}
+					{maker && <div style={styles.appCategory}>{maker}</div>}
 				</div>
 			</div>
 
