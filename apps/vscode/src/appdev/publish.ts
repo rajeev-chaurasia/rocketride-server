@@ -6,39 +6,28 @@
 /**
  * Deploy flow — copy an immutable app version to the server from VSCode.
  *
- * Deploys ALWAYS use the real rsbuild build (decision D5 — browser-linked
- * dev output is never uploaded): a one-shot `rsbuild build` in the app
- * folder, then ONE zip (dist/* at the zip root + package.json carrying the
- * full appManifest) rides the generic `rrext_deploy add` rail door. The
- * server retains the zip and unpacks it at receipt; deploying never
- * activates anything — the Deploy view publishes rungs.
+ * The zip carries the app's SOURCE (src/, package.json with the full
+ * appManifest, rsbuild config, icon/README/assets, the .rrapp marker —
+ * never node_modules, dist, or .git): the SERVER owns the build, so the
+ * store never has to trust client-produced binaries, and deploy runs NO
+ * local build of any kind. The zip rides the generic `rrext_deploy add`
+ * rail door; the server retains it and unpacks at receipt; deploying
+ * never activates anything — the Deploy view publishes rungs.
  */
 
 import * as vscode from 'vscode';
-import * as path from 'path';
-import { promises as fs } from 'fs';
-import { spawn } from 'child_process';
 import AdmZip from 'adm-zip';
 import { ConnectionManager } from '../connection/connection';
 import { scanWorkspaceApps } from './appScan';
 import { ensureAppMarker } from './appMarker';
-import { resolveRsbuildInvocation } from './watchManager';
 import { getLogger } from '../shared/util/output';
-
-// =============================================================================
-// CONSTANTS
-// =============================================================================
-
-/** Upper bound for the one-shot publish build (template-scale apps build in
- * seconds — ten minutes only ever means a wedged process). */
-const BUILD_TIMEOUT_MS = 10 * 60 * 1000;
 
 // =============================================================================
 // PUBLISH
 // =============================================================================
 
 /**
- * Builds the app and publishes the bundle as an immutable version.
+ * Packs the app's source folder and deploys it as an immutable version.
  *
  * @param appId - The app to publish (appManifest.id).
  * @param message - Commit-style "what changed" note for the version card.
@@ -55,49 +44,24 @@ export async function deployApp(appId: string, message: string): Promise<Record<
 		throw new Error('Not connected — publishing needs a live server connection.');
 	}
 
-	// ── The canonical build (decision D5) ────────────────────────────────
-	logger.output(`[appdev] publish build: ${appId}`);
-	const invocation = resolveRsbuildInvocation(app.folder);
-	await new Promise<void>((resolve, reject) => {
-		const proc = spawn(invocation.cmd, [...invocation.args, 'build'], {
-			cwd: app.folder,
-			shell: invocation.shell,
-			env: { ...process.env, NO_COLOR: '1' },
-		});
-		let tail = '';
-		proc.stdout?.on('data', (c: Buffer) => { tail = (tail + c.toString('utf8')).slice(-2000); });
-		proc.stderr?.on('data', (c: Buffer) => { tail = (tail + c.toString('utf8')).slice(-2000); });
-		// Settle exactly once — close, spawn-error, and the timeout race here.
-		let settled = false;
-		const finish = (err?: Error): void => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			if (err) reject(err); else resolve();
-		};
-		// A hung build would otherwise leave the panel's publish RPC pending
-		// forever.
-		const timer = setTimeout(() => {
-			try { proc.kill('SIGKILL'); } catch { /* already gone */ }
-			finish(new Error(`rsbuild build timed out after ${BUILD_TIMEOUT_MS / 60000} minutes: ${tail.slice(-400)}`));
-		}, BUILD_TIMEOUT_MS);
-		// 'close' (not 'exit') so the stdio tail is complete when a failure
-		// names its cause.
-		proc.on('close', (code) => (code === 0 ? finish() : finish(new Error(`rsbuild build failed (${code}): ${tail.slice(-400)}`))));
-		proc.on('error', (err) => finish(err));
-	});
-
-	// ── Pack the built bundle: dist/* at the zip root + package.json ─────
-	// The packed package.json carries the FULL appManifest — the server
-	// reads it as metadata.manifest, the listing truth for this version.
-	const distDir = path.join(app.folder, 'dist');
-	const zip = new AdmZip();
-	zip.addLocalFolder(distDir);
-	zip.addLocalFile(path.join(app.folder, 'package.json'));
-	const data = new Uint8Array(zip.toBuffer());
-
 	// ── Working-copy provenance: the client-side .rrapp projectId ────────
+	// Ensured BEFORE packing so a first-time deploy's freshly created
+	// marker is inside the zip, not just on disk.
 	const marker = await ensureAppMarker(app.folder, appId);
+
+	// ── Pack the SOURCE folder at the zip root ───────────────────────────
+	// package.json (carrying the FULL appManifest — the server reads it as
+	// metadata.manifest, the listing truth), src/, rsbuild config, icon,
+	// README, assets, and the .rrapp marker. Excluded: node_modules (the
+	// server injects the platform deps for its own build), dist (client
+	// output is never uploaded), .git.
+	logger.output(`[appdev] packing source: ${appId}`);
+	const zip = new AdmZip();
+	zip.addLocalFolder(app.folder, undefined, (entryPath) => {
+		const rel = entryPath.replace(/\\/g, '/');
+		return !/(^|\/)(node_modules|dist|\.git)(\/|$)/.test(rel);
+	});
+	const data = new Uint8Array(zip.toBuffer());
 
 	// ── The ONE rail door (deploy = copy code to the server) ─────────────
 	const body = await client.deploy.add({

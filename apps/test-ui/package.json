@@ -9,6 +9,7 @@
     "publisher": "Aparavi Software AG",
     "name": "Test UI",
     "description": "Stress-test and chaos-test dashboard for the RocketRide backend",
+    "icon": "./src/icon.svg",
     "categories": [
       "tools"
     ],

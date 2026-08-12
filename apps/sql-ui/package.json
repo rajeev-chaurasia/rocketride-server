@@ -9,6 +9,7 @@
     "publisher": "Aparavi Software AG",
     "name": "SQL Explorer",
     "description": "Browse, query, design, and diagram SQL databases through pipeline database nodes",
+    "icon": "./src/icon.svg",
     "categories": [
       "tools"
     ],

@@ -9,6 +9,7 @@
     "publisher": "Aparavi Software AG",
     "name": "Server Monitor",
     "description": "Real-time server dashboard showing connections, tasks, and activity",
+    "icon": "./src/icon.svg",
     "categories": [
       "tools"
     ],

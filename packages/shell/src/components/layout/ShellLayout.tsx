@@ -67,11 +67,25 @@ import { commonStyles } from '../../themes/styles';
  * @param name - Display name of the app that failed.
  * @returns Plain-language explanation of the failure.
  */
+/**
+ * True for the stale-platform failure class: shared-module negotiation
+ * breakage (and the TDZ artifact a failed first attempt leaves behind).
+ * Usually the PAGE outlived a platform rebuild — the live MF runtime
+ * negotiated against bundles since replaced on disk — which one reload
+ * fixes; only when it recurs immediately is the bundle truly mismatched.
+ *
+ * @param raw - The raw error message recorded by WorkspaceContext.
+ * @returns True when the failure is shared-module/TDZ shaped.
+ */
+function isStalePlatformError(raw: string): boolean {
+	return /RUNTIME-012|shared module|shareKey|before initialization/i.test(raw);
+}
+
 function friendlyLoadError(raw: string, name: string): string {
 	// Shared-module negotiation failures — and the TDZ artifact a failed first
 	// attempt leaves behind — mean the bundle was built against a different
 	// platform build than the one now serving it.
-	if (/RUNTIME-012|shared module|shareKey|before initialization/i.test(raw)) {
+	if (isStalePlatformError(raw)) {
 		return `${name} was built for a different version of the platform and needs to be rebuilt or redeployed.`;
 	}
 	// Network-shaped failures: missing bundle, unreachable server, timeout.
@@ -264,6 +278,32 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 	// coexist), reset whenever a new failure arrives.
 	const [showModalDetails, setShowModalDetails] = useState(false);
 	useEffect(() => { setShowModalDetails(false); }, [loadFailure]);
+
+	// ── Stale-build self-heal ─────────────────────────────────────────────
+	// A stale-platform load failure (isStalePlatformError) usually means this
+	// PAGE outlived a platform rebuild: bundles were replaced on disk under a
+	// live MF runtime, and one reload brings host + remotes back coherent.
+	// Reload ONCE automatically instead of stranding the user on the
+	// "rebuilt or redeployed" dialog; a sessionStorage guard ensures that if
+	// the SAME app fails the same way right after that reload — a REAL
+	// contract mismatch — the dialog shows as before. If storage is
+	// unavailable the guard cannot prevent a reload loop, so don't auto-heal.
+	const [autoReloading, setAutoReloading] = useState(false);
+	useEffect(() => {
+		const failedAppId = loadFailure?.appId ?? (appLoadErrors[activeAppId] ? activeAppId : null);
+		if (!failedAppId) return;
+		if (!isStalePlatformError(appLoadErrors[failedAppId] ?? '')) return;
+		try {
+			const guard = JSON.parse(sessionStorage.getItem('rr.staleReload') ?? 'null') as { appId: string; at: number } | null;
+			if (guard && guard.appId === failedAppId && Date.now() - guard.at < 60_000) return;
+			sessionStorage.setItem('rr.staleReload', JSON.stringify({ appId: failedAppId, at: Date.now() }));
+		} catch {
+			return;
+		}
+		console.log('[SL] stale platform bundle for', failedAppId, '— auto-reloading once to resync');
+		setAutoReloading(true);
+		window.location.reload();
+	}, [appLoadErrors, activeAppId, loadFailure]);
 
 	/**
 	 * Retry from the load-failure modal: re-attempts the load (retryApp tears
@@ -555,7 +595,7 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 							// invalidates + retries the load when it lands). Hold
 							// the loading animation instead.
 							<LoadingScreen />
-						) : appLoadErrors[activeAppId] ? (
+						) : appLoadErrors[activeAppId] && !autoReloading ? (
 							<div style={styles.appLoadError}>
 								<div style={styles.appLoadErrorTitle}>Could not load {activeManifest?.name ?? activeAppId}</div>
 								{/* Plain-language explanation; raw error lives behind Show Details */}
@@ -624,7 +664,7 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 
 				{/* Load-failure modal — a switch-to-app failed while the current app
 				    stayed on screen; shown over it instead of a page takeover. */}
-				{loadFailure && (
+				{loadFailure && !autoReloading && (
 					/* Backdrop is inert like every shell dialog (OverlayManager is the
 					   source of truth for the no-backdrop-dismiss rule); the footer
 					   Close button is the dismiss control. */

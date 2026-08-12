@@ -273,10 +273,13 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
     The app branch of the generic ``rrext_deploy add`` verb: DEPLOY an app.
 
     Receives ONE zip (the built bundle: dist/* at the zip root + package.json
-    + icon/README) via the binary ``arguments.data`` frame. The zip is pure
-    transport: it is retained at ``$org/.apps/<app_id>/v<N>/bundle/`` for
-    provenance and unpacked immediately into ``.../v<N>/app/`` — the servable
-    tree entry minting points at. The appManifest read from the packed
+    + icon/README) via the binary ``arguments.data`` frame. The zip carries
+    the app's SOURCE (the server owns the build — client-produced binaries
+    are never trusted): it is retained at ``$org/.apps/<app_id>/v<N>/bundle/``
+    for provenance and unpacked immediately into ``.../v<N>/source/``. The
+    ``.../v<N>/app/`` tree stays reserved for the SERVER build's output (the
+    build-worker phase) — entry minting points there, so a version serves
+    only once the server has built it. The appManifest read from the packed
     package.json becomes ``metadata.manifest`` (the listing truth); the
     optional client-side ``.rrapp`` projectId rides as metadata.projectId.
 
@@ -296,7 +299,7 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
     comment = str(args.get('comment', '') or '')
     data = args.get('data')
     if not data:
-        return conn.build_error(request, 'data (the built-bundle zip) is required')
+        return conn.build_error(request, 'data (the app source zip) is required')
 
     # ── Parse the zip in memory: manifest first, files after allocation ───
     import io
@@ -320,8 +323,6 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
         _assert_owns_namespace(conn, app_id)
     except ValueError as exc:
         return conn.build_error(request, str(exc))
-    if 'remoteEntry.js' not in archive.namelist():
-        return conn.build_error(request, 'zip must contain the built remoteEntry.js at its root')
     guard_error = _zip_guard(archive)
     if guard_error:
         return conn.build_error(request, guard_error)
@@ -342,13 +343,15 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
     )
     version = int(entry.get('version', 0))
 
-    # ── Content: retained transport zip + the unpacked servable tree ─────
+    # ── Content: retained transport zip + the unpacked SOURCE tree ───────
+    # source/ holds what the developer shipped; app/ stays reserved for the
+    # server build's output so source and servable bytes never mix.
     home = app_bundle_dir(org_id, app_id, version)
     await conn._server.store.write_bytes(f'{home}/bundle/{app_id}-v{version:06d}.zip', bytes(data))
     for item in archive.infolist():
         if item.is_dir():
             continue
-        await conn._server.store.write_bytes(f'{home}/app/{item.filename}', archive.read(item))
+        await conn._server.store.write_bytes(f'{home}/source/{item.filename}', archive.read(item))
 
     debug(f'[app_deploy] deployed {app_id} v{artifact["appVersion"]} as registry v{version} (private)')
     # One generic response shape for every kind: rrext_deploy add -> {artifact}

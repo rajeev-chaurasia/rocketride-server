@@ -9,6 +9,7 @@
     "publisher": "Aparavi Software AG",
     "name": "Profiler",
     "description": "CPU profiling for server and pipeline processes",
+    "icon": "./src/icon.svg",
     "categories": [
       "tools"
     ],

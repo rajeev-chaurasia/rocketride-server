@@ -332,11 +332,11 @@ async def test_unknown_subcommand_errors(registry):
 
 
 def _app_zip(manifest=None, files=None):
-    """An in-memory built-bundle zip: remoteEntry.js + package.json (+extras)."""
+    """An in-memory app SOURCE zip: src/ + package.json (+extras)."""
     manifest = manifest if manifest is not None else {'id': 'acme.brandy', 'name': 'Brandy', 'version': '1.0.0'}
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w') as archive:
-        archive.writestr('remoteEntry.js', 'console.log("brandy")')
+        archive.writestr('src/App.tsx', 'export default () => null')
         archive.writestr('package.json', json.dumps({'name': 'brandy', 'appManifest': manifest}))
         for name, content in (files or {}).items():
             archive.writestr(name, content)
@@ -358,7 +358,7 @@ async def test_add_requires_data_and_valid_zip(registry):
     # A zip without package.json/appManifest names the real problem
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w') as archive:
-        archive.writestr('remoteEntry.js', 'x')
+        archive.writestr('src/App.tsx', 'x')
     result = await handle_app_add(conn, _add_request(data=buffer.getvalue()))
     assert result['success'] is False
     assert 'package.json' in result['message']
@@ -366,9 +366,9 @@ async def test_add_requires_data_and_valid_zip(registry):
 
 @pytest.mark.asyncio
 async def test_add_unpacks_zip_and_returns_rail_entry(registry):
-    """The zip is retained at bundle/, unpacked at app/, and registered kind:'app'."""
+    """The zip is retained at bundle/, unpacked at source/, and registered kind:'app'."""
     conn = _FakeConn()
-    data = _app_zip(files={'static/js/chunk.js': 'chunk'})
+    data = _app_zip(files={'assets/logo.svg': 'svg'})
     result = await handle_app_add(conn, _add_request(data=data, comment='first cut', metadata={'projectId': 'wc-1'}))
 
     # Registry records the app artifact with the FULL manifest as metadata
@@ -379,12 +379,13 @@ async def test_add_unpacks_zip_and_returns_rail_entry(registry):
     assert call['metadata']['manifest']['id'] == 'acme.brandy'
     assert call['metadata']['projectId'] == 'wc-1'  # client working-copy provenance
 
-    # Content: retained transport zip + the unpacked servable tree
+    # Content: retained transport zip + the unpacked SOURCE tree (app/ stays
+    # reserved for the server build's output)
     writes = conn._server.store.writes
     home = 'orgs/org1/files/.apps/acme.brandy/v000001'
     assert f'{home}/bundle/acme.brandy-v000001.zip' in writes
-    assert writes[f'{home}/app/remoteEntry.js'] == b'console.log("brandy")'
-    assert f'{home}/app/static/js/chunk.js' in writes
+    assert writes[f'{home}/source/src/App.tsx'] == b'export default () => null'
+    assert f'{home}/source/assets/logo.svg' in writes
 
     # One generic response shape for every kind: add -> {artifact}
     entry = result['body']['artifact']

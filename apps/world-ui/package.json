@@ -9,6 +9,7 @@
     "publisher": "Aparavi Software AG",
     "name": "Hello World",
     "description": "A simple Hello World demo application",
+    "icon": "./src/icon.svg",
     "categories": [
       "demo"
     ],

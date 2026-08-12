@@ -38,8 +38,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { EmptyState } from 'shell';
-import { StatusBadge } from 'shell';
+import { Button, EmptyState, InputField, Modal, StatusBadge } from 'shell';
 import type { AppSummary, AppVersionInfo, IAppBuilderHost, RungKind, RungPin } from './types';
 
 // =============================================================================
@@ -75,6 +74,12 @@ const styles: Record<string, React.CSSProperties> = {
 		fontSize: 12.5,
 		color: 'var(--rr-text-secondary)',
 		marginTop: 3,
+		lineHeight: 1.5,
+	},
+	dialogHint: {
+		fontSize: 12.5,
+		color: 'var(--rr-text-secondary)',
+		marginBottom: 10,
 		lineHeight: 1.5,
 	},
 	sectLabel: {
@@ -352,33 +357,58 @@ function formatWhen(unixSeconds?: number): string {
  *
  * @param props - See {@link IDeployViewProps}.
  */
+// Cross-mount cache so re-selecting the DEPLOY tab paints the rail instantly
+// (stale-while-revalidate): the strip shows the last-known versions/pins the
+// moment the view mounts, then refresh() updates them in the background. Keyed
+// by app id.
+const railCache = new Map<string, { versions: AppVersionInfo[] | null; pins: RungPin[] | null }>();
+
 export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
-	// ── Data — loaded through the host adapter ───────────────────────────
-	const [versions, setVersions] = useState<AppVersionInfo[] | null>(null);
-	const [pins, setPins] = useState<RungPin[] | null>(null);
+	// ── Data — loaded through the host adapter, seeded from the cache ─────
+	const [versions, setVersions] = useState<AppVersionInfo[] | null>(() => railCache.get(app.id)?.versions ?? null);
+	const [pins, setPins] = useState<RungPin[] | null>(() => railCache.get(app.id)?.pins ?? null);
 	// Which version's "Publish to…" audience picker is open (null = none).
 	const [pickerFor, setPickerFor] = useState<string | null>(null);
+	// Deploy-message dialog (stock Modal + input — window.prompt is disabled in
+	// the VSCode webview). An empty comment is allowed (it is optional).
+	const [deployOpen, setDeployOpen] = useState(false);
+	const [deployMessage, setDeployMessage] = useState('');
+	const [deployBusy, setDeployBusy] = useState(false);
+	// Server rejection shown INSIDE the deploy dialog (a silent bounce-back
+	// reads as "nothing happened").
+	const [deployError, setDeployError] = useState('');
+	// Failures from the dialog-less actions (publish/team/submit) — surfaced
+	// as a strip above the rail; cleared by the next action or a refresh.
+	const [actionError, setActionError] = useState('');
+	// Team-name dialog for "Publish to… Team".
+	const [teamPromptVersion, setTeamPromptVersion] = useState<string | null>(null);
+	const [teamName, setTeamName] = useState('');
 	// Developer registration: '' = org not a developer yet; null = unknown/loading.
 	const [developerId, setDeveloperId] = useState<string | null>(null);
 	const [regSlug, setRegSlug] = useState('');
 	const [regBusy, setRegBusy] = useState(false);
 	const [regError, setRegError] = useState('');
 
-	/** Loads (or reloads) versions + pins; absent loaders resolve empty. */
+	/**
+	 * Load versions + pins. The two queries run INDEPENDENTLY so the versions
+	 * strip renders the moment the rail returns, without waiting on the
+	 * separate (and slower) where-live query — the old Promise.all gated the
+	 * strip on both. Each result write-throughs to the cross-mount cache so a
+	 * later re-select paints instantly. Still awaits both, so post-action
+	 * callers (deploy/publish/submit) see the settled data.
+	 */
 	const refresh = useCallback(async (): Promise<void> => {
-		try {
-			const [v, p] = await Promise.all([
-				host.listVersions?.() ?? Promise.resolve([]),
-				host.getWhereLive?.() ?? Promise.resolve([]),
-			]);
-			setVersions(v);
-			setPins(p);
-		} catch (e) {
-			console.log('[appdev] deploy refresh failed:', e);
-			setVersions([]);
-			setPins([]);
-		}
-	}, [host]);
+		const patch = (p: Partial<{ versions: AppVersionInfo[]; pins: RungPin[] }>) => {
+			railCache.set(app.id, { versions: null, pins: null, ...railCache.get(app.id), ...p });
+		};
+		const vP = Promise.resolve(host.listVersions?.() ?? [])
+			.then((v) => { setVersions(v); patch({ versions: v }); })
+			.catch((e) => { console.log('[appdev] listVersions failed:', e); setVersions([]); });
+		const pP = Promise.resolve(host.getWhereLive?.() ?? [])
+			.then((p) => { setPins(p); patch({ pins: p }); })
+			.catch((e) => { console.log('[appdev] whereLive failed:', e); setPins([]); });
+		await Promise.all([vP, pP]);
+	}, [host, app.id]);
 
 	useEffect(() => { void refresh(); }, [refresh]);
 
@@ -404,39 +434,75 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 		}
 	}, [host, regSlug]);
 
-	/** Deploy: snapshot the current build as the next immutable registry
-	 * version ("Deploy" = copy code to the server). Binds nothing yet — that
-	 * is the separate publish step. (Rides the host's build action.) */
-	const onDeployBuild = useCallback(async (): Promise<void> => {
+	/** Deploy: open the stock message dialog (window.prompt is unavailable in
+	 * the webview). The snapshot itself happens in confirmDeploy. */
+	const onDeployBuild = useCallback((): void => {
 		if (!host.deploy) return;
-		const message = window.prompt('Deploy message (what changed):') ?? '';
-		if (!message) return;
-		await host.deploy(message);
+		setDeployMessage('');
+		setDeployError('');
+		setDeployOpen(true);
+	}, [host]);
+
+	/** Snapshot the app source as the next immutable registry version
+	 * ("Deploy" = copy code to the server). Binds nothing — that is the
+	 * separate publish step. A rejection stays IN the dialog so the
+	 * developer sees the server's reason instead of a silent bounce. */
+	const confirmDeploy = useCallback(async (): Promise<void> => {
+		if (!host.deploy) return;
+		setDeployBusy(true);
+		setDeployError('');
+		try {
+			await host.deploy(deployMessage.trim());
+			setDeployOpen(false);
+			await refresh();
+		} catch (e) {
+			setDeployError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setDeployBusy(false);
+		}
+	}, [host, deployMessage, refresh]);
+
+	/** Publish: bind a version to @me or the public store directly. The team
+	 * path collects a name through the stock dialog instead (confirmTeamPublish).
+	 * The one verb for first publish, update, promote, and rollback; @public
+	 * needs the version approved (ready) first. */
+	const onPublishTo = useCallback(async (version: string, choice: 'me' | 'public'): Promise<void> => {
+		if (!host.publish) return;
+		setPickerFor(null);
+		setActionError('');
+		try {
+			await host.publish(version, choice === 'me' ? '@me' : '@public');
+		} catch (e) {
+			setActionError(e instanceof Error ? e.message : String(e));
+		}
 		await refresh();
 	}, [host, refresh]);
 
-	/** Publish: bind a version to an audience — @me, a team, or the public
-	 * store. The one verb for first publish, update, promote, and rollback.
-	 * @public needs the version approved (ready) first. */
-	const onPublishTo = useCallback(async (version: string, choice: 'me' | 'team' | 'public'): Promise<void> => {
-		if (!host.publish) return;
-		let target: string;
-		if (choice === 'me') target = '@me';
-		else if (choice === 'public') target = '@public';
-		else {
-			const name = window.prompt('Team name to publish to (@team/<name>):') ?? '';
-			if (!name.trim()) { setPickerFor(null); return; }
-			target = `@team/${name.trim()}`;
+	/** Bind the chosen version to @team/<name> from the team dialog. */
+	const confirmTeamPublish = useCallback(async (): Promise<void> => {
+		if (!host.publish || teamPromptVersion === null) return;
+		const name = teamName.trim();
+		if (!name) return;
+		const version = teamPromptVersion;
+		setTeamPromptVersion(null);
+		setActionError('');
+		try {
+			await host.publish(version, `@team/${name}`);
+		} catch (e) {
+			setActionError(e instanceof Error ? e.message : String(e));
 		}
-		setPickerFor(null);
-		await host.publish(version, target);
 		await refresh();
-	}, [host, refresh]);
+	}, [host, teamPromptVersion, teamName, refresh]);
 
 	/** Submit a deployed version for public store review (private → submit). */
 	const onSubmit = useCallback(async (version: string): Promise<void> => {
 		if (!host.submitForReview) return;
-		await host.submitForReview(version);
+		setActionError('');
+		try {
+			await host.submitForReview(version);
+		} catch (e) {
+			setActionError(e instanceof Error ? e.message : String(e));
+		}
 		await refresh();
 	}, [host, refresh]);
 
@@ -451,6 +517,9 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 					Deploy immutable versions, then publish each to an audience — @me, a team, or the public store.
 					Internal audiences serve instantly; the store gates every version on review.
 				</div>
+				{/* Failures from the dialog-less actions (publish/submit) land
+				    here — otherwise they are invisible. */}
+				{actionError ? <div style={styles.devError}>{actionError}</div> : null}
 			</div>
 
 			{!deployWired ? (
@@ -488,7 +557,7 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 					</div>
 					<div style={styles.rail}>
 						{host.deploy && (
-							<div style={styles.publishCard} onClick={() => void onDeployBuild()}>
+							<div style={styles.publishCard} onClick={onDeployBuild}>
 								<span style={styles.publishPlus}>+</span>
 								<span style={styles.publishTitle}>Deploy</span>
 								<span style={styles.publishHint}>snapshot the current build to the server</span>
@@ -520,7 +589,7 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 										{host.publish && (pickerFor === v.version ? (
 											<div style={styles.picker}>
 												<button style={styles.pickBtn} onClick={() => void onPublishTo(v.version, 'me')}>Me</button>
-												<button style={styles.pickBtn} onClick={() => void onPublishTo(v.version, 'team')}>Team…</button>
+												<button style={styles.pickBtn} onClick={() => { setPickerFor(null); setTeamName(''); setTeamPromptVersion(v.version); }}>Team…</button>
 												<button style={styles.pickBtn} onClick={() => void onPublishTo(v.version, 'public')}>Public</button>
 												<button style={styles.pickBtnGhost} onClick={() => setPickerFor(null)}>Cancel</button>
 											</div>
@@ -570,6 +639,42 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 						)}
 					</div>
 				</>
+			)}
+
+			{/* ── Deploy-message dialog (stock Modal — window.prompt is
+			    disabled inside the VSCode webview) ─────────────────────── */}
+			{deployOpen && (
+				<Modal
+					title="Deploy a new version"
+					onClose={() => setDeployOpen(false)}
+					footer={
+						<>
+							<Button variant="secondary" disabled={deployBusy} onClick={() => setDeployOpen(false)}>Cancel</Button>
+							<Button variant="primary" disabled={deployBusy} onClick={() => void confirmDeploy()}>{deployBusy ? 'Deploying…' : 'Deploy'}</Button>
+						</>
+					}
+				>
+					<div style={styles.dialogHint}>Packs the app source and ships it to the server as the next immutable version. Binds nothing — publish it to an audience afterwards.</div>
+					<InputField placeholder="What changed? (optional comment)" value={deployMessage} onChange={(e) => setDeployMessage(e.target.value)} disabled={deployBusy} />
+					{deployError ? <div style={styles.devError}>{deployError}</div> : null}
+				</Modal>
+			)}
+
+			{/* ── Team-name dialog for "Publish to… Team" ──────────────── */}
+			{teamPromptVersion !== null && (
+				<Modal
+					title={`Publish v${teamPromptVersion} to a team`}
+					onClose={() => setTeamPromptVersion(null)}
+					footer={
+						<>
+							<Button variant="secondary" onClick={() => setTeamPromptVersion(null)}>Cancel</Button>
+							<Button variant="primary" disabled={!teamName.trim()} onClick={() => void confirmTeamPublish()}>Publish</Button>
+						</>
+					}
+				>
+					<div style={styles.dialogHint}>Binds this version to <code>@team/&lt;name&gt;</code>. Team members get it on their next login.</div>
+					<InputField placeholder="team name" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
+				</Modal>
 			)}
 		</div>
 	);
