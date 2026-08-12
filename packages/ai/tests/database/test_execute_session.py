@@ -262,6 +262,12 @@ def test_execute_tool_rejects_bad_row_mode(instance_with_sqlite_registry):
         instance_with_sqlite_registry.execute({'sql': 'SELECT 1', 'row_mode': 'csv'})
 
 
+def test_execute_tool_rejects_falsy_row_mode(instance_with_sqlite_registry):
+    # '' violates the declared enum; only an ABSENT field defaults to 'object'.
+    with pytest.raises(ValueError, match='row_mode'):
+        instance_with_sqlite_registry.execute({'sql': 'SELECT 1', 'row_mode': ''})
+
+
 # ---------------------------------------------------------------------------
 # (f) _sanitize_value JSON-encodes dicts and lists (psycopg2 json/jsonb parse)
 # ---------------------------------------------------------------------------

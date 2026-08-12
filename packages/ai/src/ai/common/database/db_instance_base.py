@@ -287,7 +287,7 @@ class DatabaseInstanceBase(IInstanceBase, ABC):
 
         session_id = args.get('session_id')
         params = args.get('params')
-        row_mode = args.get('row_mode') or 'object'
+        row_mode = args.get('row_mode', 'object')
         if row_mode not in ('object', 'array'):
             raise ValueError("\"row_mode\" must be 'object' or 'array'")
         if session_id:
