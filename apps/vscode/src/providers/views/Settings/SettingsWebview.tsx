@@ -47,6 +47,12 @@ import '../../styles/root.css';
 /** Available connection modes for dev/deploy targets. */
 export type ConnectionMode = 'cloud' | 'docker' | 'service' | 'onprem' | 'local';
 
+const CONNECTION_MODES: readonly ConnectionMode[] = ['cloud', 'docker', 'service', 'onprem', 'local'];
+
+function isConnectionMode(value: unknown): value is ConnectionMode {
+	return typeof value === 'string' && (CONNECTION_MODES as readonly string[]).includes(value);
+}
+
 /**
  * Per-group (development or deployment) connection configuration.
  * Null connectionMode means "use the other group's target" (shared mode).
@@ -601,16 +607,15 @@ export const Settings: React.FC = () => {
 					break;
 				}
 
-				case 'setFocus' as any:
-					if ((message as any).focus) {
-						const focus = (message as any).focus as 'development' | 'deployment';
-						setActiveTab(focus);
-						const connectionMode = (message as any).connectionMode as ConnectionMode | undefined;
-						if (connectionMode && !dirty && (focus === 'development' || focus === 'deployment')) {
-							handleSettingsChange({ [focus]: { connectionMode } } as Partial<SettingsData>);
-						}
+				case 'setFocus' as any: {
+					const { focus, connectionMode } = message as unknown as { focus?: unknown; connectionMode?: unknown };
+					if (focus !== 'development' && focus !== 'deployment') break;
+					setActiveTab(focus);
+					if (isConnectionMode(connectionMode) && !dirty) {
+						handleSettingsChange({ [focus]: { connectionMode } } as Partial<SettingsData>);
 					}
 					break;
+				}
 
 				case 'authError' as any:
 					setAuthError((message as any).message || 'Authentication failed');

@@ -68,6 +68,7 @@ interface CloudCanvasPromptProps {
 
 export default function CloudCanvasPrompt({ onOpenCloudSetup, onDismiss, onDismissForever }: CloudCanvasPromptProps): ReactElement {
 	const cardRef = useRef<HTMLDivElement>(null);
+	const openerRef = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
 
 	useEffect(() => {
 		cardRef.current?.focus();
@@ -75,7 +76,10 @@ export default function CloudCanvasPrompt({ onOpenCloudSetup, onDismiss, onDismi
 			if (event.key === 'Escape') onDismiss();
 		};
 		window.addEventListener('keydown', handleKeyDown);
-		return () => window.removeEventListener('keydown', handleKeyDown);
+		return () => {
+			window.removeEventListener('keydown', handleKeyDown);
+			openerRef.current?.focus();
+		};
 	}, [onDismiss]);
 
 	return (
