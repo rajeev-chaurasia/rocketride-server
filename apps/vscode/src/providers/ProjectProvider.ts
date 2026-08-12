@@ -27,7 +27,7 @@ import { PipelineFileParser } from '../shared/util/pipelineParser';
 import { isSubscribed } from '../shared/util/subscriptionGate';
 import { isDeployRunBody } from '../shared/util/runClassification';
 import { handleMissingEnvVars } from '../shared/util/envVarCheck';
-import { routeEmbeddedClipboardCommand } from '../shared/util/embeddedClipboardBridge';
+import { routeEmbeddedClipboardCommand, type EmbeddedClipboardCommand } from '../shared/util/embeddedClipboardBridge';
 import { savePipelineDocument } from '../shared/util/pipelineSave';
 import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo } from '../shared/util/deployMapping';
 import type { DeploymentWebviewToHost, DeploymentLoadPayload } from './types/deployTypes';
@@ -397,25 +397,30 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				}
 			}),
 
-			vscode.commands.registerCommand('rocketride.embedded.copy', () =>
-				routeEmbeddedClipboardCommand(this.activeExternalPanel?.webview, vscode.env.clipboard, 'copy')
-			),
+			vscode.commands.registerCommand('rocketride.embedded.copy', () => this.routeEmbeddedClipboard('copy')),
 
-			vscode.commands.registerCommand('rocketride.embedded.cut', () =>
-				routeEmbeddedClipboardCommand(this.activeExternalPanel?.webview, vscode.env.clipboard, 'cut')
-			),
+			vscode.commands.registerCommand('rocketride.embedded.cut', () => this.routeEmbeddedClipboard('cut')),
 
-			vscode.commands.registerCommand('rocketride.embedded.paste', () =>
-				routeEmbeddedClipboardCommand(this.activeExternalPanel?.webview, vscode.env.clipboard, 'paste')
-			),
+			vscode.commands.registerCommand('rocketride.embedded.paste', () => this.routeEmbeddedClipboard('paste')),
 
-			vscode.commands.registerCommand('rocketride.embedded.selectAll', () =>
-				routeEmbeddedClipboardCommand(this.activeExternalPanel?.webview, vscode.env.clipboard, 'selectAll')
-			),
+			vscode.commands.registerCommand('rocketride.embedded.selectAll', () => this.routeEmbeddedClipboard('selectAll')),
 		];
 
 		this.disposables.push(...commands);
 		commands.forEach((command) => this.context.subscriptions.push(command));
+	}
+
+	/**
+	 * Routes an editor clipboard shortcut to the active embedded panel and
+	 * logs failures, which routeEmbeddedClipboardCommand reports as false.
+	 */
+	private async routeEmbeddedClipboard(command: EmbeddedClipboardCommand): Promise<boolean> {
+		const target = this.activeExternalPanel?.webview;
+		const routed = await routeEmbeddedClipboardCommand(target, vscode.env.clipboard, command);
+		if (!routed && target) {
+			this.logger.error(`[ProjectProvider] Embedded clipboard command failed: ${command}`);
+		}
+		return routed;
 	}
 
 	// =========================================================================
@@ -1615,13 +1620,25 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			if (this.activeExternalPanel === panel) this.activeExternalPanel = undefined;
 		});
 
+		// URL.searchParams keeps the markers ahead of any hash route so the
+		// embedded app can read _rocketrideHost from location.search.
+		let iframeSrc: string;
+		try {
+			const parsedUrl = new URL(url);
+			parsedUrl.searchParams.set('_t', String(Date.now()));
+			parsedUrl.searchParams.set('_rocketrideHost', 'vscode');
+			iframeSrc = parsedUrl.toString();
+		} catch {
+			iframeSrc = `${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}&_rocketrideHost=vscode`;
+		}
+
 		panel.webview.html = `<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>body{margin:0;padding:0}iframe{width:100%;height:100vh;border:none}</style>
 </head><body>
-<iframe id="app-iframe" src="${url}${url.includes('?') ? '&' : '?'}_t=${Date.now()}&_rocketrideHost=vscode" allow="clipboard-read; clipboard-write"></iframe>
+<iframe id="app-iframe" src="${iframeSrc}" allow="clipboard-read; clipboard-write"></iframe>
 <script>
 (function() {
 	const vscode = acquireVsCodeApi();

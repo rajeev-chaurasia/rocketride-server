@@ -26,10 +26,14 @@ export async function routeEmbeddedClipboardCommand(
 ): Promise<boolean> {
 	if (!target) return false;
 
-	if (command === 'paste') {
-		const text = await clipboard.readText();
-		return target.postMessage({ type: 'pasteContent', text });
-	}
+	try {
+		if (command === 'paste') {
+			const text = await clipboard.readText();
+			return await target.postMessage({ type: 'pasteContent', text });
+		}
 
-	return target.postMessage({ type: 'clipboardCommand', command });
+		return await target.postMessage({ type: 'clipboardCommand', command });
+	} catch {
+		return false;
+	}
 }

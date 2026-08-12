@@ -94,8 +94,8 @@ and Cursor:
 - **Select All**: `Cmd+A` on macOS or `Ctrl+A` on Windows/Linux selects the
   complete draft when the input is focused, or the complete transcript
   otherwise.
-- **Copy a complete message**: Use the square copy button beside any user or
-  assistant message to copy its full text without selecting it first.
+- **Copy a complete message**: Use the square copy button beside any user,
+  assistant, or system message to copy its full text without selecting it first.
 
 ## AI-Assisted Development
 

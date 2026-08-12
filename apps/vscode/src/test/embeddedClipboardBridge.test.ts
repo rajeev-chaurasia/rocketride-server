@@ -83,6 +83,35 @@ test('select all asks the embedded app to select content in its current focus co
 	assert.deepEqual(messages, [{ type: 'clipboardCommand', command: 'selectAll' }]);
 });
 
+test('paste reports failure when the host clipboard read rejects', async () => {
+	const messages: unknown[] = [];
+	const clipboard: EmbeddedClipboardReader = {
+		readText: async () => {
+			throw new Error('clipboard unavailable');
+		},
+	};
+
+	const routed = await routeEmbeddedClipboardCommand(createTarget(messages), clipboard, 'paste');
+
+	assert.equal(routed, false);
+	assert.deepEqual(messages, []);
+});
+
+test('commands report failure when posting to the embedded app rejects', async () => {
+	const target: EmbeddedClipboardMessageTarget = {
+		postMessage: async () => {
+			throw new Error('webview disposed');
+		},
+	};
+	const clipboard: EmbeddedClipboardReader = {
+		readText: async () => 'unused',
+	};
+
+	const routed = await routeEmbeddedClipboardCommand(target, clipboard, 'copy');
+
+	assert.equal(routed, false);
+});
+
 test('clipboard commands are ignored when no embedded panel is active', async () => {
 	let reads = 0;
 	const clipboard: EmbeddedClipboardReader = {
