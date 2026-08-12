@@ -606,7 +606,7 @@ export const Settings: React.FC = () => {
 						const focus = (message as any).focus as 'development' | 'deployment';
 						setActiveTab(focus);
 						const connectionMode = (message as any).connectionMode as ConnectionMode | undefined;
-						if (connectionMode && (focus === 'development' || focus === 'deployment')) {
+						if (connectionMode && !dirty && (focus === 'development' || focus === 'deployment')) {
 							handleSettingsChange({ [focus]: { connectionMode } } as Partial<SettingsData>);
 						}
 					}

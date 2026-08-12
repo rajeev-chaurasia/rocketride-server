@@ -48,6 +48,8 @@ import { createLiveEventStore, type LiveEventStore } from './hooks/liveEventSess
 import type { ProjectViewMode, ViewState, TaskStatus, TraceEvent } from './types';
 import { TASK_STATE } from './types';
 
+const CLOUD_CANVAS_PROMPT_DISMISSED_KEY = 'cloudCanvasPromptDismissed';
+
 // =============================================================================
 // PROPS
 // =============================================================================
@@ -311,9 +313,6 @@ const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, serv
 	}));
 
 	const [prefs, setPrefs] = useState<Record<string, unknown>>(() => initialPrefs ?? {});
-	useEffect(() => {
-		setPrefs(initialPrefs ?? {});
-	}, [initialPrefs]);
 
 	// --- Stable callback refs ------------------------------------------------
 
@@ -411,6 +410,29 @@ const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, serv
 		}),
 		[]
 	);
+
+	const [cloudPromptDismissedForActivation, setCloudPromptDismissedForActivation] = useState(false);
+	useEffect(() => {
+		const handleViewActivated = () => setCloudPromptDismissedForActivation(false);
+		window.addEventListener('canvas:restoreViewport', handleViewActivated);
+		return () => window.removeEventListener('canvas:restoreViewport', handleViewActivated);
+	}, []);
+
+	const handleOpenCloudSetup = useCallback(() => {
+		setCloudPromptDismissedForActivation(true);
+		onOpenCloudSetup?.();
+	}, [onOpenCloudSetup]);
+
+	const handleDismissCloudPrompt = useCallback(() => {
+		setCloudPromptDismissedForActivation(true);
+	}, []);
+
+	const handleDismissCloudPromptForever = useCallback(() => {
+		prefsApi.setPref(CLOUD_CANVAS_PROMPT_DISMISSED_KEY, true);
+		setCloudPromptDismissedForActivation(true);
+	}, [prefsApi]);
+
+	const cloudPromptDismissed = cloudPromptDismissedForActivation || prefsApi.getPref(CLOUD_CANVAS_PROMPT_DISMISSED_KEY) === true;
 
 	// --- Validate callback for CanvasPanel -------------------------------------
 
@@ -608,7 +630,42 @@ const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, serv
 		design: {
 			content: (
 				<div style={styles.canvasPadding}>
-					<PrefsProvider value={prefsApi}>{project && <CanvasPanel oauth2RootUrl={oauth2RootUrl} oauthReturnUrl={oauthReturnUrl} onOpenExternal={onOpenExternal} pendingOAuthTokens={pendingOAuthTokens} clearPendingOAuthTokens={clearPendingOAuthTokens} project={project} servicesJson={servicesJson} getNodeSchema={getNodeSchema ? handleGetNodeSchema : undefined} taskStatuses={statusMap} handleValidatePipeline={handleValidate} onContentChanged={isReadonly ? undefined : handleContentChanged} onViewportChange={handleViewportChange} onRunPipeline={isReadonly ? undefined : handleRunPipeline} onStopPipeline={isReadonly ? undefined : handleStopPipeline} onOpenLink={handleOpenLink} onOpenCloudSetup={onOpenCloudSetup} serverHost={serverHost} isConnected={isConnected} cloudConnectionConfigured={cloudConnectionConfigured} isSubscribed={isSubscribed} initialViewport={viewState.viewport} isDirty={isReadonly ? false : isDirty} isNew={isReadonly ? false : isNew} onSave={isReadonly ? undefined : handleSave} onExport={isReadonly ? undefined : onExport} isReadonly={isReadonly} envKeys={envKeys} />}</PrefsProvider>
+					<PrefsProvider value={prefsApi}>
+						{project && (
+							<CanvasPanel
+								oauth2RootUrl={oauth2RootUrl}
+								oauthReturnUrl={oauthReturnUrl}
+								onOpenExternal={onOpenExternal}
+								pendingOAuthTokens={pendingOAuthTokens}
+								clearPendingOAuthTokens={clearPendingOAuthTokens}
+								project={project}
+								servicesJson={servicesJson}
+								getNodeSchema={getNodeSchema ? handleGetNodeSchema : undefined}
+								taskStatuses={statusMap}
+								handleValidatePipeline={handleValidate}
+								onContentChanged={isReadonly ? undefined : handleContentChanged}
+								onViewportChange={handleViewportChange}
+								onRunPipeline={isReadonly ? undefined : handleRunPipeline}
+								onStopPipeline={isReadonly ? undefined : handleStopPipeline}
+								onOpenLink={handleOpenLink}
+								onOpenCloudSetup={onOpenCloudSetup ? handleOpenCloudSetup : undefined}
+								cloudPromptDismissed={cloudPromptDismissed}
+								onDismissCloudPrompt={handleDismissCloudPrompt}
+								onDismissCloudPromptForever={handleDismissCloudPromptForever}
+								serverHost={serverHost}
+								isConnected={isConnected}
+								cloudConnectionConfigured={cloudConnectionConfigured}
+								isSubscribed={isSubscribed}
+								initialViewport={viewState.viewport}
+								isDirty={isReadonly ? false : isDirty}
+								isNew={isReadonly ? false : isNew}
+								onSave={isReadonly ? undefined : handleSave}
+								onExport={isReadonly ? undefined : onExport}
+								isReadonly={isReadonly}
+								envKeys={envKeys}
+							/>
+						)}
+					</PrefsProvider>
 				</div>
 			),
 		},

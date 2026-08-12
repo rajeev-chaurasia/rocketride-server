@@ -78,9 +78,9 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	private disposables: vscode.Disposable[] = [];
 	private editorStates: Map<vscode.WebviewPanel, EditorState> = new Map();
 	private connectionManager = ConnectionManager.getInstance();
-	private configManager = ConfigManager.getInstance();
 	private logger = getLogger();
 	private savesForRun: Set<string> = new Set();
+	private preferenceUpdateQueue: Promise<void> = Promise.resolve();
 	// OAuth tokens that arrived while no live webview existed for their
 	// document (e.g. the editor was recycled during the browser round-trip),
 	// keyed by document URI. Redelivered after the next view:ready.
@@ -163,8 +163,10 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			this.broadcastServicesToAllEditors(payload);
 		});
 
-		const configChangeListener = this.configManager.onConfigurationChanged(() => {
-			this.broadcastCloudConnectionConfigured();
+		const configChangeListener = vscode.workspace.onDidChangeConfiguration((event) => {
+			if (event.affectsConfiguration('rocketride.development.connectionMode') || event.affectsConfiguration('rocketride.deployment.connectionMode')) {
+				this.broadcastCloudConnectionConfigured();
+			}
 		});
 
 		this.disposables.push(eventListener, accountUpdateListener, envKeysChangedListener, connectionStateListener, servicesUpdatedListener, configChangeListener);
@@ -251,7 +253,10 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	}
 
 	private isCloudConnectionConfigured(): boolean {
-		return hasCloudConnectionConfigured(this.configManager.getConfig());
+		return hasCloudConnectionConfigured({
+			development: { connectionMode: vscode.workspace.getConfiguration('rocketride.development').get('connectionMode', 'local') },
+			deployment: { connectionMode: vscode.workspace.getConfiguration('rocketride.deployment').get('connectionMode', null) },
+		});
 	}
 
 	private broadcastCloudConnectionConfigured(): void {
@@ -265,14 +270,17 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		}
 	}
 
-	private broadcastPreferences(prefs: Record<string, unknown>): void {
-		for (const editorState of this.editorStates.values()) {
-			if (editorState.isReady && !editorState.isDisposed && editorState.webviewPanel.webview) {
-				editorState.webviewPanel.webview.postMessage({ type: 'project:prefsUpdate', prefs }).then(undefined, (err: unknown) => {
-					this.logger.error(`Failed to post preferences to webview: ${err}`);
-				});
-			}
-		}
+	private updatePreferences(updatedPrefs: Record<string, unknown>): Promise<void> {
+		this.preferenceUpdateQueue = this.preferenceUpdateQueue
+			.then(async () => {
+				const storedPrefs = this.context.workspaceState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
+				const prefs = { ...storedPrefs, ...updatedPrefs };
+				await this.context.workspaceState.update(PREFS_KEY, prefs);
+			})
+			.catch((err: unknown) => {
+				this.logger.error(`Failed to persist preferences: ${err}`);
+			});
+		return this.preferenceUpdateQueue;
 	}
 
 	/**
@@ -842,13 +850,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				// Prefs change — persist globally
 				case 'project:prefsChange': {
 					if (data.prefs) {
-						const storedPrefs = this.context.workspaceState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
-						const prefs = { ...storedPrefs, ...data.prefs };
-						if (storedPrefs.cloudCanvasPromptDismissed === true) {
-							prefs.cloudCanvasPromptDismissed = true;
-						}
-						await this.context.workspaceState.update(PREFS_KEY, prefs);
-						this.broadcastPreferences(prefs);
+						await this.updatePreferences(data.prefs);
 					}
 					break;
 				}
@@ -1001,10 +1003,12 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			}
 		});
 
+		let wasVisible = webviewPanel.visible;
 		const viewStateSubscription = webviewPanel.onDidChangeViewState((event) => {
-			if (event.webviewPanel.visible && editorState.isReady) {
+			if (event.webviewPanel.visible && !wasVisible && editorState.isReady) {
 				webview.postMessage({ type: 'shell:viewActivated', viewId: document.uri.toString() });
 			}
+			wasVisible = event.webviewPanel.visible;
 		});
 
 		// Clean up when panel is disposed

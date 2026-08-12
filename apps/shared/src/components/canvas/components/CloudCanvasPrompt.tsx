@@ -10,9 +10,9 @@
  * configured and what opening Cloud setup means.
  */
 
-import { type CSSProperties, type ReactElement } from 'react';
+import { type CSSProperties, type ReactElement, useEffect, useRef } from 'react';
 
-import { commonStyles } from '../../../themes/styles';
+import { commonStyles } from 'shell';
 
 // =============================================================================
 // RocketRide mark
@@ -34,6 +34,8 @@ const styles = {
 		display: 'flex',
 		alignItems: 'center',
 		justifyContent: 'center',
+		boxSizing: 'border-box' as const,
+		padding: '16px',
 		pointerEvents: 'none' as const,
 		zIndex: 1200,
 	},
@@ -47,7 +49,6 @@ const styles = {
 		width: '100%',
 		fontFamily: 'var(--rr-font-family-widget)',
 		color: 'var(--rr-fg-widget)',
-		userSelect: 'none' as const,
 		boxShadow: '0 14px 34px rgba(0,0,0,0.2)',
 	},
 	titleRow: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' },
@@ -66,22 +67,41 @@ interface CloudCanvasPromptProps {
 }
 
 export default function CloudCanvasPrompt({ onOpenCloudSetup, onDismiss, onDismissForever }: CloudCanvasPromptProps): ReactElement {
+	const cardRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		cardRef.current?.focus();
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') onDismiss();
+		};
+		window.addEventListener('keydown', handleKeyDown);
+		return () => window.removeEventListener('keydown', handleKeyDown);
+	}, [onDismiss]);
+
 	return (
 		<div style={styles.overlay}>
-			<div style={styles.card}>
+			<div ref={cardRef} role="dialog" aria-labelledby="cloud-canvas-prompt-title" tabIndex={-1} style={styles.card}>
 				<div style={styles.titleRow}>
 					<RocketRideMark />
-					<h3 style={styles.heading}>Connect this pipeline to RocketRide Cloud</h3>
+					<h3 id="cloud-canvas-prompt-title" style={styles.heading}>
+						Connect this pipeline to RocketRide Cloud
+					</h3>
 				</div>
 				<p style={styles.body}>
 					<strong style={{ color: 'var(--rr-text-primary)' }}>RocketRide Cloud</strong> lets you run, deploy, and manage pipelines from your IDE with hosted infrastructure.
 				</p>
 				<div style={styles.actions}>
 					<div style={styles.leftActions}>
-						<button type="button" style={commonStyles.buttonPrimary as CSSProperties} onClick={onOpenCloudSetup}>Connect to Cloud</button>
-						<button type="button" style={commonStyles.buttonSecondary as CSSProperties} onClick={onDismiss}>Dismiss</button>
+						<button type="button" style={commonStyles.buttonPrimary as CSSProperties} onClick={onOpenCloudSetup}>
+							Connect to Cloud
+						</button>
+						<button type="button" style={commonStyles.buttonSecondary as CSSProperties} onClick={onDismiss}>
+							Dismiss
+						</button>
 					</div>
-					<button type="button" style={styles.linkButton} onClick={onDismissForever}>Don't show again</button>
+					<button type="button" style={styles.linkButton} onClick={onDismissForever}>
+						Don't show again
+					</button>
 				</div>
 			</div>
 		</div>

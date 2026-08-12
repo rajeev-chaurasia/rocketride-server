@@ -284,9 +284,6 @@ const ProjectWebview: React.FC = () => {
 			case 'project:cloudConnectionConfigured':
 				setCloudConnectionConfigured(msg.cloudConnectionConfigured);
 				break;
-			case 'project:prefsUpdate':
-				setPrefs(msg.prefs);
-				break;
 			case 'shell:connectionChange':
 				if (msg.isConnected) {
 					setStatusMap({});

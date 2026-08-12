@@ -72,9 +72,7 @@ export class SettingsProvider {
 	private registerCommands(): void {
 		const commands = [
 			vscode.commands.registerCommand('rocketride.page.settings.open', async (focus?: string, connectionModeOrAuthError?: ConnectionMode | string, authError?: string) => {
-				const connectionMode = connectionModeOrAuthError === 'cloud' || connectionModeOrAuthError === 'docker' || connectionModeOrAuthError === 'service' || connectionModeOrAuthError === 'onprem' || connectionModeOrAuthError === 'local'
-					? connectionModeOrAuthError
-					: undefined;
+				const connectionMode = connectionModeOrAuthError === 'cloud' || connectionModeOrAuthError === 'docker' || connectionModeOrAuthError === 'service' || connectionModeOrAuthError === 'onprem' || connectionModeOrAuthError === 'local' ? connectionModeOrAuthError : undefined;
 				await this.openSettings(focus, connectionMode, connectionMode ? authError : connectionModeOrAuthError);
 			}),
 
@@ -131,6 +129,9 @@ export class SettingsProvider {
 			if (authError) {
 				this.panel.webview.postMessage({ type: 'authError', message: authError });
 			}
+			this.pendingFocus = undefined;
+			this.pendingConnectionMode = undefined;
+			this.pendingAuthError = undefined;
 			return;
 		}
 

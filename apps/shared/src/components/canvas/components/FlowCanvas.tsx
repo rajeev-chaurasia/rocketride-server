@@ -75,6 +75,12 @@ import { isInVSCode } from 'shell';
 import { useAutoLayout } from '../hooks/useAutoLayout';
 import { useTemplateInstantiator } from '../hooks/useTemplateInstantiator';
 
+interface FlowCanvasProps {
+	cloudPromptDismissed?: boolean;
+	onDismissCloudPrompt?: () => void;
+	onDismissCloudPromptForever?: () => void;
+}
+
 // =============================================================================
 // Node type registry — maps NodeType to its React component
 // =============================================================================
@@ -93,8 +99,6 @@ const nodeTypes: Record<string, any> = {
 const edgeTypes = {
 	default: FlowEdge,
 };
-
-const CLOUD_CANVAS_PROMPT_DISMISSED_KEY = 'cloudCanvasPromptDismissed';
 
 // =============================================================================
 // Default zoom
@@ -202,7 +206,7 @@ const ToolbarDivider = () => {
  *
  * @returns The ReactFlow canvas with background grid.
  */
-export default function Canvas(): ReactElement {
+export default function Canvas({ cloudPromptDismissed, onDismissCloudPrompt, onDismissCloudPromptForever }: FlowCanvasProps): ReactElement {
 	// --- Graph state from context ------------------------------------------
 	const { canvasRef, nodes, edges, nodeMap, setNodes, onNodesChange, onEdgesChange, onEdgeConnect, onNodesDelete, onDragOver, onDrop, onNodeDragStop, isValidConnection, editingNodeId, setEditingNodeId, addNode, onContentUpdated, isFlowReady, configSnackbar, setConfigSnackbar } = useFlowGraph();
 
@@ -224,23 +228,7 @@ export default function Canvas(): ReactElement {
 	const { onUndo, onRedo, onViewportChange, isDirty, isNew, onSave, onExport, initialViewport, isConnected, cloudConnectionConfigured, onOpenCloudSetup } = useFlowProject();
 	const { fitView, zoomIn, zoomOut, setViewport } = useReactFlow();
 
-	const [cloudPromptDismissedForActivation, setCloudPromptDismissedForActivation] = useState(false);
-	const cloudPromptDismissedForever = getPref(CLOUD_CANVAS_PROMPT_DISMISSED_KEY) === true;
-	const shouldShowCloudPrompt = Boolean(isConnected && !isReadonly && onOpenCloudSetup && !cloudConnectionConfigured && !cloudPromptDismissedForever && !cloudPromptDismissedForActivation);
-
-	const handleOpenCloudSetup = useCallback(() => {
-		setCloudPromptDismissedForActivation(true);
-		onOpenCloudSetup?.();
-	}, [onOpenCloudSetup]);
-
-	const handleDismissCloudPrompt = useCallback(() => {
-		setCloudPromptDismissedForActivation(true);
-	}, []);
-
-	const handleDismissCloudPromptForever = useCallback(() => {
-		setPref(CLOUD_CANVAS_PROMPT_DISMISSED_KEY, true);
-		setCloudPromptDismissedForActivation(true);
-	}, [setPref]);
+	const shouldShowCloudPrompt = Boolean(isConnected && !isReadonly && !isLocked && onOpenCloudSetup && onDismissCloudPrompt && onDismissCloudPromptForever && !cloudConnectionConfigured && !cloudPromptDismissed);
 
 	// Keep a ref so the restore handler always sees the latest viewport value
 	// without needing to re-register the event listener.
@@ -276,7 +264,6 @@ export default function Canvas(): ReactElement {
 	// is dispatched by ProjectView when it receives shell:viewActivated).
 	useEffect(() => {
 		const handler = () => {
-			setCloudPromptDismissedForActivation(false);
 			if (initialViewportRef.current) {
 				setViewport(initialViewportRef.current, { duration: 0 });
 			}
@@ -493,7 +480,7 @@ export default function Canvas(): ReactElement {
 			{/* Empty canvas prompt — shown when no nodes and create panel is closed */}
 			{nodes.length === 0 && !showCreatePanel && isFlowReady && <EmptyCanvasPrompt instantiateTemplate={instantiateTemplate} onNodeAdded={onNodeAdded} />}
 
-			{shouldShowCloudPrompt && <CloudCanvasPrompt onOpenCloudSetup={handleOpenCloudSetup} onDismiss={handleDismissCloudPrompt} onDismissForever={handleDismissCloudPromptForever} />}
+			{shouldShowCloudPrompt && <CloudCanvasPrompt onOpenCloudSetup={onOpenCloudSetup!} onDismiss={onDismissCloudPrompt!} onDismissForever={onDismissCloudPromptForever!} />}
 
 			{/* Quick-add popup — appears at handle click position */}
 			<QuickAddPopup />

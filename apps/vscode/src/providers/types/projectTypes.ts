@@ -34,7 +34,6 @@ export type ProjectHostToWebview =
 	| { type: 'project:dirtyState'; isDirty: boolean; isNew: boolean }
 	| { type: 'project:initialState'; state: ViewState }
 	| { type: 'project:initialPrefs'; prefs: Record<string, unknown> }
-	| { type: 'project:prefsUpdate'; prefs: Record<string, unknown> }
 	| { type: 'project:cloudConnectionConfigured'; cloudConnectionConfigured: boolean }
 	| { type: 'project:envKeysUpdate'; envKeys: string[] }
 	// Subscription gate + embedded checkout flow (the Subscribe overlay).
