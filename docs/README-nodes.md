@@ -11,7 +11,7 @@ each expose multiple variants), which is why the catalog below lists **services*
 rather than directories.
 
 > This catalog is compiled by hand from the `services*.json` definitions on `develop`
-> (88 node directories → 118 services). For node testing, see
+> (118 node directories → 148 services). For node testing, see
 > [README-node-testing.md](README-node-testing.md).
 
 ---
@@ -109,6 +109,7 @@ channel; they have no data lanes and **bind to an agent** (see
 | `tool_firecrawl`    | Firecrawl web-scraping operations                                |
 | `tool_http_request` | Arbitrary HTTP requests, "curl for agents"                      |
 | `tool_github`       | GitHub repository operations                                     |
+| `tool_pipedrive`    | Pipedrive CRM operations: deals, persons, organizations, activities, and the rest of API v1 |
 | `tool_git`          | Local Git repository operations                                  |
 | `tool_filesystem`   | File-system access                                               |
 | `tool_python`       | Executes Python in a restricted in-process sandbox               |
@@ -120,6 +121,7 @@ channel; they have no data lanes and **bind to an agent** (see
 | `tool_oura`         | Oura Ring health data (sleep, readiness, activity, heart rate), read-only |
 | `tool_xtrace_memory`| Long-term shared agent memory, backed by xTrace Memory Manager   |
 | `tool_mem0`         | Long-term shared agent memory, backed by the hosted Mem0 Platform |
+| `tool_gohighlevel`  | GoHighLevel (LeadConnector) v2 sub-account operations: contacts, opportunities, conversations, calendars |
 
 ### Embeddings
 
