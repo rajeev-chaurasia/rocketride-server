@@ -133,6 +133,27 @@ class AccountInfo(BaseModel):
         # raw authentication credential is never returned to the client.
         return self.model_dump(exclude={'auth'})
 
+    def to_push_result(self) -> dict:
+        """
+        Serialize for a PUSHED ``apaext_account`` update — excludes ``auth`` AND
+        blanks ``userToken``.
+
+        A pushed account update fans out to every open connection of a user,
+        matched by userId only. Unlike the connect/auth response, it must NOT
+        carry the user's real ``rr_`` session credential: a task-scoped
+        (``pk_``/``tk_``) connection matched by userId would otherwise ADOPT it
+        client-side, escalating a deliberately minimal task identity into the
+        full user. ``userToken`` is kept as an EMPTY STRING rather than removed
+        so the shell's ``isConnectResult`` guard (which requires ``userToken``
+        to be a string) still accepts the body and re-emits the update.
+
+        Returns:
+            dict: ``to_connect_result()`` with ``userToken`` blanked.
+        """
+        data = self.to_connect_result()
+        data['userToken'] = ''
+        return data
+
 
 # =============================================================================
 # REQUEST CONTEXT

@@ -852,10 +852,18 @@ class TaskServer(DAPBase):
                 continue
             if conn._account_info.userId != user_id:
                 continue
+            # Skip task-scoped connections. pk_/tk_ identities carry the
+            # LAUNCHING user's id (so they match here), but their identity is
+            # deliberately minimal (task permissions only). Rebuilding them as
+            # the full user would escalate them AND leak the user's rr_ session
+            # key into a task-scoped socket. The pushed body also blanks
+            # userToken (to_push_result) for the full-user connections.
+            if (getattr(conn._account_info, 'auth', '') or '').startswith(('pk_', 'tk_')):
+                continue
             try:
                 fresh = await account._service.get_authentication_result(user_id, conn._account_info.auth)
                 conn._account_info = fresh
-                await conn.send_event('apaext_account', body=fresh.to_connect_result())
+                await conn.send_event('apaext_account', body=fresh.to_push_result())
             except Exception as e:
                 self.debug_message(f'push_account_update failed for conn {conn.get_connection_id()}: {e}')
 

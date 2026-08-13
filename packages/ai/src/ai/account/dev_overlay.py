@@ -271,13 +271,17 @@ async def push_refresh(server: Any, user_id: str, source: str) -> None:
             info = getattr(conn, '_account_info', None)
             if apps is None or not info or info.userId != user_id:
                 continue
+            # Skip task-scoped connections (see push_account_update): never push
+            # a full-user rebuild onto a pk_/tk_ socket.
+            if (getattr(info, 'auth', '') or '').startswith(('pk_', 'tk_')):
+                continue
             try:
                 # Mirror the OSS authenticate() decoration: everything is
                 # free and on the desktop on a local engine.
                 info.apps = [
                     {**a, 'appStatus': a.get('appStatus', 'free'), 'onDesktop': True} for a in apps if a.get('id')
                 ]
-                await conn.send_event('apaext_account', body=info.to_connect_result())
+                await conn.send_event('apaext_account', body=info.to_push_result())
             except Exception as exc:
                 debug(f'[dev_overlay] OSS account push failed: {exc}')
 
