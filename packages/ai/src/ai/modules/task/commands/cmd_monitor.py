@@ -463,6 +463,16 @@ class MonitorCommands(DAPConn):
 
         # If project/source we specified
         elif project_id and source:
+            # A team-scoped (deploy-run) subscription requires task.monitor on
+            # THAT team, checked HERE. Subscribe-before-launch must not register
+            # under a foreign team's key: the get_task_control_by_project check
+            # below only fires when a run is LIVE; for a not-running foreign
+            # scope it raises RuntimeError, which the except-Exception swallow
+            # would let through, leaving the subscription registered under the
+            # foreign key. (OSS-safe: the synthetic 'local' team grants monitor.)
+            if team_id and 'task.monitor' not in resolve_task_permissions(self._account_info, team_id):
+                raise PermissionError('Access denied: no permissions for this team')
+
             # Resolve the requested scope's owner: the named team's deploy
             # run, or (no team) the CALLER's own dev runs. The key is
             # derivable without the control so subscribe-before-launch works.

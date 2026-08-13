@@ -500,6 +500,54 @@ async def test_on_rrext_monitor_passes_team_id_through():
 
 
 # ---------------------------------------------------------------------------
+# Team-scope authorization (security) — a team_id subscription requires
+# membership, checked BEFORE the not-running swallow can register the key.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_monitor_foreign_team_scope_denied_even_when_not_running():
+    """Subscribing to another team's deploy scope is rejected up front -- even
+    when no run exists yet. Regression: get_task_control_by_project raises a
+    RuntimeError (not a PermissionError) on the not-running path, which the
+    except-Exception branch swallows; without the membership check the foreign
+    subscription would still be registered under p.<foreignTeam>.<proj>.<src>.
+    """
+    server = MagicMock()
+    # Subscribe-before-launch: no live run -> RuntimeError, NOT PermissionError.
+    server.get_task_control_by_project = MagicMock(side_effect=RuntimeError('Your pipeline is not running'))
+    server.broadcast_server_event = AsyncMock()
+    conn = _make_conn(account_info=_account_info(team_id='team-1'), server=server)
+
+    with pytest.raises(PermissionError, match='no permissions for this team'):
+        await MonitorCommands.set_monitor(
+            conn, project_id='proj-1', source='src-1', type=EVENT_TYPE.SUMMARY, team_id='team-other'
+        )
+
+    # Nothing registered under the foreign key, and the run lookup was never
+    # reached (the membership check fires first).
+    assert 'p.team-other.proj-1.src-1' not in conn._monitors
+    assert conn._monitors == {}
+    server.get_task_control_by_project.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_monitor_own_team_scope_allowed_before_a_run_exists():
+    """The caller's OWN team scope still subscribes before any run exists: the
+    not-running RuntimeError is tolerated once membership is established.
+    """
+    server = MagicMock()
+    server.get_task_control_by_project = MagicMock(side_effect=RuntimeError('not running'))
+    server.broadcast_server_event = AsyncMock()
+    conn = _make_conn(account_info=_account_info(team_id='team-1'), server=server)
+
+    await MonitorCommands.set_monitor(
+        conn, project_id='proj-1', source='src-1', type=EVENT_TYPE.SUMMARY, team_id='team-1'
+    )
+    assert 'p.team-1.proj-1.src-1' in conn._monitors
+
+
+# ---------------------------------------------------------------------------
 # Constructor
 # ---------------------------------------------------------------------------
 
