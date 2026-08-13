@@ -74,7 +74,7 @@ const RPC_TIMEOUT_MS = 5 * 60 * 1000;
 // rows for replay. Bounded so a long-running dev session cannot grow it
 // without limit — a full pnpm install + rsbuild pass is a few hundred lines,
 // well inside this ceiling.
-const FEED_BACKLOG = 2000;
+const FEED_BACKLOG = 500;
 
 // =============================================================================
 // STYLES

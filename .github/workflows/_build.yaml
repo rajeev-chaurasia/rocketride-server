@@ -146,8 +146,9 @@ jobs:
           BUILD_HASH: ${{ inputs.build_hash }}
           BUILD_STAMP: ${{ inputs.build_stamp }}
           # Production values baked into the VS Code extension at build time.
+          # (The Stripe publishable key is no longer baked — the extension
+          # fetches it from the connected server's public probe at runtime.)
           ROCKETRIDE_URI: ${{ vars.ROCKETRIDE_URI }}
-          RR_STRIPE_PUBLISHABLE_KEY: ${{ vars.RR_STRIPE_PUBLISHABLE_KEY }}
         run: ${{ matrix.builder_cmd }} build --verbose --autoinstall ${{ matrix.platform == 'ubuntu' && '--system-compiler' || '' }} --version="$FULL_VERSION" --hash="$BUILD_HASH" --stamp="$BUILD_STAMP" ${{ inputs.nodownload && '--nodownload' || '' }}
 
       # MinIO for S3Store integration tests (Linux only). Env vars are exported

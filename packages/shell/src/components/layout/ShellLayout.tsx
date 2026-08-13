@@ -223,9 +223,10 @@ const styles = {
 		minHeight: 0,
 	} as CSSProperties,
 	/** Faint brand wordmark pinned to the client area's lower-left; shown only
-	    while a sidebar-less (full-screen) app owns the client area. The wrapper
-	    carries the theme text color so the SVG (fill=currentColor) tracks theme
-	    changes without a palette-mode observer. */
+	    while a chrome-less (no sidebar AND no status bar) app owns the client
+	    area. The wrapper carries the theme text color so the SVG
+	    (fill=currentColor) tracks theme changes without a palette-mode
+	    observer. */
 	fullScreenWatermark: {
 		position: 'absolute',
 		left: 16,
@@ -674,8 +675,9 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 						) : null}
 					</div>
 
-					{/* Faint brand mark for full-screen (sidebar-less) apps; gated on a
-					    mounted app UI so it never overlays boot/loading/error surfaces. */}
+					{/* Faint brand mark for chrome-less (no sidebar, no status bar) apps;
+					    gated on a mounted app UI so it never overlays boot/loading/error
+					    surfaces. */}
 					{hasAppUi && <FullScreenWatermark />}
 				</div>
 
@@ -763,30 +765,31 @@ const SidebarWithOverlay: React.FC<{
 };
 
 // =============================================================================
-// FULL-SCREEN WATERMARK — faint brand mark for sidebar-less apps
+// FULL-SCREEN WATERMARK — faint brand mark for chrome-less apps
 // =============================================================================
 
 /**
  * Faint RocketRide wordmark overlaid on the client area's lower-left corner.
  *
- * Presence mirrors the Sidebar's self-hide rule, inverted: an app whose
- * AppLayout declares no sidebar registers nothing in the host-chrome sidebar
- * slot, the standard chrome (and the wordmark in its header) is absent, and
- * the app spans the full client area — so the brand mark surfaces here
- * instead. Apps WITH a sidebar already carry the wordmark in the chrome, so
- * the watermark withdraws. Must render inside HostChromeProvider.
+ * Presence mirrors the chrome's self-hide rules, inverted: an app whose
+ * AppLayout declares neither a sidebar nor a status bar registers nothing in
+ * the host-chrome slots, the standard chrome (and the wordmark in its header)
+ * is absent, and the app spans the full client area — so the brand mark
+ * surfaces here instead. Any registered chrome zone (sidebar OR status bar)
+ * already anchors the shell's identity on screen, so the watermark withdraws.
+ * Must render inside HostChromeProvider.
  *
  * Purely decorative: pointer events pass through and it is hidden from the
  * accessibility tree.
  */
 const FullScreenWatermark: React.FC = () => {
-	const { sidebarContent } = useHostChromeState();
-	// A registered sidebar means the standard chrome is on screen — no mark.
-	if (sidebarContent != null) return null;
+	const { sidebarContent, statusBarContent } = useHostChromeState();
+	// Any registered chrome zone means shell branding is on screen — no mark.
+	if (sidebarContent != null || statusBarContent != null) return null;
 	return (
 		<div style={styles.fullScreenWatermark} aria-hidden="true">
 			{/* currentColor fills from the wrapper's --rr-text-primary */}
-			<RocketRideWordmark height={60} color="currentColor" />
+			<RocketRideWordmark height={15} color="currentColor" />
 		</div>
 	);
 };

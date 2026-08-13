@@ -25,6 +25,7 @@ import type { ConnectionStatus } from '../shared/types';
 import type { ConnectResult, TeamDetail } from 'rocketride';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { PIPE_BUILDER_APP_ID } from '../shared/types';
+import { getStripePublishableKey } from './shared/stripe-key';
 
 // =============================================================================
 // INTERFACES
@@ -248,6 +249,14 @@ export class AccountProvider {
 				break;
 
 			// -- Checkout flow (embedded Stripe Elements in the Account webview) ---
+			case 'checkout:getStripeKey': {
+				// Server-supplied publishable key (cached per URI) so the
+				// CheckoutModal mounts Stripe for THIS server's account.
+				const key = await getStripePublishableKey(this.resolveClient().client);
+				await panel.webview.postMessage({ type: 'checkout:stripeKey', key });
+				break;
+			}
+
 			case 'checkout:fetchPlans':
 				await this.handleCheckoutFetchPlans(panel);
 				break;

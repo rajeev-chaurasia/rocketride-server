@@ -452,7 +452,8 @@ class RocketRideClient(
 
         Returns:
             A :class:`~rocketride.types.ServerInfoResult` dict with ``version``,
-            ``capabilities``, ``platform``, and ``apps`` keys.
+            ``capabilities``, ``platform``, and ``apps`` keys, plus
+            ``stripePublishableKey`` when the server has billing configured.
 
         Raises:
             RuntimeError: If the server is unreachable or does not support probes.

@@ -22,6 +22,7 @@ import type { ApiKeyRecord, OrgDetail, MemberRecord, TeamRecord, TeamDetail, Acc
 import type { CheckoutPlan, PromoRedemption, PromoValidation } from 'shell';
 import type { ConnectResult } from 'shell';
 import { useMessaging } from '../hooks/useMessaging';
+import { useStripeKey } from '../hooks/useStripeKey';
 import type { AccountHostToWebview, AccountWebviewToHost } from '../../types/accountTypes';
 
 // =============================================================================
@@ -40,6 +41,9 @@ const AccountWebview: React.FC = () => {
 
 	const [ready, setReady] = useState(false);
 	const [isConnected, setIsConnected] = useState(false);
+	// Server-supplied Stripe publishable key — matches the connected server's
+	// Stripe account instead of a build-time value.
+	const stripeKey = useStripeKey();
 	const [profile, setProfile] = useState<ConnectResult | null>(null);
 	const [authUser, setAuthUser] = useState<ConnectResult | null>(null);
 	const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
@@ -433,8 +437,6 @@ const AccountWebview: React.FC = () => {
 	// Don't render until the first account:init arrives — avoids a brief
 	// "disconnected" flash while the provider fetches data.
 	if (!ready) return null;
-
-	const stripeKey = process.env.RR_STRIPE_PUBLISHABLE_KEY || '';
 
 	return (
 		<>

@@ -214,13 +214,17 @@ export default defineConfig(({ command }) => {
 
 			// Compile-time constant substitution.
 			//
-			// ONLY the five variables below are injected into the browser bundle.
+			// ONLY the variables below are injected into the browser bundle.
 			// Every key listed here becomes a string literal at build time — nothing
 			// else from the .env file is ever included.
 			//
 			// SECURITY: never add server-side secrets here (RR_STRIPE_SECRET_KEY,
 			// RR_STRIPE_WEBHOOK_SECRET, RR_DB_URL, RR_ZITADEL_SERVICE_TOKEN, etc.).
 			// Those values are never needed in the browser and must stay server-side.
+			//
+			// ENV NEUTRALITY: never add environment-specific values here (the
+			// Stripe publishable key pk_test/pk_live moved to the server probe) —
+			// baked per-env values break byte-for-byte staging→prod promotion.
 			define: {
 				// Standard Node.js env flag — enables React's production optimisations.
 				// The dev FLAVOR builds with development React so react-refresh has a
@@ -233,10 +237,6 @@ export default defineConfig(({ command }) => {
 				// Dev/service-account API key — bypasses OAuth2 when set.
 				// Leave empty in production; only set in .env for local development.
 				'process.env.RR_APIKEY': e('RR_APIKEY'),
-
-				// Stripe publishable key — safe to expose in the browser (pk_*).
-				// Never put the secret key (sk_*) here.
-				'process.env.RR_STRIPE_PUBLISHABLE_KEY': e('RR_STRIPE_PUBLISHABLE_KEY'),
 
 				// Zitadel OIDC issuer URL — required for OAuth2 PKCE flow.
 				'process.env.RR_ZITADEL_URL': e('RR_ZITADEL_URL'),

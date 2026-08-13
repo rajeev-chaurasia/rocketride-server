@@ -344,9 +344,14 @@ class ServerInfoResult(TypedDict, total=False):
             ``['saas']`` for cloud.
         platform (str): Server platform (e.g. ``'linux'``, ``'win32'``, ``'darwin'``).
         apps (list[AppManifestEntry]): Public apps visible without authentication.
+        stripePublishableKey (str): Stripe publishable key (``pk_*``) configured
+            on this server, so clients initialise Stripe Elements with the key
+            matching the server's Stripe account (test vs live) instead of a
+            build-time value. Absent on servers without billing (OSS).
     """
 
     version: str
     capabilities: list[str]
     platform: str
     apps: list[AppManifestEntry]
+    stripePublishableKey: str

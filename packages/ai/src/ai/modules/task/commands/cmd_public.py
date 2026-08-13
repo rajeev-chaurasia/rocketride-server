@@ -40,6 +40,7 @@ any command starting with ``rrext_public_`` without requiring a prior
 and server probing.
 """
 
+import os
 import sys
 from typing import TYPE_CHECKING, Dict, Any
 
@@ -84,6 +85,11 @@ class PublicCommands(DAPConn):
         Replaces the former ``auth { infoOnly: true }`` hack. Returns
         version, capabilities, platform, and public apps list.
 
+        Also carries the Stripe publishable key (``pk_*`` — public by
+        design) when the server has one configured, so browser and
+        extension clients receive the key matching THIS server's Stripe
+        account instead of a value baked into their bundles at build time.
+
         Args:
             request: Raw DAP request dict.
 
@@ -97,6 +103,11 @@ class PublicCommands(DAPConn):
             'platform': sys.platform,
             'apps': await acct.get_public_apps(),
         }
+        # Publishable key only — the secret key (sk_*) must never leave the
+        # server. Omitted entirely when unset (OSS / no billing).
+        stripe_pk = os.environ.get('RR_STRIPE_PUBLISHABLE_KEY', '')
+        if stripe_pk:
+            info['stripePublishableKey'] = stripe_pk
         return self.build_response(request, body=info)
 
     # ── rrext_public_catalog ────────────────────────────────────────────────

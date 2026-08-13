@@ -20,10 +20,16 @@ export type CheckoutResultHostToWebview =
 	// clientSecret is null for a $0 first invoice (100%-off promo) — "no
 	// payment step", not an error; `status` only travels on success.
 	| { type: 'checkout:sessionResult'; clientSecret: string | null; subscriptionId: string; status?: string; error: string | null }
-	| { type: 'checkout:confirmResult'; error: string | null };
+	| { type: 'checkout:confirmResult'; error: string | null }
+	// Stripe publishable key of the server the host's billing client is
+	// connected to ('' when unavailable). Answered from the cached probe;
+	// consumed by useStripeKey, not the webviews' main message switches.
+	| { type: 'checkout:stripeKey'; key: string };
 
 /** Checkout requests from the webview. */
 export type CheckoutRequestWebviewToHost =
 	| { type: 'checkout:fetchPlans' }
 	| { type: 'checkout:createSession'; priceId: string; promotionCode?: string }
-	| { type: 'checkout:confirmPending'; subscriptionId: string; priceId: string };
+	| { type: 'checkout:confirmPending'; subscriptionId: string; priceId: string }
+	// Sent by useStripeKey on mount wherever a CheckoutModal can render.
+	| { type: 'checkout:getStripeKey' };

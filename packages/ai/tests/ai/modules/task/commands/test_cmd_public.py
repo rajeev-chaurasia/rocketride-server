@@ -81,6 +81,45 @@ async def test_on_rrext_public_probe_returns_server_info_without_authenticating(
     account.get_public_apps.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_on_rrext_public_probe_includes_stripe_key_when_configured(monkeypatch):
+    """
+    A configured RR_STRIPE_PUBLISHABLE_KEY is advertised on the probe so
+    clients can initialise Stripe with the key matching this server's
+    Stripe account instead of a value baked into their bundles.
+    """
+    monkeypatch.setattr(cmd_public, 'getVersion', lambda: '9.9.9')
+    monkeypatch.setenv('RR_STRIPE_PUBLISHABLE_KEY', 'pk_test_probe')
+
+    account = SimpleNamespace(capabilities=[], get_public_apps=AsyncMock(return_value=[]))
+    server = MagicMock()
+    server._server = SimpleNamespace(account=account)
+
+    conn = _make_conn(server=server)
+    result = await PublicCommands.on_rrext_public_probe(conn, {'command': 'rrext_public_probe'})
+
+    assert result['body']['stripePublishableKey'] == 'pk_test_probe'
+
+
+@pytest.mark.asyncio
+async def test_on_rrext_public_probe_omits_stripe_key_when_unset(monkeypatch):
+    """
+    Servers without billing (OSS, unset env) omit the field entirely rather
+    than sending an empty string.
+    """
+    monkeypatch.setattr(cmd_public, 'getVersion', lambda: '9.9.9')
+    monkeypatch.delenv('RR_STRIPE_PUBLISHABLE_KEY', raising=False)
+
+    account = SimpleNamespace(capabilities=[], get_public_apps=AsyncMock(return_value=[]))
+    server = MagicMock()
+    server._server = SimpleNamespace(account=account)
+
+    conn = _make_conn(server=server)
+    result = await PublicCommands.on_rrext_public_probe(conn, {'command': 'rrext_public_probe'})
+
+    assert 'stripePublishableKey' not in result['body']
+
+
 # ---------------------------------------------------------------------------
 # Constructor (no-op)
 # ---------------------------------------------------------------------------

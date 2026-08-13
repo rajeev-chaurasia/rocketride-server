@@ -30,6 +30,7 @@ import { handleMissingEnvVars } from '../shared/util/envVarCheck';
 import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo } from '../shared/util/deployMapping';
 import type { DeploymentWebviewToHost, DeploymentLoadPayload } from './types/deployTypes';
 import type { LogSessionWebviewToHost } from './types/logTypes';
+import { getStripePublishableKey } from './shared/stripe-key';
 
 // =============================================================================
 // CONSTANTS
@@ -749,6 +750,14 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				}
 
 				// Checkout flow — bridge billing SDK calls for the CheckoutModal
+				case 'checkout:getStripeKey': {
+					// Server-supplied publishable key (cached per URI) so the
+					// CheckoutModal mounts Stripe for THIS server's account.
+					const key = await getStripePublishableKey(this.connectionManager.getClient());
+					webview.postMessage({ type: 'checkout:stripeKey', key });
+					break;
+				}
+
 				case 'checkout:fetchPlans': {
 					try {
 						const billingClient = this.connectionManager.getClient();

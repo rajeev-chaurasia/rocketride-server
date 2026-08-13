@@ -541,4 +541,13 @@ export interface ServerInfoResult {
 	 * public apps (e.g. landing page) before login.
 	 */
 	apps?: AppManifestEntry[];
+
+	/**
+	 * Stripe publishable key (`pk_*`) configured on this server.
+	 *
+	 * Lets clients initialise Stripe Elements with the key matching the
+	 * server's Stripe account (test vs live) instead of a build-time value.
+	 * Absent on servers without billing (OSS).
+	 */
+	stripePublishableKey?: string;
 }
