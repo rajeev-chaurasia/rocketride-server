@@ -46,6 +46,7 @@ import { AppErrorBoundary } from './AppErrorBoundary';
 import { OverlayManager, useOverlay } from './OverlayManager';
 import { HostChromeProvider, useHostChromeState } from './HostChromeContext';
 import { AppFrame } from './AppFrame';
+import RocketRideWordmark from '../../assets/icons/RocketRideWordmark';
 import Sidebar from './Sidebar';
 import StatusBar from './StatusBar';
 import LoadingScreen from './LoadingScreen';
@@ -220,6 +221,18 @@ const styles = {
 		flex: 1,
 		minWidth: 0,
 		minHeight: 0,
+	} as CSSProperties,
+	/** Faint brand wordmark pinned to the client area's lower-left; shown only
+	    while a sidebar-less (full-screen) app owns the client area. The wrapper
+	    carries the theme text color so the SVG (fill=currentColor) tracks theme
+	    changes without a palette-mode observer. */
+	fullScreenWatermark: {
+		position: 'absolute',
+		left: 16,
+		bottom: 12,
+		opacity: 0.15,
+		pointerEvents: 'none',
+		color: 'var(--rr-text-primary)',
 	} as CSSProperties,
 };
 
@@ -660,6 +673,10 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 							<LoadingScreen />
 						) : null}
 					</div>
+
+					{/* Faint brand mark for full-screen (sidebar-less) apps; gated on a
+					    mounted app UI so it never overlays boot/loading/error surfaces. */}
+					{hasAppUi && <FullScreenWatermark />}
 				</div>
 
 				{/* Load-failure modal — a switch-to-app failed while the current app
@@ -742,6 +759,35 @@ const SidebarWithOverlay: React.FC<{
 			isSaas={isSaas}
 			onOverlay={onOverlay}
 		/>
+	);
+};
+
+// =============================================================================
+// FULL-SCREEN WATERMARK — faint brand mark for sidebar-less apps
+// =============================================================================
+
+/**
+ * Faint RocketRide wordmark overlaid on the client area's lower-left corner.
+ *
+ * Presence mirrors the Sidebar's self-hide rule, inverted: an app whose
+ * AppLayout declares no sidebar registers nothing in the host-chrome sidebar
+ * slot, the standard chrome (and the wordmark in its header) is absent, and
+ * the app spans the full client area — so the brand mark surfaces here
+ * instead. Apps WITH a sidebar already carry the wordmark in the chrome, so
+ * the watermark withdraws. Must render inside HostChromeProvider.
+ *
+ * Purely decorative: pointer events pass through and it is hidden from the
+ * accessibility tree.
+ */
+const FullScreenWatermark: React.FC = () => {
+	const { sidebarContent } = useHostChromeState();
+	// A registered sidebar means the standard chrome is on screen — no mark.
+	if (sidebarContent != null) return null;
+	return (
+		<div style={styles.fullScreenWatermark} aria-hidden="true">
+			{/* currentColor fills from the wrapper's --rr-text-primary */}
+			<RocketRideWordmark height={60} color="currentColor" />
+		</div>
 	);
 };
 

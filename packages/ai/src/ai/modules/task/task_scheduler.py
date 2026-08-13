@@ -340,20 +340,35 @@ class TaskScheduler:
             pipeline = dict(pipeline)
             pipeline['source'] = source_id
 
+            # Owner rung: a 'user~{uid}' slot is a PERSONAL (@me) deployment —
+            # the run is USER-owned and bills to the owner's team in this org;
+            # a plain team id is the team-owned dispatch (no human identity).
+            if team_id.startswith('user~'):
+                owner_kind, owner_user = 'user', team_id[len('user~') :]
+                billing_team = await account.resolve_billing_team(org_id, owner_user)
+                if not billing_team:
+                    # Permission-shaped: permanent until a human acts (the owner
+                    # joined no team in this org) — mark errored, don't retry.
+                    error(f'[SCHEDULER] {entry.key}: owner has no billing team in org; marking errored')
+                    await self._mark_errored(org_id, team_id, project_id)
+                    return
+            else:
+                owner_kind, owner_user, billing_team = 'team', '', team_id
+
             try:
                 ttl = sched.get('ttl')
-                # The run executes AS THE TEAM and carries no human identity —
-                # who deployed lives in the deployment history, not on the run.
                 task_token = await start_server_task_as_team(
                     self._server,
                     pipeline,
                     org_id=org_id,
-                    team_id=team_id,
+                    team_id=billing_team,
                     trigger='schedule',
                     ttl=int(ttl) if isinstance(ttl, (int, float)) and ttl else None,
                     # Per-source execution settings ride the schedule record.
                     trace_level=sched.get('traceLevel') or 'full',
                     debug_out=bool(sched.get('debugOut')),
+                    owner_kind=owner_kind,
+                    owner_user_id=owner_user,
                 )
             except PermissionError as e:
                 # Permission-shaped failures are permanent until a human acts —

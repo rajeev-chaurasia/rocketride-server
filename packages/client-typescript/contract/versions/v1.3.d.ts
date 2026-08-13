@@ -24,7 +24,7 @@
 // FROZEN rocketride SDK contract — floor v1.3 — never edit by hand
 // =============================================================================
 // Floor key:     1.3 (MAJOR.MINOR of packages/client-typescript/package.json)
-// Source commit: 04eddb914d2f6e59c8af5537444566b08809a0d4
+// Source commit: f230fdbb15a8ac83c6ba38d78a4c8f9d53fafed3
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder client-typescript:freeze
 //
@@ -1272,14 +1272,16 @@ export interface SchedulePreview {
  * A task's run log is ONE continuous JSONL event stream per identity;
  * individual runs are chapters (tracks) inside it. Streams are addressed by
  * the plain identity pair (`projectId` + `source`) plus the SCOPE — never by
- * token. THE SCOPE IS THE KIND: `teamId` present addresses that team's
- * DEPLOY continuum (deploy runs execute as the team and log into its tree —
- * teammates with monitor rights can watch/replay); absent addresses the
- * caller's own DEV stream. There is no run-kind wire argument.
+ * token. `teamId` present addresses that team's DEPLOY continuum (deploy
+ * runs execute as the team and log into its tree — teammates with monitor
+ * rights can watch/replay). Absent, the optional `runKind` selects the
+ * caller's OWN continuum: the dev stream (default) or the caller's PERSONAL
+ * (@me) deploy stream — deploy-kind but user-owned, the one case
+ * teamId-presence cannot express.
  */
 /**
- * The two run kinds. Not part of stream addressing (the scope decides) —
- * still stamped on event bodies for client-side filtering.
+ * The two run kinds. Stamped on event bodies for client-side filtering,
+ * and usable as the teamless-scope selector on LogStreamRef (the @me case).
  */
 export type LogRunKind = "dev" | "deploy";
 /** Identity addressing one run-log stream. */
@@ -1288,9 +1290,15 @@ export interface LogStreamRef {
     source: string;
     /**
      * A team id addresses that team's deploy continuum; omitted = the
-     * caller's own dev stream.
+     * caller's own stream (see runKind).
      */
     teamId?: string;
+    /**
+     * Teamless-scope selector: omitted/'dev' = the caller's dev stream;
+     * 'deploy' = the caller's personal (@me) deploy stream. Ignored when
+     * teamId is set (a team scope is always the deploy continuum).
+     */
+    runKind?: LogRunKind;
 }
 /** One chapter (track) — a run inside the continuum. */
 export interface LogChapter {
@@ -4410,9 +4418,13 @@ export declare class DataPipe {
  * - `{ projectId, source }` — monitors the CALLER's own dev run of the
  *   project/source (the server binds the connection's user identity).
  * - `{ teamId, projectId, source }` — monitors the team's DEPLOYED run.
+ * - `{ runKind: 'deploy', projectId, source }` — monitors the CALLER's own
+ *   PERSONAL (@me) deploy run: deploy-kind but user-owned, the one case
+ *   teamId-presence cannot express.
  *
- * The scope IS the kind: teamId present addresses the deploy continuum,
- * absent addresses your dev run — there is no run-kind argument.
+ * teamId present always addresses the team's deploy continuum (runKind is
+ * ignored there); absent, the optional runKind selects between your dev
+ * run (default) and your personal deploy run.
  */
 export type MonitorKey = {
     token: string;
@@ -4421,6 +4433,7 @@ export type MonitorKey = {
     projectId: string;
     source: string;
     pipeId?: number;
+    runKind?: "dev" | "deploy";
 };
 export declare class RocketRideClient extends DAPClient {
     /** Maps pipe_id → SSE callback for pipe-scoped real-time event dispatch. */

@@ -133,11 +133,11 @@ class TestScopePaths:
         # Deploy: the internal-identity scope grammar + team id as scope id.
         assert scope_paths('deploy', CLIENT, TEAM) == (f'@/Team/={TEAM}/', TEAM)
 
-    def test_deploy_without_team_is_an_error(self):
-        # A deploy run with no team has no valid home — fail loudly rather
-        # than silently landing team output in a user tree.
-        with pytest.raises(ValueError):
-            scope_paths('deploy', CLIENT, '')
+    def test_deploy_without_team_is_user_scoped(self):
+        # A TEAMLESS deploy is a USER-OWNED (@me) deploy: its continuum lives
+        # in the owner's user tree — private, like a dev run — distinguished
+        # from the dev continuum by the '.deploy.' path segment.
+        assert scope_paths('deploy', CLIENT, '') == ('', CLIENT)
 
     @pytest.mark.parametrize('bad', ['../x', './x', '/x', 'a/b', 'a\\b', '.', '..', '@x', '=x', '.x'])
     def test_deploy_rejects_path_unsafe_team_ids(self, bad):
@@ -238,16 +238,17 @@ class TestTeamScopedReader:
         assert outputs == ['deploy-0', 'deploy-1', 'deploy-2']
 
     @pytest.mark.asyncio
-    async def test_unscoped_deploy_reader_is_rejected_at_construction(self, istore, spool_root):
-        # Deploy continua have no user-scope home anymore: building a deploy
-        # reader without a team fails LOUDLY at construction (same helper,
-        # same rule as the writer) instead of quietly reading nothing.
-        with pytest.raises(ValueError):
-            run_log.RunLogReader(
-                FileStore(Store(istore), CLIENT, RequestContext.internal('test')),
-                CLIENT,
-                PROJECT,
-                SOURCE,
-                'deploy',
-                spool_root=spool_root,
-            )
+    async def test_unscoped_deploy_reader_is_user_scoped(self, istore, spool_root):
+        # A teamless deploy reader targets the caller's OWN @me continuum in
+        # the user tree (same helper, same rule as the writer) — never a
+        # team's stream.
+        reader = run_log.RunLogReader(
+            FileStore(Store(istore), CLIENT, RequestContext.internal('test')),
+            CLIENT,
+            PROJECT,
+            SOURCE,
+            'deploy',
+            spool_root=spool_root,
+        )
+        assert reader._scope_prefix == ''
+        assert reader._scope_id == CLIENT

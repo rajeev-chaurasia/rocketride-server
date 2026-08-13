@@ -426,6 +426,16 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 		});
 	}, [cm, renderPhase]);
 
+	// The user's default org changed (this tab or any other connection). The
+	// server only NOTIFIES — what to do is this client's choice. The shell's
+	// choice: reload, which re-authenticates and re-bootstraps under the
+	// user's current default org.
+	useEffect(() => {
+		return cm.on('shell:orgChanged', () => {
+			window.location.reload();
+		});
+	}, [cm]);
+
 	// Sign-in request from marketplace
 	useEffect(() => {
 		return cm.on('shell:loginRequest', ({ appId, register }: { appId?: string; register?: boolean }) => {

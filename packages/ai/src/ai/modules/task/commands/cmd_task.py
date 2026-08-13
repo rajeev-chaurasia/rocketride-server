@@ -54,7 +54,7 @@ import os
 from typing import TYPE_CHECKING, Dict, Any
 from ai.common.dap import DAPConn, TransportBase
 from ai.account import account
-from ai.account.models import resolve_task_permissions
+from ai.account.models import resolve_run_permissions
 from rocketride import TASK_STATE
 
 # Only import for type checking to avoid circular import errors
@@ -129,14 +129,11 @@ class TaskCommands(DAPConn):
             # profile-assigned development team for client connections, or the
             # deployment's team for the trusted in-process dispatch (which
             # synthesizes an AccountInfo with defaultTeam = the run's team).
-            # Clients do not choose a team at launch; a stray teamId is
-            # rejected rather than silently ignored so the caller is never
-            # surprised by which team a run was billed/authorized under.
+            # A client-supplied teamId is IGNORED, never honored — the caller
+            # must not be able to pick the team a run is billed/authorized/
+            # secret-resolved under (same doctrine as the org IDOR fixes).
             args = request.get('arguments') or {}
             team_id = self._account_info.defaultTeam
-            requested_team = args.get('teamId')
-            if requested_team and requested_team != team_id:
-                raise PermissionError('Tasks run in your assigned development team; change it in your profile')
 
             # Verify task.control on the run team BEFORE any secret handling,
             # since the env merge below pulls that team's secrets.
@@ -175,13 +172,20 @@ class TaskCommands(DAPConn):
             # cannot spoof a deploy run into the team continuum.
             run_kind = getattr(self, '_trusted_run_kind', 'dev')
             trigger = getattr(self, '_trusted_trigger', '') or ''
+            # Owner scope rides the same trusted channel: a TEAM-owned deploy
+            # (@team) or a USER-owned run (an interactive .use, or a personal
+            # @me deploy). Defaults from run_kind when the dispatch didn't set
+            # it (an ordinary .use is user-owned).
+            owner_kind = getattr(self, '_trusted_owner_kind', '') or ('team' if run_kind == 'deploy' else 'user')
 
-            # Layer org → team → user secrets on top. Deploy runs skip the
-            # USER layer deliberately: a deployment's configuration must not
-            # depend on which human deployed it (org+team only).
+            # Layer org → team → user secrets on top. A TEAM-owned run skips the
+            # USER layer deliberately (a @team deployment's config must not
+            # depend on which human deployed it); a USER-owned run — an
+            # interactive .use OR a personal @me deploy — applies its owner's
+            # user layer.
             merged_env.update(
                 await account.get_merged_env(
-                    user_id='' if run_kind == 'deploy' else self._account_info.userId,
+                    user_id='' if owner_kind == 'team' else self._account_info.userId,
                     org_id=org_id,
                     team_id=team_id,
                 )
@@ -200,6 +204,7 @@ class TaskCommands(DAPConn):
                 org_id=org_id,
                 env=merged_env,
                 run_kind=run_kind,
+                owner_kind=owner_kind,
                 trigger=trigger,
             )
 
@@ -345,8 +350,10 @@ class TaskCommands(DAPConn):
                     - projectId (str)): The project id
                     - source (str): The source id
                     - teamId (str, optional): Address the team's DEPLOY run;
-                      absent addresses the caller's own DEV run (the scope
-                      IS the kind — there is no run-kind argument)
+                      absent addresses the caller's own run
+                    - runKind (str, optional): Teamless continuum selector —
+                      absent/'dev' = the caller's dev run, 'deploy' = the
+                      caller's personal @me deploy run
 
         Returns:
             Dict[str, Any]: DAP response with token
@@ -360,6 +367,7 @@ class TaskCommands(DAPConn):
             project_id = args.get('projectId', None)
             source = args.get('source', None)
             team_id = args.get('teamId') or ''
+            run_kind = args.get('runKind') or ''
 
             # Verify permission against the requested scope: the named team
             # for a deploy lookup, the caller's default context otherwise
@@ -371,7 +379,7 @@ class TaskCommands(DAPConn):
 
             # Get the task control (owner scoping + permission check inside)
             control = self._server.get_task_control_by_project(
-                project_id, source, self._account_info, require='task.monitor', team_id=team_id
+                project_id, source, self._account_info, require='task.monitor', team_id=team_id, run_kind=run_kind
             )
 
             # Return successful response with status data
@@ -410,9 +418,13 @@ class TaskCommands(DAPConn):
 
             tasks = []
 
-            # Iterate all tasks the caller has access to (own, teammate, or org admin).
+            # Iterate all tasks the caller may see: user-owned runs (dev and
+            # @me deploys) are OWNER-ONLY — the caller's own runs stay
+            # visible across an org switch (identity, not team, is the key)
+            # and a teammate's personal runs never appear; team-owned deploy
+            # runs list for anyone with permissions on the run's team.
             for control in self._server._task_control.values():
-                if not resolve_task_permissions(self._account_info, control.teamId):
+                if not resolve_run_permissions(self._account_info, control):
                     continue
 
                 # Get current status for name and status string

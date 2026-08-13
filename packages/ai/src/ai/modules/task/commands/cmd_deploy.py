@@ -111,15 +111,27 @@ class _DeployBase(DAPConn):
         return out
 
     def _require_team(self, args: Dict[str, Any], perm: str) -> str:
-        """Extract the REQUIRED ``teamId`` and verify ``perm`` on it.
+        """Extract the REQUIRED deploy target and verify ``perm`` on it.
 
         Deploy targets are always explicit — there is deliberately no fallback
         to the caller's development team, so a user changing their profile
         assignment can never silently re-target a deployment.
+
+        The sentinel ``teamId='@me'`` targets the CALLER's PERSONAL space:
+        the returned owner key is ``user~{userId}``, which rides every
+        ``team_id`` slot downstream (deployment records, scheduler keys,
+        events) and can never collide with a real team id (team uuids never
+        contain '~'). No team permission applies to your own space — the
+        run's billing/secrets team is resolved at fire time
+        (``account.resolve_billing_team``).
         """
         team_id = args.get('teamId')
         if not team_id:
             raise ValueError('teamId is required')
+        if team_id == '@me':
+            if not self._account_info.userId:
+                raise PermissionError('Personal (@me) deployments require an authenticated user')
+            return f'user~{self._account_info.userId}'
         self.verify_team_permission(team_id, perm)
         return team_id
 
@@ -267,7 +279,10 @@ class DeployCommands(_DeployBase):
             org_id=org_id,
         )
 
-        body: Dict[str, Any] = {'artifact': entry}
+        # The resolved org rides every deploy response (B1 transparency):
+        # the caller always sees which organization the registry write
+        # landed in — cross-org targeting goes through an org switch.
+        body: Dict[str, Any] = {'artifact': entry, 'orgId': org_id}
         await self._notify_deploy_changed(org_id, '', project_id, 'add')
         if args.get('deployTo'):
             # One-step add+deploy — same checks as rrext_deploy_pipe deploy.

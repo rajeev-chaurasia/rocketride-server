@@ -78,7 +78,13 @@ from .commands.cmd_deploy import DeployCommands
 from .commands.cmd_pipe import DeployPipeCommands
 from .commands.cmd_log import LogCommands
 from .commands.cmd_store import StoreCommands
-from ai.account.models import AccountInfo, RequestContext, resolve_task_permissions, resolve_team_permissions
+from ai.account.models import (
+    AccountInfo,
+    RequestContext,
+    resolve_run_permissions,
+    resolve_task_permissions,
+    resolve_team_permissions,
+)
 from ai.common.account import AccountPipelineValidation
 
 # Only import for type checking to avoid circular import errors
@@ -594,7 +600,13 @@ class TaskConn(
         # sys.admin bypasses all team permission checks.
         if self._account_info and not self._account_info.auth.startswith(('pk_', 'tk_')):
             if 'sys.admin' not in (self._account_info.sysPermissions or []):
-                perms = resolve_task_permissions(self._account_info, control.teamId)
+                # Run-scoped resolution: a USER-owned run (dev or @me deploy)
+                # is private — full access for its owner (surviving an org
+                # switch: the owner is unchanged even when the run's team is
+                # now foreign), none for anyone else, and the billing teamId
+                # never grants a teammate access. Team-owned runs resolve
+                # through team membership.
+                perms = resolve_run_permissions(self._account_info, control)
                 if not perms:
                     raise PermissionError('Access denied: no permissions for this task')
                 if permissions and permissions not in perms:

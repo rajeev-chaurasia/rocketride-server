@@ -449,6 +449,18 @@ class DeployPipeCommands(_DeployBase):
         # is a TaskConn mixin — a top-level import would be circular.
         from ..task_server_facade import start_server_task_as_team
 
+        # Owner rung: a 'user~{uid}' slot is a PERSONAL (@me) deployment —
+        # the run is USER-owned (private storage/logs/visibility) and its
+        # billing/secrets team is resolved from the owner's context in the
+        # deployment's org; a plain team id stays the team-owned dispatch.
+        if team_id.startswith('user~'):
+            owner_kind, owner_user = 'user', team_id[len('user~') :]
+            billing_team = await account.resolve_billing_team(org_id, owner_user)
+            if not billing_team:
+                raise ValueError('Personal deployments need a team in this organization for billing/secrets')
+        else:
+            owner_kind, owner_user, billing_team = 'team', '', team_id
+
         # A manual run honors the source's execution settings but NOT its
         # run window: the ttl window belongs to scheduled fires — a run the
         # user started runs until it finishes or the user stops it.
@@ -457,11 +469,13 @@ class DeployPipeCommands(_DeployBase):
             self._server,
             pipeline,
             org_id=org_id,
-            team_id=team_id,
+            team_id=billing_team,
             trigger='manual',
             ttl=None,
             trace_level=sched.get('traceLevel') or 'full',
             debug_out=bool(sched.get('debugOut')),
+            owner_kind=owner_kind,
+            owner_user_id=owner_user,
         )
         # Register the token with the scheduler so the next cron tick sees
         # this run and skips instead of dispatching a second one.

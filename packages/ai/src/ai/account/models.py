@@ -27,7 +27,7 @@
 # =============================================================================
 
 from dataclasses import dataclass
-from typing import NotRequired, Optional, TypedDict
+from typing import Any, NotRequired, Optional, TypedDict
 
 from pydantic import BaseModel
 
@@ -310,6 +310,50 @@ def resolve_task_permissions(account_info: AccountInfo, task_team_id: str) -> li
                 return list(_FULL_TEAM_PERMISSIONS)
             return list(team.get('permissions', []))
     return []
+
+
+def resolve_run_permissions(account_info: AccountInfo, control: Any) -> list[str]:
+    """
+    Return the caller's effective permissions for one RUN (a TASK_CONTROL).
+
+    CONTRACT — RETURNS ``[]`` on no access (never raises), like
+    ``resolve_task_permissions``.
+
+    USER-owned runs (interactive dev runs and personal @me deploys) are
+    PRIVATE: the owner holds full permissions, everyone else none — the
+    run's billing ``teamId`` NEVER grants visibility into a personal run.
+    TEAM-owned runs resolve through team membership exactly as before.
+    sys.admin and internal (pod service) credentials keep full access to
+    both (resolved here for user-owned runs, inside
+    ``resolve_task_permissions`` for team-owned ones).
+
+    Anonymous/legacy controls with no owner id (OSS single-user runs)
+    fall through to the team resolution so the synthetic local grants
+    keep working.
+
+    Args:
+        account_info: The authenticated caller's session.
+        control: The run's TASK_CONTROL (or any object carrying
+            ``owner_kind``/``owner_id``/``run_kind``/``teamId``).
+
+    Returns:
+        Effective permission list, or empty list if the caller may not
+        reach the run.
+    """
+    # Owner scope: explicit stamp wins; fall back to the run_kind default
+    # for controls built before owner_kind existed.
+    owner_kind = getattr(control, 'owner_kind', '') or (
+        'team' if getattr(control, 'run_kind', '') == 'deploy' else 'user'
+    )
+    owner_id = getattr(control, 'owner_id', '') or ''
+    if owner_kind == 'user' and owner_id:
+        sys_perms = getattr(account_info, 'sysPermissions', []) or []
+        if 'sys.admin' in sys_perms or 'internal' in sys_perms:
+            return list(_FULL_TEAM_PERMISSIONS)
+        if owner_id == getattr(account_info, 'userId', None):
+            return list(_FULL_TEAM_PERMISSIONS)
+        return []
+    return resolve_task_permissions(account_info, getattr(control, 'teamId', ''))
 
 
 def resolve_team_permissions(account_info: AccountInfo, team_id: str) -> list[str]:

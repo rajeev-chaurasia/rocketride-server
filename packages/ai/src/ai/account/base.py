@@ -318,6 +318,31 @@ class AccountBase(ABC):
         """
         return {'transactions': [], 'total': 0, 'page': page, 'pageSize': page_size}
 
+    async def resolve_billing_team(self, org_id: str, user_id: str) -> str:
+        """
+        The team a USER-owned (@me) run bills/resolves secrets under, in ONE org.
+
+        A personal deployment's runs are user-owned for visibility and
+        storage, but billing and the team secret layer still need a team
+        context INSIDE the deployment's org (the owner's current default
+        team when it belongs to that org, else any team of theirs there).
+        Resolved at FIRE time so it always reflects the owner's current
+        membership — never persisted on the deployment record.
+
+        Default implementation returns '' (no team context — the caller
+        treats a personal deployment as unfireable). The OSS edition
+        returns the single synthetic 'local' team; the SaaS extension
+        resolves against real memberships.
+
+        Args:
+            org_id: The deployment's organisation.
+            user_id: The owning user.
+
+        Returns:
+            A team id in ``org_id``, or '' when the user has none there.
+        """
+        return ''
+
     # =========================================================================
     # CLOUD DATABASE — env-gated broker call; raises when unconfigured
     # =========================================================================

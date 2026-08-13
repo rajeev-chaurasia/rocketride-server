@@ -363,6 +363,12 @@ export class ConnectionManager implements IConnectionManager {
 					this.emit('store:changed', (message.body ?? {}) as ShellConnectionEventMap['store:changed']);
 					return;
 				}
+				// The user's default org changed — a pure notification; each
+				// client decides how to react (the shell reloads).
+				if (message.event === 'apaext_org_changed') {
+					this.emit('shell:orgChanged', (message.body ?? { orgId: '' }) as ShellConnectionEventMap['shell:orgChanged']);
+					return;
+				}
 				// The service catalog changed server-side: re-fetch the summary
 				// cache after a random delay — the push is a broadcast, and the
 				// jitter keeps the whole fleet from refetching in the same

@@ -212,7 +212,7 @@ def test_get_task_control_with_require_denies_without_membership(monkeypatch):
     """No permissions on the task's team -> uniform access-denied error."""
     from ai.modules.task import task_server as ts_mod
 
-    monkeypatch.setattr(ts_mod, 'resolve_task_permissions', lambda info, team: [])
+    monkeypatch.setattr(ts_mod, 'resolve_run_permissions', lambda info, control: [])
 
     ts = _make_server()
     ts._task_control['tk_1'] = _make_control()
@@ -226,7 +226,7 @@ def test_get_task_control_with_require_enforces_permission(monkeypatch):
     """Membership without the required permission raises PermissionError."""
     from ai.modules.task import task_server as ts_mod
 
-    monkeypatch.setattr(ts_mod, 'resolve_task_permissions', lambda info, team: ['task.monitor'])
+    monkeypatch.setattr(ts_mod, 'resolve_run_permissions', lambda info, control: ['task.monitor'])
 
     ts = _make_server()
     ts._task_control['tk_1'] = _make_control()
@@ -240,7 +240,7 @@ def test_get_task_control_with_require_passes_when_granted(monkeypatch):
     """A granted permission lets get_task_control return the control unmodified."""
     from ai.modules.task import task_server as ts_mod
 
-    monkeypatch.setattr(ts_mod, 'resolve_task_permissions', lambda info, team: ['task.debug'])
+    monkeypatch.setattr(ts_mod, 'resolve_run_permissions', lambda info, control: ['task.debug'])
 
     ts = _make_server()
     control = _make_control()

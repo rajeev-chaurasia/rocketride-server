@@ -134,6 +134,8 @@ def account_stub(monkeypatch):
             return_value={'rows': [{'action': 'publish', 'seq': 1}], 'total': 1, 'page': 1, 'pageSize': 50}
         ),
         audit=AsyncMock(),
+        # Personal (@me) dispatch resolves the owner's billing team at fire time.
+        resolve_billing_team=AsyncMock(return_value='team-1'),
     )
     # Both command mixins import `account` independently — patch each module's
     # binding so pipe handlers (cmd_pipe) hit the stub too.
@@ -289,7 +291,17 @@ class TestReads:
         dispatched = {}
 
         async def fake_dispatch(
-            server, pipeline, *, org_id, team_id, trigger, ttl=None, trace_level=None, debug_out=False
+            server,
+            pipeline,
+            *,
+            org_id,
+            team_id,
+            trigger,
+            ttl=None,
+            trace_level=None,
+            debug_out=False,
+            owner_kind='team',
+            owner_user_id='',
         ):
             dispatched.update(
                 pipeline=pipeline,
@@ -299,6 +311,8 @@ class TestReads:
                 ttl=ttl,
                 trace_level=trace_level,
                 debug_out=debug_out,
+                owner_kind=owner_kind,
+                owner_user_id=owner_user_id,
             )
             return 'tk_manual'
 
@@ -413,6 +427,78 @@ class TestReads:
 # ============================================================================
 # state / schedules
 # ============================================================================
+
+
+class TestPersonalDeploy:
+    """The @me (personal) deploy target: owner key, dispatch identity, billing."""
+
+    @pytest.mark.asyncio
+    async def test_me_deploy_binds_the_user_audience_without_a_team_check(self, account_stub):
+        # '@me' resolves to the caller's owner key and needs NO team grant:
+        # the account here has ZERO teams, so any team-permission path would
+        # raise — binding must still succeed into user~{uid}.
+        conn = _make_conn(_account_info(teams=[]))
+        await conn._deploy_deploy({}, {'projectId': 'proj-1', 'teamId': '@me', 'version': 1})
+        args = account_stub.deployments_deploy.await_args.args
+        assert args[1] == 'user~user-1'
+
+    @pytest.mark.asyncio
+    async def test_me_run_dispatches_user_owned_with_billing_team(self, account_stub, monkeypatch):
+        # An @me manual fire dispatches a USER-owned run: the owner rides
+        # owner_user_id, the billing team is resolved at fire time, and the
+        # overlap guard keys on the owner key (never the billing team).
+        dispatched = {}
+
+        async def fake_dispatch(server, pipeline, **kw):
+            dispatched.update(kw, pipeline=pipeline)
+            return 'tk_me'
+
+        monkeypatch.setattr('ai.modules.task.task_server_facade.start_server_task_as_team', fake_dispatch)
+        account_stub.deployments_get.return_value = {
+            'teamId': 'user~user-1',
+            'projectId': 'proj-1',
+            'state': 'enabled',
+            'version': 1,
+            'schedules': {},
+        }
+        conn = _make_conn(_account_info(teams=[]))
+        result = await conn._deploy_run({}, {'projectId': 'proj-1', 'sourceId': 's1', 'teamId': '@me'})
+        assert result['body'] == {'token': 'tk_me', 'version': 1}
+        assert dispatched['owner_kind'] == 'user'
+        assert dispatched['owner_user_id'] == 'user-1'
+        # Billing team comes from resolve_billing_team, not from the target.
+        assert dispatched['team_id'] == 'team-1'
+        account_stub.resolve_billing_team.assert_awaited_once_with('org-1', 'user-1')
+        # Overlap guard + mark_run key on the OWNER key.
+        conn._test_scheduler.register_manual_run.assert_called_once_with('user~user-1', 'proj-1', 's1', 'tk_me')
+        account_stub.deployments_mark_run.assert_awaited_once_with('org-1', 'user~user-1', 'proj-1', 's1')
+
+    @pytest.mark.asyncio
+    async def test_me_run_refuses_without_a_billing_team(self, account_stub, monkeypatch):
+        # No team in the deployment's org -> the personal run cannot bill or
+        # resolve team secrets: refuse rather than misattribute.
+        async def fake_dispatch(*a, **k):
+            raise AssertionError('must not dispatch')
+
+        monkeypatch.setattr('ai.modules.task.task_server_facade.start_server_task_as_team', fake_dispatch)
+        account_stub.resolve_billing_team.return_value = ''
+        account_stub.deployments_get.return_value = {
+            'teamId': 'user~user-1',
+            'projectId': 'proj-1',
+            'state': 'enabled',
+            'version': 1,
+            'schedules': {},
+        }
+        conn = _make_conn(_account_info(teams=[]))
+        with pytest.raises(ValueError, match='billing'):
+            await conn._deploy_run({}, {'projectId': 'proj-1', 'sourceId': 's1', 'teamId': '@me'})
+
+    @pytest.mark.asyncio
+    async def test_me_requires_an_authenticated_user(self, account_stub):
+        # '@me' with no user identity is meaningless — uniform denial.
+        conn = _make_conn(_account_info(user_id='', teams=[]))
+        with pytest.raises(PermissionError, match='authenticated'):
+            await conn._deploy_deploy({}, {'projectId': 'proj-1', 'teamId': '@me', 'version': 1})
 
 
 class TestStateAndSchedules:

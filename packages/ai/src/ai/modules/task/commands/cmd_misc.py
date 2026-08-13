@@ -51,7 +51,7 @@ from rocketride import EVENT_TYPE
 from rocketlib import validatePipeline
 from ai.common.dap import DAPConn, TransportBase
 from ai.common.list_rows import paginate_rows
-from ai.account.models import resolve_task_permissions
+from ai.account.models import resolve_run_permissions
 from ..pipeline import resolve_implied_source, resolve_pipeline_env
 from .. import services_catalog
 from .cmd_monitor import owner_key
@@ -426,10 +426,9 @@ class MiscCommands(DAPConn):
         server = self._server
         caller_user_id = self._account_info.userId
 
-        # Snapshot tasks the caller has access to (own, teammate, org admin)
-        task_controls = [
-            c for c in server._task_control.values() if resolve_task_permissions(self._account_info, c.teamId)
-        ]
+        # Snapshot tasks the caller may see (run-scoped: user-owned runs are
+        # owner-only; team-owned runs need permissions on the run's team)
+        task_controls = [c for c in server._task_control.values() if resolve_run_permissions(self._account_info, c)]
         # Connections are user-scoped (not task-scoped), so filter by userId
         conn_items = [
             (cid, conn)
@@ -487,8 +486,8 @@ class MiscCommands(DAPConn):
             task_name = getattr(status, 'name', None) or control.source
             # Monitor keys are owner-scoped — build from the control's owner
             # (once per control; they do not vary per connection).
-            project_key = owner_key(control.owner_id, control.project_id, control.source)
-            project_wildcard_key = f'p.{control.owner_id}.{control.project_id}.*'
+            project_key = owner_key(control.run_kind, control.owner_id, control.project_id, control.source)
+            project_wildcard_key = f'p.{control.run_kind}.{control.owner_id}.{control.project_id}.*'
             pipe_prefix = f'{project_key}.'
             for cid, conn in conn_items:
                 if not hasattr(conn, '_monitors'):

@@ -174,6 +174,27 @@ def drop_connection(user_id: str, connection_id: Any) -> bool:
 # =============================================================================
 
 
+def drop_user(user_id: str) -> bool:
+    """
+    Drop EVERY overlay entry for a user, regardless of registering connection.
+
+    Called on an org switch: the bucket is keyed by ``user_id`` with no org
+    stamp, so a reconnect alone will not clear it and ``apply_overlay`` would
+    keep re-applying the previous org's dev bundles onto the new org's manifest
+    on every rebuild. Emptying the bucket is the only reliable clear.
+
+    Args:
+        user_id: Owner of the overlay bucket.
+
+    Returns:
+        True when the bucket held at least one entry (callers push a refresh).
+    """
+    bucket = _overlay.pop(user_id, None)
+    if bucket:
+        debug(f'[dev_overlay] dropped all {len(bucket)} entries for user {user_id} (org switch)')
+    return bool(bucket)
+
+
 def apply_overlay(user_id: str, apps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Apply a user's overlay to an assembled app list.

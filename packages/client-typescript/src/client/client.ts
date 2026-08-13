@@ -335,11 +335,17 @@ export class DataPipe {
  * - `{ projectId, source }` — monitors the CALLER's own dev run of the
  *   project/source (the server binds the connection's user identity).
  * - `{ teamId, projectId, source }` — monitors the team's DEPLOYED run.
+ * - `{ runKind: 'deploy', projectId, source }` — monitors the CALLER's own
+ *   PERSONAL (@me) deploy run: deploy-kind but user-owned, the one case
+ *   teamId-presence cannot express.
  *
- * The scope IS the kind: teamId present addresses the deploy continuum,
- * absent addresses your dev run — there is no run-kind argument.
+ * teamId present always addresses the team's deploy continuum (runKind is
+ * ignored there); absent, the optional runKind selects between your dev
+ * run (default) and your personal deploy run.
  */
-export type MonitorKey = { token: string } | { teamId?: string; projectId: string; source: string; pipeId?: number };
+export type MonitorKey =
+	| { token: string }
+	| { teamId?: string; projectId: string; source: string; pipeId?: number; runKind?: 'dev' | 'deploy' };
 
 type LifecyclePriority = 'foreground' | 'background';
 
@@ -2254,10 +2260,13 @@ export class RocketRideClient extends DAPClient {
 			if (key.pipeId !== undefined) {
 				args.pipeId = key.pipeId;
 			}
-			// The scope IS the kind: teamId addresses the team's deploy run,
-			// absent addresses the caller's own dev run.
+			// teamId addresses the team's deploy run. Absent, runKind selects
+			// the caller's own continuum: dev (default) or the personal @me
+			// deploy run.
 			if (key.teamId) {
 				args.teamId = key.teamId;
+			} else if (key.runKind === 'deploy') {
+				args.runKind = key.runKind;
 			}
 			await this.call('rrext_monitor', args);
 		}
@@ -2299,7 +2308,9 @@ export class RocketRideClient extends DAPClient {
 		if ('token' in key) {
 			return `t:${key.token}`;
 		}
-		return `p:${JSON.stringify([key.projectId, key.source, key.pipeId ?? null, key.teamId ?? ''])}`;
+		// runKind rides LAST so a registry string written before the field
+		// existed still parses (missing element -> undefined -> dev).
+		return `p:${JSON.stringify([key.projectId, key.source, key.pipeId ?? null, key.teamId ?? '', key.runKind ?? ''])}`;
 	}
 
 	/**
@@ -2311,12 +2322,19 @@ export class RocketRideClient extends DAPClient {
 		}
 		if (keyStr.startsWith('p:')) {
 			try {
-				const [projectId, source, pipeId, teamId] = JSON.parse(keyStr.slice(2)) as [string, string, number | null, string];
+				const [projectId, source, pipeId, teamId, runKind] = JSON.parse(keyStr.slice(2)) as [
+					string,
+					string,
+					number | null,
+					string,
+					string | undefined,
+				];
 				return {
 					projectId,
 					source,
 					...(pipeId !== null ? { pipeId } : {}),
 					...(teamId ? { teamId } : {}),
+					...(runKind === 'deploy' ? { runKind } : {}),
 				};
 			} catch {
 				// A malformed registry string has no valid key — skip it.

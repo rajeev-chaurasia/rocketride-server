@@ -512,10 +512,10 @@ def test_get_task_apikey_rejects_task_in_team_caller_cannot_access(monkeypatch):
     from ai.modules.task import task_conn as tc_mod
 
     # Caller has no team membership for this task's team → empty permission list.
-    monkeypatch.setattr(tc_mod, 'resolve_task_permissions', lambda info, team_id: [])
+    monkeypatch.setattr(tc_mod, 'resolve_run_permissions', lambda info, control: [])
 
     server = MagicMock()
-    fake_control = SimpleNamespace(teamId='team-other', task=SimpleNamespace(name='target'))
+    fake_control = SimpleNamespace(teamId='team-other', owner_id='team-other', task=SimpleNamespace(name='target'))
     server.get_task_control = MagicMock(return_value=fake_control)
 
     conn = _make_conn(
@@ -531,11 +531,13 @@ def test_get_task_apikey_returns_task_when_team_grants_access(monkeypatch):
     """API-key auth with the requested team permission returns the underlying task."""
     from ai.modules.task import task_conn as tc_mod
 
-    monkeypatch.setattr(tc_mod, 'resolve_task_permissions', lambda info, team_id: ['task.control'])
+    monkeypatch.setattr(tc_mod, 'resolve_run_permissions', lambda info, control: ['task.control'])
 
     target_task = SimpleNamespace(name='target')
     server = MagicMock()
-    server.get_task_control = MagicMock(return_value=SimpleNamespace(teamId='team-1', task=target_task))
+    server.get_task_control = MagicMock(
+        return_value=SimpleNamespace(teamId='team-1', owner_id='team-1', task=target_task)
+    )
 
     conn = _make_conn(
         account_info=_make_account_info(auth='ak_user-1', user_id='user-1'),
@@ -617,11 +619,13 @@ async def test_request_errors_when_debug_interface_missing(monkeypatch):
     from ai.modules.task import task_conn as tc_mod
 
     # Caller has task.debug on the task's team — get_task() returns the task.
-    monkeypatch.setattr(tc_mod, 'resolve_task_permissions', lambda info, team_id: ['task.debug'])
+    monkeypatch.setattr(tc_mod, 'resolve_run_permissions', lambda info, control: ['task.debug'])
 
     fake_task = SimpleNamespace(_debug_python=None)
     server = MagicMock()
-    server.get_task_control = MagicMock(return_value=SimpleNamespace(teamId='team-1', task=fake_task))
+    server.get_task_control = MagicMock(
+        return_value=SimpleNamespace(teamId='team-1', owner_id='team-1', task=fake_task)
+    )
     conn = _make_conn(account_info=_make_account_info(auth='ak_user-1', user_id='user-1'), server=server)
 
     response = await TaskConn.request(conn, {'command': 'continue', 'arguments': {'token': 'tk_x'}})

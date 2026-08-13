@@ -160,16 +160,18 @@ export class LogEventStream {
 		// The session owns its monitor registration: streaming needs
 		// essentially every event class, and consumers should not have to
 		// know that. Refcounted server-side, so it coexists with any host
-		// registration on the same key. The stream's teamId rides the key —
-		// a deploy stream must subscribe the team's run, not the caller's
-		// dev run (the scope IS the kind). Best-effort — a session opened
-		// before connect simply streams from disk until reconnect.
+		// registration on the same key. The stream's scope rides the key —
+		// a team stream subscribes the team's run; a teamless stream the
+		// caller's own run, with runKind selecting dev vs the personal @me
+		// deploy continuum. Best-effort — a session opened before connect
+		// simply streams from disk until reconnect.
 		void this.client
 			.addMonitor(
 				{
 					projectId: stream.projectId,
 					source: stream.source,
 					...(stream.teamId ? { teamId: stream.teamId } : {}),
+					...(!stream.teamId && stream.runKind === 'deploy' ? { runKind: stream.runKind } : {}),
 				},
 				['all'],
 			)
@@ -489,13 +491,14 @@ export class LogEventStream {
 	/** Dispose the session (stops playback, clears caches). */
 	closeEventStream(): void {
 		// Release this session's monitor registration (refcounted) — the key
-		// must match the constructor's registration exactly, teamId included.
+		// must match the constructor's registration exactly, scope included.
 		void this.client
 			.removeMonitor(
 				{
 					projectId: this.stream.projectId,
 					source: this.stream.source,
 					...(this.stream.teamId ? { teamId: this.stream.teamId } : {}),
+					...(!this.stream.teamId && this.stream.runKind === 'deploy' ? { runKind: this.stream.runKind } : {}),
 				},
 				['all'],
 			)

@@ -258,6 +258,10 @@ class Account(AccountBase):
     # (ROCKETRIDE_DB_BROKER_URL/_TOKEN); raises the cloud-sign-in error when
     # the environment is not configured — the open-source default.
 
+    async def resolve_billing_team(self, org_id: str, user_id: str) -> str:
+        """A personal (@me) run in OSS bills the single synthetic 'local' team."""
+        return 'local'
+
     # =========================================================================
     # APP MANIFEST — read from static apps.json
     # =========================================================================
