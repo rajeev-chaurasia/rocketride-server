@@ -15,6 +15,7 @@ the generic stream.
 from __future__ import annotations
 
 import contextvars
+import re
 from typing import Any, Callable, Dict, List, Optional
 
 from rocketlib import debug, warning
@@ -62,33 +63,54 @@ def gate_model_name(model: str) -> str:
 # accepts ``{'type': 'adaptive'}``. This is an explicit allowlist so unknown and
 # future model names default to the current adaptive shape instead of the
 # removed one — new enum entries must opt IN to legacy, not out of it.
-_ANTHROPIC_LEGACY_THINKING_PREFIXES = (
-    'claude-3-',  # Claude 3.x, incl. dated ids (claude-3-5-sonnet-20241022)
-    'claude-sonnet-4-5',
-    'claude-sonnet-4-6',
-    'claude-opus-4-5',
-    'claude-opus-4-6',
-    'claude-opus-4-1',
-    'claude-sonnet-4-2',  # dated Sonnet 4.0 ids (claude-sonnet-4-20250514)
-    'claude-opus-4-2',  # dated Opus 4.0 ids (claude-opus-4-20250514)
-    'claude-haiku-4-5',  # Haiku 4.5 has thinking, but only the legacy shape
-    'claude-mythos-preview',
-)
-_ANTHROPIC_LEGACY_THINKING_EXACT = frozenset(
+#
+# Matching is on the WHOLE id after deployment/date suffixes are stripped, never
+# on an open-ended prefix: a prefix rule such as ``claude-sonnet-4-5`` would also
+# swallow a future ``claude-sonnet-4-50`` and hand it the removed shape.
+_ANTHROPIC_LEGACY_THINKING_MODELS = frozenset(
     {
-        'claude-sonnet-4',
-        'claude-sonnet-4-0',
         'claude-opus-4',
         'claude-opus-4-0',
+        'claude-opus-4-1',
+        'claude-opus-4-5',
+        'claude-opus-4-6',
+        'claude-sonnet-4',
+        'claude-sonnet-4-0',
+        'claude-sonnet-4-5',
+        'claude-sonnet-4-6',
+        # Haiku 4.5 does support extended thinking, but only the legacy shape.
+        # ``claude-haiku-latest`` resolves to it, so the alias belongs here too;
+        # move it out only when the newest Haiku accepts adaptive.
+        'claude-haiku-4-5',
+        'claude-haiku-latest',
+        'claude-mythos-preview',
     }
 )
+
+# ``-YYYYMMDD`` dated ids (claude-opus-4-5-20251101) and ``-fast`` deployment
+# variants are the same model as their base id for thinking purposes.
+_ANTHROPIC_DATED_ID_RE = re.compile(r'-\d{8}$')
+_ANTHROPIC_DEPLOYMENT_SUFFIXES = ('-fast',)
+
+
+def _anthropic_base_model_id(model_gate: str) -> str:
+    """Strip dated (``-YYYYMMDD``) and deployment (``-fast``) suffixes from a model id."""
+    base = _ANTHROPIC_DATED_ID_RE.sub('', model_gate)
+    for suffix in _ANTHROPIC_DEPLOYMENT_SUFFIXES:
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return base
 
 
 def _anthropic_uses_legacy_thinking(model_gate: str) -> bool:
     """True when the model still takes ``{'type': 'enabled', 'budget_tokens': N}``."""
-    if model_gate in _ANTHROPIC_LEGACY_THINKING_EXACT:
+    base = _anthropic_base_model_id(model_gate)
+    if base in _ANTHROPIC_LEGACY_THINKING_MODELS:
         return True
-    return model_gate.startswith(_ANTHROPIC_LEGACY_THINKING_PREFIXES)
+    # Every Claude 3.x model predates adaptive thinking. The trailing hyphen keeps
+    # this a whole-segment match, so a hypothetical ``claude-30-...`` is excluded.
+    return base.startswith('claude-3-')
 
 
 def build_anthropic_thinking_kwargs(model_gate: str, model_output_tokens: int) -> Dict[str, Any]:

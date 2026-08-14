@@ -29,7 +29,11 @@ from pathlib import Path
 import json5
 import pytest
 
-from ai.common.llm_native_stream import build_anthropic_thinking_kwargs, gate_model_name
+from ai.common.llm_native_stream import (
+    _anthropic_base_model_id,
+    build_anthropic_thinking_kwargs,
+    gate_model_name,
+)
 
 # Default output-token window used where the test only cares about the shape.
 _OUT = 8192
@@ -133,6 +137,8 @@ def test_opus_47_48_keep_adaptive(model):
         'claude-opus-4-0',
         'claude-sonnet-4-0',
         'claude-haiku-4-5',
+        # Resolves to Haiku 4.5, which only accepts the legacy shape.
+        'claude-haiku-latest',
         'claude-mythos-preview',
         'openrouter/anthropic/claude-haiku-4-5',
         # Dated full ids
@@ -190,6 +196,38 @@ def test_unknown_future_models_default_to_adaptive(model):
     assert kwargs == {'thinking': _ADAPTIVE}
 
 
+@pytest.mark.parametrize(
+    'model',
+    [
+        'claude-sonnet-4-50',  # must not be swallowed by a claude-sonnet-4-5 prefix
+        'claude-opus-4-20',  # must not be swallowed by a claude-opus-4-2 prefix
+        'claude-opus-4-10',
+        'claude-haiku-4-50',
+        'claude-sonnet-4-60',
+        'claude-30-sonnet',  # must not be swallowed by the claude-3- family rule
+    ],
+)
+def test_legacy_ids_match_whole_segments_not_prefixes(model):
+    """Legacy matching is on the whole id, so a longer version never inherits it."""
+    kwargs = build_anthropic_thinking_kwargs(gate_model_name(model), _OUT)
+    assert kwargs == {'thinking': _ADAPTIVE}
+
+
+@pytest.mark.parametrize(
+    'model, expected_base',
+    [
+        ('claude-opus-4-5-20251101', 'claude-opus-4-5'),
+        ('claude-opus-4-20250514', 'claude-opus-4'),
+        ('claude-opus-4-8-fast', 'claude-opus-4-8'),
+        ('claude-opus-5-fast', 'claude-opus-5'),
+        ('claude-sonnet-4-50', 'claude-sonnet-4-50'),  # 2 digits: not a date
+        ('claude-sonnet-5', 'claude-sonnet-5'),
+    ],
+)
+def test_base_model_id_strips_only_dated_and_deployment_suffixes(model, expected_base):
+    assert _anthropic_base_model_id(model) == expected_base
+
+
 # ---------------------------------------------------------------------------
 # Legacy budget arithmetic — unchanged by the fix
 # ---------------------------------------------------------------------------
@@ -236,7 +274,8 @@ EXPECTED_THINKING_SHAPE = {
     'claude-fable-5': 'adaptive',
     'claude-fable-latest': 'adaptive',
     'claude-haiku-4-5': 'enabled',
-    'claude-haiku-latest': 'adaptive',
+    # Alias for Haiku 4.5, which only accepts the legacy shape.
+    'claude-haiku-latest': 'enabled',
     'claude-mythos-5': 'adaptive',
     'claude-mythos-preview': 'enabled',
     'claude-opus-4': 'enabled',
