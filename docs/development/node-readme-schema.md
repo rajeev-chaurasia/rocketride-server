@@ -69,15 +69,82 @@ PostgreSQL — as a pipeline node via lanes or as an agent tool.
   sibling nodes.
 - RocketRide's perspective only — vendor background belongs in `## About`.
 
-**Screenshot** (optional, maintainer-added): the section may end with one
-screenshot of the node wired into a pipeline on the canvas.
+<!--
+PARKED — `## Example pipelines` (shipped example: screenshot + .pipe download).
 
-- File: `./screenshot.png`, stored in the node's directory.
-- Must show the node connected to at least one other node.
-- Alt text is mandatory and must name the node.
-- Contributors are not expected to provide screenshots; the maintainer team
-  adds them for visual consistency. Reviewers must not block a PR on a
-  missing screenshot.
+Deferred until the node READMEs have been migrated to this schema. The
+supporting machinery stays in place (the validator's bundle checks are
+parked alongside this, and the docs build already rewrites relative
+example refs), so restoring it is: uncomment this block, re-number the
+sections below, and un-park the matching checks in
+scripts/validate-node-readme.py.
+
+## 3. `## Example pipelines` — CORE
+
+At least one example. The **first example is the shipped example**: a
+small working pipeline committed with the node, so a reader can see the
+node on the canvas and download the pipeline itself instead of rebuilding
+it from prose.
+
+**Files, in the node's directory:**
+
+- `example.pipe` — a minimal, runnable pipeline featuring this node
+- `example.png` — a canvas screenshot of that same pipeline
+
+**The section opens with the shipped example**, in this shape:
+
+```markdown
+## Example pipelines
+
+**Summarize scanned documents**
+
+`webhook → ocr → summarization → response`
+
+<div align="center">
+
+![The ocr node wired between a webhook source and summarization on the canvas](example.png)
+
+[![Download example.pipe](https://img.shields.io/badge/example.pipe-Download-41b6e6?style=for-the-badge)](example.pipe)
+
+</div>
+
+Scanned PDFs arrive over a webhook, OCR turns them into text, and the
+summarization node condenses each one.
+```
+
+Rules:
+
+- The flow line, the screenshot, and the `.pipe` must all depict the
+  **same pipeline**. The screenshot shows the node wired on the canvas —
+  never floating alone — and its alt text names the node.
+- Reference the files by bare relative name (`example.png`,
+  `example.pipe`), as above. The docs build rewrites both to repository
+  URLs when staging the site, and GitHub resolves them natively — do not
+  hand-write absolute URLs. Relative is also what makes the button work
+  best in the IDE: the extension registers a custom editor for `*.pipe`,
+  so clicking it there opens the pipeline straight onto the canvas.
+- Keep the **blank lines inside the `<div>`** exactly as shown. They are
+  load-bearing: a blank line ends the HTML block, so the image and badge
+  are parsed as markdown while the wrapper still centres them. Written as
+  raw `<img>`/`<a>` tags instead, the block renders on GitHub but comes up
+  empty in the VS Code / Cursor markdown preview, which only rewrites
+  relative paths for markdown-syntax images.
+- The download button is a [shields.io](https://shields.io) badge, exactly
+  as in the template (`style=for-the-badge`, brand color `41b6e6`).
+- **Reference both halves or neither.** Embedding the screenshot obliges
+  the download badge and vice versa, and a referenced file must exist —
+  a README never renders half a bundle or a broken link. Committing a
+  file *without* referencing it is fine and is the normal way to build
+  the bundle in stages: land `example.pipe` first, add `example.png` and
+  the two references together once the pipeline has been screenshotted.
+  Until then the node gets a validator warning, not a failure. New nodes
+  ship the complete bundle.
+- Further examples follow the same title → flow → prose format (no files
+  required).
+
+Examples must be real, runnable shapes using nodes that exist — no
+hypothetical node names.
+-->
 
 ## 3. `## Connections` — CONDITIONAL
 
@@ -156,28 +223,14 @@ to obtain it, and the expected format. Keep instructions structural
 (scopes, format) rather than duplicating vendor UI walkthroughs that go
 stale.
 
-## 9. `## Example pipelines` — CORE
-
-At least one example. Purpose: show what the node can actually do, in
-context. For each example:
-
-- **Bold one-line title** stating the use case.
-- The pipeline shape as a flow of node names:
-  `webhook → ocr → summarization → response`
-- 1–3 sentences: what flows through, what the node contributes, what comes
-  out. Mention non-default configuration when the example depends on it.
-
-Examples must be real, runnable shapes using nodes that exist — no
-hypothetical node names.
-
-## 10. `## Requirements` — CONDITIONAL
+## 9. `## Requirements` — CONDITIONAL
 
 **Trigger:** `"gpu"` ∈ `capabilities`.
 
 Hardware/runtime requirements: GPU, VRAM, local model downloads, CPU
 fallback behavior.
 
-## 11. `## Limitations` — CONDITIONAL
+## 10. `## Limitations` — CONDITIONAL
 
 **Trigger:** any of `nosaas`, `noremote`, `security`, `filesystem`
 ∈ `capabilities`.
@@ -185,14 +238,14 @@ fallback behavior.
 Where the node can and cannot run, and any security-relevant behavior
 (filesystem access, network access, SaaS exclusion), in plain language.
 
-## 12. `## Notes` — OPTIONAL
+## 11. `## Notes` — OPTIONAL
 
 The only free-form section. Anything genuinely node-specific:
 troubleshooting, compatibility quirks, algorithm details, test
 instructions. Use `###` subsections. Must not duplicate content owned by a
 structured section.
 
-## 13. `## Upstream docs` — OPTIONAL
+## 12. `## Upstream docs` — OPTIONAL
 
 *Required when `## About` exists; allowed otherwise.*
 
@@ -212,9 +265,7 @@ are shared fragments and are ignored):
 - section order; no unknown `##` headings in the hand-written region
 - table parity: Connections rows = `invoke` keys, Lanes rows = declared
   lanes, Profiles rows = declared profiles
-- `## Example pipelines` contains at least one flow
 - the generated region, when present, is last and unmodified in shape
-- screenshot, only if referenced: file exists and alt text is non-empty
 - `## About` ≤ 80 words, first section, with `## Upstream docs` present
 - warns when a field with objective complexity signals (a `textarea`
   widget or a large enum) lacks a `###` subsection under `## Configuration`
