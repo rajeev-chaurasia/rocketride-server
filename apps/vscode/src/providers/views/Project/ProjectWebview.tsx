@@ -839,6 +839,10 @@ const ProjectWebview: React.FC = () => {
 								await deploymentRequest((requestId) => ({ type: 'deployment:setDisabled', teamId, requestId, disabled }));
 								sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
 							},
+							onDeployRemove: async (teamId: string) => {
+								await deploymentRequest((requestId) => ({ type: 'deployment:remove', teamId, requestId }));
+								sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });
+							},
 							onDeploySetSchedule: async (teamId: string, sourceId: string, cron: string | null, ttl: number | null) => {
 								await deploymentRequest((requestId) => ({ type: 'deployment:setSchedule', teamId, requestId, sourceId, cron, ttl }));
 								sendMessageRef.current({ type: 'deploy:fetch', projectId: projectIdRef.current });

@@ -318,30 +318,9 @@ class AccountBase(ABC):
         """
         return {'transactions': [], 'total': 0, 'page': page, 'pageSize': page_size}
 
-    async def resolve_billing_team(self, org_id: str, user_id: str) -> str:
-        """
-        The team a USER-owned (@me) run bills/resolves secrets under, in ONE org.
-
-        A personal deployment's runs are user-owned for visibility and
-        storage, but billing and the team secret layer still need a team
-        context INSIDE the deployment's org (the owner's current default
-        team when it belongs to that org, else any team of theirs there).
-        Resolved at FIRE time so it always reflects the owner's current
-        membership — never persisted on the deployment record.
-
-        Default implementation returns '' (no team context — the caller
-        treats a personal deployment as unfireable). The OSS edition
-        returns the single synthetic 'local' team; the SaaS extension
-        resolves against real memberships.
-
-        Args:
-            org_id: The deployment's organisation.
-            user_id: The owning user.
-
-        Returns:
-            A team id in ``org_id``, or '' when the user has none there.
-        """
-        return ''
+    # NOTE: fire-time billing resolution (resolve_billing_team) is GONE by
+    # doctrine — billing is ABSOLUTE, stamped onto every publish at pointer
+    # time (deployments_deploy billing_team_id) and only ever read by runs.
 
     # =========================================================================
     # CLOUD DATABASE — env-gated broker call; raises when unconfigured
@@ -531,9 +510,15 @@ class AccountBase(ABC):
             org_id, project_id, pipeline, actor, comment, metadata=metadata, state=state
         )
 
-    async def deployments_deploy(self, org_id: str, team_id: str, project_id: str, version: int, actor: dict) -> dict:
-        """Point ``team_id`` at registry ``version`` (promotion/rollback)."""
-        return await self._deployment_backend().deploy(org_id, team_id, project_id, version, actor)
+    async def deployments_deploy(
+        self, org_id: str, team_id: str, project_id: str, version: int, actor: dict, billing_team_id: str = ''
+    ) -> dict:
+        """Point ``team_id`` at registry ``version`` (promotion/rollback).
+
+        ``billing_team_id`` is the ABSOLUTE billing/secrets stamp the command
+        layer decided at pointer time — stored verbatim, never resolved here.
+        """
+        return await self._deployment_backend().deploy(org_id, team_id, project_id, version, actor, billing_team_id)
 
     # ── Publishes — audience pointers (PUBLISH = bind a deployment) ──────────
 
@@ -631,8 +616,13 @@ class AccountBase(ABC):
         """Stamp lastRunAt after the scheduler fires a source (best-effort)."""
         await self._deployment_backend().mark_run(org_id, team_id, project_id, source_id)
 
-    async def deployments_list(self, org_id: str, team_id: str) -> list:
-        """All non-removed deployments of one team, joined with registry info."""
+    async def deployments_list(self, org_id: str, team_id: 'str | None' = None) -> list:
+        """Non-removed deployments joined with registry info.
+
+        ``team_id`` scopes to one team (or a ``user~`` personal space);
+        None returns the WHOLE org — every team and every personal space.
+        Mechanical by design: visibility slicing is the command layer's.
+        """
         return await self._deployment_backend().list_team(org_id, team_id)
 
     async def deployments_get(self, org_id: str, team_id: str, project_id: str) -> 'dict | None':

@@ -41,9 +41,14 @@
 # rrext_deploy_pipe live on _DeployBase, which both inherit.
 #
 # Permission model (checked HERE, at the command layer — the account module is
-# mechanical): registry reads need task.monitor on a membership team; add needs
-# task.control on at least one membership team (the artifact is inert until a
-# team is pointed at it).
+# mechanical). READS follow the VISIBILITY model: an org admin sees anything
+# deployed anywhere (any team, any user's personal space); a regular user
+# sees their own personal space and the teams they are a MEMBER of —
+# membership alone grants sight. Registry rail reads (versions/artifact and
+# unscoped history) need org membership only. MUTATIONS are the gated
+# surface: add needs task.control on at least one membership team (the
+# artifact is inert until a team is pointed at it), and pointing/controlling
+# a team needs task.control on THAT team (cmd_pipe.py).
 # =============================================================================
 
 from typing import TYPE_CHECKING, Any, Dict, List
@@ -122,8 +127,8 @@ class _DeployBase(DAPConn):
         ``team_id`` slot downstream (deployment records, scheduler keys,
         events) and can never collide with a real team id (team uuids never
         contain '~'). No team permission applies to your own space — the
-        run's billing/secrets team is resolved at fire time
-        (``account.resolve_billing_team``).
+        run's billing/secrets team is the ABSOLUTE stamp written at pointer
+        time (``_billing_team_of``), never resolved at fire time.
         """
         team_id = args.get('teamId')
         if not team_id:
@@ -134,6 +139,75 @@ class _DeployBase(DAPConn):
             return f'user~{self._account_info.userId}'
         self.verify_team_permission(team_id, perm)
         return team_id
+
+    def _is_org_admin(self) -> bool:
+        """True for org.admin on the caller's org — and for the sys.admin /
+        internal superusers (mirrors ``resolve_team_permissions``' rule).
+        """
+        sys_perms = getattr(self._account_info, 'sysPermissions', []) or []
+        if 'sys.admin' in sys_perms or 'internal' in sys_perms:
+            return True
+        org = getattr(self._account_info, 'organization', None) or {}
+        perms = org.get('permissions') if isinstance(org, dict) else getattr(org, 'permissions', None)
+        return 'org.admin' in (perms or [])
+
+    def _member_team_ids(self) -> List[str]:
+        """Ids of every team the caller is a MEMBER of, permission-agnostic
+        (an org.admin's account record already lists every org team).
+        """
+        org = getattr(self._account_info, 'organization', None) or {}
+        teams = org.get('teams') if isinstance(org, dict) else getattr(org, 'teams', None)
+        out: List[str] = []
+        for team in teams or []:
+            team_id = team.get('id') if isinstance(team, dict) else getattr(team, 'id', None)
+            if team_id:
+                out.append(team_id)
+        return out
+
+    def _billing_team_of(self, team_id: str) -> str:
+        """The ABSOLUTE billing/secrets team stamped onto a publish at pointer time.
+
+        A team audience bills itself — unambiguous by construction. A
+        personal (``user~``) audience bills the PUBLISHER's dev team, which
+        must be one of their membership teams in the session org; without
+        one the @me publish REFUSES — billing never guesses, and runs only
+        ever read the stamp (they never resolve).
+        """
+        if not team_id.startswith('user~'):
+            return team_id
+        dev_team = getattr(self._account_info, 'devTeam', '') or ''
+        if not dev_team or dev_team not in self._member_team_ids():
+            raise PermissionError(
+                'Publishing to @me needs your development team set in this organization — pick one in your profile'
+            )
+        return dev_team
+
+    def _visible_team_ref(self, args: Dict[str, Any]) -> str:
+        """Extract a READ's addressed scope under the VISIBILITY model.
+
+        An org admin can see anything deployed anywhere — any team, any
+        user's personal space. A regular user can see their OWN personal
+        space (``teamId='@me'``, mapped to ``user~{userId}``) and the teams
+        they are a MEMBER of — membership alone grants read visibility; the
+        task.* grants gate actions, not sight.
+        """
+        team_id = args.get('teamId')
+        if not team_id:
+            raise ValueError('teamId is required')
+        if team_id == '@me':
+            if not self._account_info.userId:
+                raise PermissionError('Personal (@me) deployments require an authenticated user')
+            return f'user~{self._account_info.userId}'
+        team_id = str(team_id)
+        if self._is_org_admin():
+            return team_id
+        if team_id.startswith('user~'):
+            if team_id == f'user~{self._account_info.userId}':
+                return team_id
+            raise PermissionError("Another user's personal deployments are visible to org admins only")
+        if team_id in self._member_team_ids():
+            return team_id
+        raise PermissionError(f'No membership in team {team_id!r}')
 
     async def _notify_deploy_changed(self, org_id: str, team_id: str, project_id: str, action: str) -> None:
         """Push an org-scoped invalidation event for a deployment mutation.
@@ -285,10 +359,19 @@ class DeployCommands(_DeployBase):
         body: Dict[str, Any] = {'artifact': entry, 'orgId': org_id}
         await self._notify_deploy_changed(org_id, '', project_id, 'add')
         if args.get('deployTo'):
-            # One-step add+deploy — same checks as rrext_deploy_pipe deploy.
+            # One-step add+deploy — same checks as rrext_deploy_pipe deploy,
+            # including the pointer-time billing stamp.
             team_id = str(args['deployTo'])
-            self.verify_team_permission(team_id, 'task.control')
-            dep = await account.deployments_deploy(org_id, team_id, project_id, entry['version'], self._actor())
+            if team_id == '@me':
+                if not self._account_info.userId:
+                    raise PermissionError('Personal (@me) deployments require an authenticated user')
+                team_id = f'user~{self._account_info.userId}'
+            else:
+                self.verify_team_permission(team_id, 'task.control')
+            billing_team = self._billing_team_of(team_id)
+            dep = await account.deployments_deploy(
+                org_id, team_id, project_id, entry['version'], self._actor(), billing_team
+            )
             self._scheduler.sync(org_id, dep)
             body['deployment'] = dep
             await self._notify_deploy_changed(org_id, team_id, project_id, 'deploy')
@@ -303,10 +386,9 @@ class DeployCommands(_DeployBase):
         project_id = args.get('projectId')
         if not project_id:
             raise ValueError('projectId is required')
-        # Registry reads are org-level: any team monitor grant suffices.
-        if not self._teams_with('task.monitor'):
-            raise PermissionError("Permission 'task.monitor' denied")
 
+        # Registry reads need org membership only (_org_id raises without
+        # one) — any user in the org can see what is deployed.
         versions = await account.deployments_versions(self._org_id(), project_id)
         # Envelope over the (per-project, bounded) registry list.
         body = paginate_rows(
@@ -331,11 +413,9 @@ class DeployCommands(_DeployBase):
             raise ValueError('projectId is required')
         if not isinstance(version, int):
             raise ValueError('version is required and must be an integer')
-        # Registry reads are org-level: any team monitor grant suffices
-        # (same rule as the versions listing this artifact came from).
-        if not self._teams_with('task.monitor'):
-            raise PermissionError("Permission 'task.monitor' denied")
 
+        # Org membership only — same rule as the versions listing this
+        # artifact came from.
         body = await account.deployments_artifact(self._org_id(), project_id, version)
         return self.build_response(request, body=body)
 
@@ -344,11 +424,10 @@ class DeployCommands(_DeployBase):
         project_id = args.get('projectId')
         if not project_id:
             raise ValueError('projectId is required')
-        team_id = args.get('teamId')
-        if team_id:
-            self.verify_team_permission(team_id, 'task.monitor')
-        elif not self._teams_with('task.monitor'):
-            raise PermissionError("Permission 'task.monitor' denied")
+        # Unscoped history needs org membership only; a team-scoped trail
+        # goes through the visibility model (admin: any scope; user: own
+        # personal space + member teams).
+        team_id = self._visible_team_ref(args) if args.get('teamId') else None
 
         # Paging happens in the BACKEND (SQL on saas): the trail is
         # append-only and unbounded, so it is never fully materialized here.

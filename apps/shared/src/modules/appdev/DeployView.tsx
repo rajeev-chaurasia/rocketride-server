@@ -38,8 +38,8 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Button, EmptyState, InputField, Modal, StatusBadge } from 'shell';
-import type { AppSummary, AppVersionInfo, IAppBuilderHost, RungKind, RungPin } from './types';
+import { Button, ConfirmDialog, EmptyState, InputField, Modal, StatusBadge } from 'shell';
+import type { AppSummary, AppVersionInfo, IAppBuilderHost, RungPin } from './types';
 
 // =============================================================================
 // TYPES
@@ -51,6 +51,8 @@ export interface IDeployViewProps {
 	host: IAppBuilderHost;
 	/** The app being shown (header facts). */
 	app: AppSummary;
+	/** Render everything non-interactive (namespace mismatch gating). */
+	readOnly?: boolean;
 }
 
 // =============================================================================
@@ -145,6 +147,10 @@ const styles: Record<string, React.CSSProperties> = {
 	},
 	cardAction: {
 		marginTop: 10,
+		display: 'flex',
+		gap: 6,
+		flexWrap: 'wrap',
+		alignItems: 'center',
 	},
 	publishCard: {
 		minWidth: 225,
@@ -223,7 +229,9 @@ const styles: Record<string, React.CSSProperties> = {
 		marginLeft: 6,
 		fontWeight: 400,
 	},
-	pin: {
+	// The package.json semver pill riding beside v<registry> — ONE format
+	// shared by the version cards and the where-live rows.
+	versionPill: {
 		fontSize: 11,
 		fontWeight: 700,
 		fontFamily: 'var(--rr-font-mono, Consolas, monospace)',
@@ -231,11 +239,32 @@ const styles: Record<string, React.CSSProperties> = {
 		borderRadius: 10,
 		border: '1.5px solid var(--rr-color-secondary)',
 		color: 'var(--rr-color-secondary)',
+		marginLeft: 8,
+		verticalAlign: 'middle',
+	},
+	// The v<registry> half of the shared format on where-live rows.
+	liveVersionText: {
+		fontWeight: 700,
+		color: 'var(--rr-text-primary)',
+		whiteSpace: 'nowrap',
 	},
 	liveAudience: {
 		flex: 1,
 		color: 'var(--rr-text-secondary)',
 		fontSize: 12,
+	},
+	// Pipe-pattern state text on where-live rows: a colored dot + word.
+	liveStateOk: {
+		fontSize: 11.5,
+		fontWeight: 600,
+		color: 'var(--rr-color-success)',
+		whiteSpace: 'nowrap',
+	},
+	liveStateWarn: {
+		fontSize: 11.5,
+		fontWeight: 600,
+		color: 'var(--rr-color-warning)',
+		whiteSpace: 'nowrap',
 	},
 	liveWhen: {
 		fontSize: 11.5,
@@ -253,12 +282,6 @@ const styles: Record<string, React.CSSProperties> = {
 	emptyWrap: {
 		padding: '10px 26px 30px',
 	},
-	// "Publish to…" audience picker (Me / Team / Public), inline on a card.
-	picker: {
-		display: 'flex',
-		gap: 6,
-		flexWrap: 'wrap',
-	},
 	pickBtn: {
 		padding: '4px 10px',
 		fontSize: 11.5,
@@ -270,15 +293,62 @@ const styles: Record<string, React.CSSProperties> = {
 		cursor: 'pointer',
 		whiteSpace: 'nowrap',
 	},
-	pickBtnGhost: {
-		padding: '4px 10px',
+	// "Publish v<N> to…" audience rows (the pipe deploy dialog's picker
+	// pattern): full-width row buttons, current pin state right-aligned.
+	pubRow: {
+		display: 'flex',
+		alignItems: 'center',
+		gap: 10,
+		width: '100%',
+		padding: '10px 14px',
+		marginBottom: 8,
+		fontSize: 12.5,
+		fontWeight: 600,
+		textAlign: 'left',
+		background: 'var(--rr-bg-input)',
+		color: 'var(--rr-text-primary)',
+		border: '1px solid var(--rr-border)',
+		borderRadius: 6,
+		cursor: 'pointer',
+	},
+	// An audience the version's review state does not allow (Public before
+	// 'ready') — visible so the ladder is learnable, disabled so the server
+	// never has to bounce it.
+	pubRowOff: {
+		display: 'flex',
+		alignItems: 'center',
+		gap: 10,
+		width: '100%',
+		padding: '10px 14px',
+		marginBottom: 8,
+		fontSize: 12.5,
+		fontWeight: 600,
+		textAlign: 'left',
+		background: 'var(--rr-bg-input)',
+		color: 'var(--rr-text-secondary)',
+		border: '1px solid var(--rr-border)',
+		borderRadius: 6,
+		cursor: 'not-allowed',
+		opacity: 0.55,
+	},
+	pubRowState: {
+		marginLeft: 'auto',
 		fontSize: 11.5,
+		fontWeight: 400,
+		color: 'var(--rr-text-secondary)',
+		whiteSpace: 'nowrap',
+	},
+	// Per-pin soft-remove on the where-live rows.
+	liveRemove: {
+		padding: '3px 10px',
+		fontSize: 11,
 		fontWeight: 600,
 		background: 'transparent',
 		color: 'var(--rr-text-secondary)',
 		border: '1px solid var(--rr-border)',
 		borderRadius: 4,
 		cursor: 'pointer',
+		whiteSpace: 'nowrap',
 	},
 	// "Register as a developer" banner — shown until the org holds a developerId.
 	devBanner: {
@@ -320,12 +390,15 @@ const styles: Record<string, React.CSSProperties> = {
 // HELPERS
 // =============================================================================
 
-/** Rung chip label per rung kind (the mockup's uppercase chips). */
-const RUNG_CHIP_LABEL: Record<RungKind, string> = {
-	personal: 'ME',
-	team: 'TEAM',
-	public: 'STORE',
-};
+/** Uppercase audience chip from a pin — the pipe deploy card's pattern:
+ * chips NAME the audiences serving this version (ME / <TEAM NAME> / STORE),
+ * never a generic kind. */
+function chipLabelOf(pin: RungPin): string {
+	if (pin.rung === 'personal') return 'ME';
+	if (pin.rung === 'public') return 'STORE';
+	const name = pin.handle.startsWith('@team/') ? pin.handle.slice('@team/'.length) : pin.handle;
+	return name.toUpperCase();
+}
 
 /** Per-version review-state badge (the deployment's review lifecycle). */
 const STATE_BADGE: Record<NonNullable<AppVersionInfo['state']>, { variant: 'muted' | 'info' | 'success' | 'warning' | 'error'; label: string }> = {
@@ -341,7 +414,10 @@ function formatWhen(unixSeconds?: number): string {
 	if (!unixSeconds) return '';
 	try {
 		return new Date(unixSeconds * 1000).toLocaleString(undefined, {
-			month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit',
 		});
 	} catch {
 		return '';
@@ -363,12 +439,16 @@ function formatWhen(unixSeconds?: number): string {
 // by app id.
 const railCache = new Map<string, { versions: AppVersionInfo[] | null; pins: RungPin[] | null }>();
 
-export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
+export const DeployView: React.FC<IDeployViewProps> = ({ host, app, readOnly }) => {
 	// ── Data — loaded through the host adapter, seeded from the cache ─────
 	const [versions, setVersions] = useState<AppVersionInfo[] | null>(() => railCache.get(app.id)?.versions ?? null);
 	const [pins, setPins] = useState<RungPin[] | null>(() => railCache.get(app.id)?.pins ?? null);
-	// Which version's "Publish to…" audience picker is open (null = none).
-	const [pickerFor, setPickerFor] = useState<string | null>(null);
+	// The version whose "Publish to…" audience dialog is open (null = none).
+	const [publishFor, setPublishFor] = useState<AppVersionInfo | null>(null);
+	// The caller's team roster for the publish dialog (null = not loaded).
+	const [teams, setTeams] = useState<Array<{ id: string; name: string }> | null>(null);
+	// The pin awaiting soft-remove confirmation (null = none).
+	const [removePin, setRemovePin] = useState<RungPin | null>(null);
 	// Deploy-message dialog (stock Modal + input — window.prompt is disabled in
 	// the VSCode webview). An empty comment is allowed (it is optional).
 	const [deployOpen, setDeployOpen] = useState(false);
@@ -380,9 +460,6 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 	// Failures from the dialog-less actions (publish/team/submit) — surfaced
 	// as a strip above the rail; cleared by the next action or a refresh.
 	const [actionError, setActionError] = useState('');
-	// Team-name dialog for "Publish to… Team".
-	const [teamPromptVersion, setTeamPromptVersion] = useState<string | null>(null);
-	const [teamName, setTeamName] = useState('');
 	// Developer registration: '' = org not a developer yet; null = unknown/loading.
 	const [developerId, setDeveloperId] = useState<string | null>(null);
 	const [regSlug, setRegSlug] = useState('');
@@ -402,20 +479,40 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 			railCache.set(app.id, { versions: null, pins: null, ...railCache.get(app.id), ...p });
 		};
 		const vP = Promise.resolve(host.listVersions?.() ?? [])
-			.then((v) => { setVersions(v); patch({ versions: v }); })
-			.catch((e) => { console.log('[appdev] listVersions failed:', e); setVersions([]); });
+			.then((v) => {
+				setVersions(v);
+				patch({ versions: v });
+			})
+			.catch((e) => {
+				console.log('[appdev] listVersions failed:', e);
+				setVersions([]);
+			});
 		const pP = Promise.resolve(host.getWhereLive?.() ?? [])
-			.then((p) => { setPins(p); patch({ pins: p }); })
-			.catch((e) => { console.log('[appdev] whereLive failed:', e); setPins([]); });
+			.then((p) => {
+				setPins(p);
+				patch({ pins: p });
+			})
+			.catch((e) => {
+				console.log('[appdev] whereLive failed:', e);
+				setPins([]);
+			});
 		await Promise.all([vP, pP]);
 	}, [host, app.id]);
 
-	useEffect(() => { void refresh(); }, [refresh]);
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
 
 	// Load the org's developer id (null when the host can't report it — no banner).
 	useEffect(() => {
-		if (!host.getDeveloperId) { setDeveloperId(null); return; }
-		void host.getDeveloperId().then(setDeveloperId).catch(() => setDeveloperId(null));
+		if (!host.getDeveloperId) {
+			setDeveloperId(null);
+			return;
+		}
+		void host
+			.getDeveloperId()
+			.then(setDeveloperId)
+			.catch(() => setDeveloperId(null));
 	}, [host]);
 
 	/** Claim the org's developer id slug (org.admin, self-service). */
@@ -462,61 +559,109 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 		}
 	}, [host, deployMessage, refresh]);
 
-	/** Publish: bind a version to @me or the public store directly. The team
-	 * path collects a name through the stock dialog instead (confirmTeamPublish).
-	 * The one verb for first publish, update, promote, and rollback; @public
-	 * needs the version approved (ready) first. */
-	const onPublishTo = useCallback(async (version: string, choice: 'me' | 'public'): Promise<void> => {
-		if (!host.publish) return;
-		setPickerFor(null);
-		setActionError('');
-		try {
-			await host.publish(version, choice === 'me' ? '@me' : '@public');
-		} catch (e) {
-			setActionError(e instanceof Error ? e.message : String(e));
-		}
-		await refresh();
-	}, [host, refresh]);
+	/** Open the "Publish v<N> to…" audience dialog (the pipe deploy dialog's
+	 * picker pattern) and lazily load the team roster for its rows. */
+	const openPublish = useCallback(
+		(v: AppVersionInfo): void => {
+			setPublishFor(v);
+			if (teams === null && host.listTeams) {
+				void host
+					.listTeams()
+					.then(setTeams)
+					.catch(() => setTeams([]));
+			}
+		},
+		[host, teams]
+	);
 
-	/** Bind the chosen version to @team/<name> from the team dialog. */
-	const confirmTeamPublish = useCallback(async (): Promise<void> => {
-		if (!host.publish || teamPromptVersion === null) return;
-		const name = teamName.trim();
-		if (!name) return;
-		const version = teamPromptVersion;
-		setTeamPromptVersion(null);
-		setActionError('');
-		try {
-			await host.publish(version, `@team/${name}`);
-		} catch (e) {
-			setActionError(e instanceof Error ? e.message : String(e));
-		}
-		await refresh();
-	}, [host, teamPromptVersion, teamName, refresh]);
+	/** Publish: bind a version to the chosen audience — the one verb for
+	 * first publish, update, promote, and rollback. @public needs the
+	 * version approved (ready) first; the dialog gates that row. */
+	const onPublishTo = useCallback(
+		async (version: number, target: string): Promise<void> => {
+			if (!host.publish) return;
+			setPublishFor(null);
+			setActionError('');
+			try {
+				await host.publish(version, target);
+			} catch (e) {
+				setActionError(e instanceof Error ? e.message : String(e));
+			}
+			await refresh();
+		},
+		[host, refresh]
+	);
+
+	/** Soft-remove one audience binding (the pin's handle IS the wire
+	 * target) — the app stops serving there; republishing revives it. */
+	const onRemovePin = useCallback(
+		async (pin: RungPin): Promise<void> => {
+			if (!host.removePublish) return;
+			setActionError('');
+			try {
+				await host.removePublish(pin.handle);
+			} catch (e) {
+				setActionError(e instanceof Error ? e.message : String(e));
+			}
+			await refresh();
+		},
+		[host, refresh]
+	);
+
+	/** The dialog rows' current-state hint: what the audience serves now. */
+	const pinStateOf = useCallback(
+		(handle: string, v: AppVersionInfo): string => {
+			const pin = (pins ?? []).find((p) => p.handle === handle);
+			if (!pin) return 'not published';
+			return pin.registryVersion === v.registryVersion ? `already on v${pin.registryVersion}` : `on v${pin.registryVersion}`;
+		},
+		[pins]
+	);
 
 	/** Submit a deployed version for public store review (private → submit). */
-	const onSubmit = useCallback(async (version: string): Promise<void> => {
-		if (!host.submitForReview) return;
-		setActionError('');
-		try {
-			await host.submitForReview(version);
-		} catch (e) {
-			setActionError(e instanceof Error ? e.message : String(e));
-		}
-		await refresh();
-	}, [host, refresh]);
+	const onSubmit = useCallback(
+		async (version: number): Promise<void> => {
+			if (!host.submitForReview) return;
+			setActionError('');
+			try {
+				await host.submitForReview(version);
+			} catch (e) {
+				setActionError(e instanceof Error ? e.message : String(e));
+			}
+			await refresh();
+		},
+		[host, refresh]
+	);
+
+	/** Withdraw a pending review (submit → private) — the developer's own
+	 * cancel; the version returns to draft with its Submit button. */
+	const onWithdraw = useCallback(
+		async (version: number): Promise<void> => {
+			if (!host.withdrawReview) return;
+			setActionError('');
+			try {
+				await host.withdrawReview(version);
+			} catch (e) {
+				setActionError(e instanceof Error ? e.message : String(e));
+			}
+			await refresh();
+		},
+		[host, refresh]
+	);
 
 	const deployWired = Boolean(host.listVersions || host.deploy);
+
+	// Latest-only review: Submit renders solely on the newest non-'failed'
+	// version (the server enforces the same rule) — review tracks current
+	// work; older code that should ship is deployed again.
+	const newestSubmittable = (versions ?? []).reduce((max, x) => (x.state !== 'failed' && x.registryVersion > max ? x.registryVersion : max), 0);
 
 	return (
 		<div style={styles.wrap}>
 			{/* View header — title + one-line purpose (the pipeline pattern) */}
 			<div style={styles.head}>
 				<div style={styles.h1}>{app.name}</div>
-				<div style={styles.sub}>
-					Deploy immutable versions, then publish each to an audience — @me, a team, or the public store.
-					Internal audiences serve instantly; the store gates every version on review.
-				</div>
+				<div style={styles.sub}>Deploy immutable versions, then publish each to an audience — @me, a team, or the public store. Internal audiences serve instantly; the store gates every version on review.</div>
 				{/* Failures from the dialog-less actions (publish/submit) land
 				    here — otherwise they are invisible. */}
 				{actionError ? <div style={styles.devError}>{actionError}</div> : null}
@@ -524,10 +669,7 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 
 			{!deployWired ? (
 				<div style={styles.emptyWrap}>
-					<EmptyState
-						title="Publishing is not wired up yet"
-						description="Once the deploy pipeline lands, published versions appear here as immutable cards with rung chips, and the reverse index below shows what runs where."
-					/>
+					<EmptyState title="Publishing is not wired up yet" description="Once the deploy pipeline lands, published versions appear here as immutable cards with rung chips, and the reverse index below shows what runs where." />
 				</div>
 			) : (
 				<>
@@ -537,12 +679,7 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 								<strong>Register as a developer to deploy apps.</strong> Every app id is <code>&lt;developerId&gt;.&lt;name&gt;</code> — claim your organization&rsquo;s developer id (letters and underscores only) to publish under your own namespace.
 							</div>
 							<div style={styles.devBannerRow}>
-								<input
-									style={styles.devInput}
-									placeholder="developer id (e.g. acme_labs)"
-									value={regSlug}
-									onChange={(e) => setRegSlug(e.target.value)}
-								/>
+								<input style={styles.devInput} placeholder="developer id (e.g. acme_labs)" value={regSlug} onChange={(e) => setRegSlug(e.target.value)} />
 								<button style={styles.pickBtn} disabled={regBusy || !regSlug.trim()} onClick={() => void onRegister()}>
 									{regBusy ? 'Registering…' : 'Register'}
 								</button>
@@ -556,7 +693,7 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 						<span style={styles.sectMicro}>org registry · immutable · newest first</span>
 					</div>
 					<div style={styles.rail}>
-						{host.deploy && (
+						{host.deploy && !readOnly && (
 							<div style={styles.publishCard} onClick={onDeployBuild}>
 								<span style={styles.publishPlus}>+</span>
 								<span style={styles.publishTitle}>Deploy</span>
@@ -564,38 +701,54 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 							</div>
 						)}
 						{(versions ?? []).map((v) => (
-							<div key={v.version} style={styles.card}>
-								<div style={styles.cardVersion}>v{v.version}</div>
+							<div key={v.registryVersion} style={styles.card}>
+								{/* Registry int IS the version identity; the package.json
+								    semver rides beside it in a pill — the same format the
+								    where-live rows render. */}
+								<div style={styles.cardVersion}>
+									v{v.registryVersion}
+									{v.version ? <span style={styles.versionPill}>{v.version}</span> : null}
+								</div>
 								<div style={styles.cardWho}>{v.author}</div>
 								<div style={styles.cardWhen}>
-									{formatWhen(v.publishedAt)}{v.sha ? ` · ${v.sha.slice(0, 8)}…` : ''}
+									{formatWhen(v.publishedAt)}
+									{v.sha ? ` · ${v.sha.slice(0, 8)}…` : ''}
 								</div>
 								{v.message ? <div style={styles.cardMsg}>&ldquo;{v.message}&rdquo;</div> : null}
 								<div style={styles.chips}>
-									{v.state ? (
-										<StatusBadge variant={STATE_BADGE[v.state].variant}>{STATE_BADGE[v.state].label}</StatusBadge>
-									) : null}
-									{v.rungs.map((r) => (
-										<StatusBadge key={r} variant={r === 'public' ? 'info' : 'success'}>
-											{RUNG_CHIP_LABEL[r]}
-										</StatusBadge>
-									))}
-								</div>
-								{(host.publish || host.submitForReview) && (
-									<div style={styles.cardAction}>
-										{host.submitForReview && (
-											<button style={styles.miniBtn} onClick={() => void onSubmit(v.version)}>Submit for review</button>
-										)}
-										{host.publish && (pickerFor === v.version ? (
-											<div style={styles.picker}>
-												<button style={styles.pickBtn} onClick={() => void onPublishTo(v.version, 'me')}>Me</button>
-												<button style={styles.pickBtn} onClick={() => { setPickerFor(null); setTeamName(''); setTeamPromptVersion(v.version); }}>Team…</button>
-												<button style={styles.pickBtn} onClick={() => void onPublishTo(v.version, 'public')}>Public</button>
-												<button style={styles.pickBtnGhost} onClick={() => setPickerFor(null)}>Cancel</button>
-											</div>
-										) : (
-											<button style={styles.miniBtn} onClick={() => setPickerFor(v.version)}>Publish to…</button>
+									{v.state ? <StatusBadge variant={STATE_BADGE[v.state].variant}>{STATE_BADGE[v.state].label}</StatusBadge> : null}
+									{/* Audience chips NAME who serves this version (the pipe
+									    card's pattern) — derived from the where-live pins. */}
+									{(pins ?? [])
+										.filter((p) => p.registryVersion === v.registryVersion)
+										.map((p) => (
+											<StatusBadge key={p.rung + p.handle} variant={p.rung === 'public' ? 'info' : 'success'}>
+												{chipLabelOf(p)}
+											</StatusBadge>
 										))}
+								</div>
+								{(host.publish || host.submitForReview) && !readOnly && (
+									<div style={styles.cardAction}>
+										{/* One primary action, like the pipe card's "Deploy to…" —
+										    only legal moves render: internal publishing is open to
+										    any non-'failed' version, and Submit exists solely on
+										    'private' (the private→submit edge; rejected/failed are
+										    terminal). */}
+										{host.publish && v.state !== 'failed' && (
+											<button style={styles.miniBtn} onClick={() => openPublish(v)}>
+												Publish to…
+											</button>
+										)}
+										{host.submitForReview && v.state === 'private' && v.registryVersion === newestSubmittable && (
+											<button style={styles.miniBtn} onClick={() => void onSubmit(v.registryVersion)}>
+												Submit for review
+											</button>
+										)}
+										{host.withdrawReview && v.state === 'submit' && (
+											<button style={styles.miniBtn} onClick={() => void onWithdraw(v.registryVersion)}>
+												Withdraw
+											</button>
+										)}
 									</div>
 								)}
 							</div>
@@ -606,9 +759,7 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 					<div style={styles.livePanel}>
 						<div style={styles.liveHead}>Where this app is live</div>
 						{(pins ?? []).length === 0 ? (
-							<div style={styles.liveFoot}>
-								Nothing is deployed yet — publish a version and deploy it to your personal rung to see it here.
-							</div>
+							<div style={styles.liveFoot}>Nothing is deployed yet — publish a version and deploy it to your personal rung to see it here.</div>
 						) : (
 							<>
 								{(pins ?? []).map((p) => (
@@ -617,24 +768,24 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 											{p.label}
 											<span style={styles.liveHandle}>{p.handle}</span>
 										</div>
-										<span style={styles.pin}>v{p.version}</span>
-										<StatusBadge variant={p.state === 'pending' ? 'warning' : 'success'}>
-											{p.state === 'pending' ? 'in review' : p.state}
-										</StatusBadge>
+										<span style={styles.liveVersionText}>
+											v{p.registryVersion}
+											{p.version ? <span style={styles.versionPill}>{p.version}</span> : null}
+										</span>
+										<span style={p.state === 'pending' ? styles.liveStateWarn : styles.liveStateOk}>&#9679; {p.state === 'pending' ? 'in review' : p.state}</span>
 										<span style={styles.liveAudience}>
 											{p.audience}
 											{p.pendingVersion ? ` · v${p.pendingVersion} in review` : ''}
 										</span>
-										<span style={styles.liveWhen}>
-											{p.deployedAt ? `deployed ${formatWhen(p.deployedAt)}` : ''}
-										</span>
+										<span style={styles.liveWhen}>{p.deployedAt ? `deployed ${formatWhen(p.deployedAt)}` : ''}</span>
+										{host.removePublish && !readOnly && (
+											<button style={styles.liveRemove} onClick={() => setRemovePin(p)}>
+												Remove
+											</button>
+										)}
 									</div>
 								))}
-								<div style={styles.liveFoot}>
-									Deploy pins a rung to an immutable version — first publish, update, promote, and rollback
-									are all this one verb. Personal deploys land on your desktop automatically. Review gates
-									every version on the store rung; internal rungs never wait.
-								</div>
+								<div style={styles.liveFoot}>Deploy pins a rung to an immutable version — first publish, update, promote, and rollback are all this one verb. Personal deploys land on your desktop automatically. Review gates every version on the store rung; internal rungs never wait.</div>
 							</>
 						)}
 					</div>
@@ -649,8 +800,12 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 					onClose={() => setDeployOpen(false)}
 					footer={
 						<>
-							<Button variant="secondary" disabled={deployBusy} onClick={() => setDeployOpen(false)}>Cancel</Button>
-							<Button variant="primary" disabled={deployBusy} onClick={() => void confirmDeploy()}>{deployBusy ? 'Deploying…' : 'Deploy'}</Button>
+							<Button variant="secondary" disabled={deployBusy} onClick={() => setDeployOpen(false)}>
+								Cancel
+							</Button>
+							<Button variant="primary" disabled={deployBusy} onClick={() => void confirmDeploy()}>
+								{deployBusy ? 'Deploying…' : 'Deploy'}
+							</Button>
 						</>
 					}
 				>
@@ -660,21 +815,55 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app }) => {
 				</Modal>
 			)}
 
-			{/* ── Team-name dialog for "Publish to… Team" ──────────────── */}
-			{teamPromptVersion !== null && (
+			{/* ── "Publish v<N> to…" audience dialog (the pipe deploy dialog's
+			    picker pattern: one row per audience, current state on the
+			    right, choosing a row IS the action) ─────────────────────── */}
+			{publishFor && (
 				<Modal
-					title={`Publish v${teamPromptVersion} to a team`}
-					onClose={() => setTeamPromptVersion(null)}
+					title={`Publish v${publishFor.registryVersion}${publishFor.version ? ` (${publishFor.version})` : ''} to…`}
+					onClose={() => setPublishFor(null)}
 					footer={
-						<>
-							<Button variant="secondary" onClick={() => setTeamPromptVersion(null)}>Cancel</Button>
-							<Button variant="primary" disabled={!teamName.trim()} onClick={() => void confirmTeamPublish()}>Publish</Button>
-						</>
+						<Button variant="secondary" onClick={() => setPublishFor(null)}>
+							Cancel
+						</Button>
 					}
 				>
-					<div style={styles.dialogHint}>Binds this version to <code>@team/&lt;name&gt;</code>. Team members get it on their next login.</div>
-					<InputField placeholder="team name" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
+					<div style={styles.dialogHint}>Points the chosen audience at this version — first publish, update, promote, and rollback are all this one pointer move. Internal audiences serve instantly; the store gates every version on review.</div>
+					<button style={styles.pubRow} onClick={() => void onPublishTo(publishFor.registryVersion, '@me')}>
+						Me<span style={styles.pubRowState}>{pinStateOf('@me', publishFor)}</span>
+					</button>
+					{(teams ?? []).map((t) => (
+						<button key={t.id} style={styles.pubRow} onClick={() => void onPublishTo(publishFor.registryVersion, `@team/${t.id}`)}>
+							{t.name}
+							<span style={styles.pubRowState}>{pinStateOf(`@team/${t.name}`, publishFor)}</span>
+						</button>
+					))}
+					{publishFor.state === 'ready' ? (
+						<button style={styles.pubRow} onClick={() => void onPublishTo(publishFor.registryVersion, '@public')}>
+							Public — the app store<span style={styles.pubRowState}>{pinStateOf('@public', publishFor)}</span>
+						</button>
+					) : (
+						<button style={styles.pubRowOff} disabled title="The store needs an approved ('ready') version — submit it for review first">
+							Public — the app store<span style={styles.pubRowState}>needs review approval</span>
+						</button>
+					)}
 				</Modal>
+			)}
+
+			{/* ── Soft-remove confirmation for a where-live pin ─────────── */}
+			{removePin && (
+				<ConfirmDialog
+					title={`Remove ${app.name} from ${removePin.label}?`}
+					message={`Takes the app off ${removePin.handle}: it stops serving to that audience. This is a SOFT remove — every published version and the audit history survive, and publishing to ${removePin.handle} again revives it.`}
+					confirmLabel="Remove"
+					cancelLabel="Cancel"
+					onConfirm={() => {
+						const pin = removePin;
+						setRemovePin(null);
+						void onRemovePin(pin);
+					}}
+					onCancel={() => setRemovePin(null)}
+				/>
 			)}
 		</div>
 	);

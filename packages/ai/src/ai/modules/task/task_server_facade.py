@@ -89,8 +89,8 @@ async def start_server_task_as_team(
       - ``owner_kind='user'``: a PERSONAL (@me) deployment run. The run is
         OWNED by ``owner_user_id`` — private visibility, user-tree storage
         and logs, the owner's user secret layer applies, and billing
-        attributes to the owner (``team_id`` is the owner's billing team,
-        resolved by the caller via ``account.resolve_billing_team``).
+        attributes to the owner (``team_id`` is the deployment's ABSOLUTE
+        billing stamp, written at pointer time and read by the caller).
       - ``run_kind='deploy'``, the owner scope, and ``trigger`` travel as
         TRUSTED connection attributes read by on_execute — never as DAP
         arguments, so remote clients cannot spoof a deploy run.
@@ -110,11 +110,11 @@ async def start_server_task_as_team(
         # A @team deploy carries NO human identity (the team owns it). A @me
         # deploy is owned by a specific user, so it carries that user's id —
         # billing attributes to the owner and the owner's user secret layer
-        # resolves. The billing team still rides defaultTeam below either way.
+        # resolves. The billing team still rides devTeam below either way.
         userId=owner_user_id if owner_kind == 'user' else '',
         displayName='',
         email='',
-        defaultTeam=team_id,
+        devTeam=team_id,
         organization={
             'id': org_id,
             'name': '',

@@ -267,6 +267,19 @@ class TestDeploy:
         assert dep['pipelineName'] == 'Invoice Ingest'
 
     @pytest.mark.asyncio
+    async def test_deploy_persists_and_restamps_the_billing_team(self, backend):
+        # The ABSOLUTE billing stamp: written at pointer time, re-stamped on
+        # every pointer move, and returned on the joined record ('' on
+        # records from before the field existed).
+        await backend.publish('org-1', 'proj-1', PIPE, ACTOR)
+        await backend.publish('org-1', 'proj-1', PIPE, ACTOR)
+        dep = await backend.deploy('org-1', 'user~u1', 'proj-1', 1, ACTOR, 'team-dev')
+        assert dep['billingTeamId'] == 'team-dev'
+        # A pointer move re-decides the stamp.
+        dep = await backend.deploy('org-1', 'user~u1', 'proj-1', 2, ACTOR, 'team-prod')
+        assert dep['billingTeamId'] == 'team-prod'
+
+    @pytest.mark.asyncio
     async def test_unpublished_version_refused(self, backend):
         await backend.publish('org-1', 'proj-1', PIPE, ACTOR)
         with pytest.raises(ValueError, match='not published'):

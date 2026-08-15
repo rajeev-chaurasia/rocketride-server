@@ -99,6 +99,11 @@ export default defineConfig(() => {
 						test: /\.md$/,
 						type: 'asset/source',
 					},
+					// Treat .pipe files as JSON so pipeline definitions can be imported.
+					{
+						test: /\.pipe$/,
+						type: 'json',
+					},
 				);
 
 				config.plugins ??= [];
@@ -130,7 +135,7 @@ export default defineConfig(() => {
 			// so chunks resolve correctly regardless of which server/path hosts the remote.
 			assetPrefix: 'auto',
 			cleanDistPath: true,
-			sourceMap: { js: 'source-map', css: true },
+			sourceMap: { js: 'source-map', css: true } as const,
 		},
 	};
 });

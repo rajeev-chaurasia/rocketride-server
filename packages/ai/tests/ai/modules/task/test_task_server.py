@@ -216,7 +216,7 @@ def test_get_task_control_with_require_denies_without_membership(monkeypatch):
 
     ts = _make_server()
     ts._task_control['tk_1'] = _make_control()
-    account = SimpleNamespace(userId='u', defaultTeam='t', sysPermissions=[])
+    account = SimpleNamespace(userId='u', devTeam='t', sysPermissions=[])
 
     with pytest.raises(PermissionError, match='no permissions for this task'):
         ts.get_task_control('tk_1', account_info=account, require='task.debug')
@@ -230,7 +230,7 @@ def test_get_task_control_with_require_enforces_permission(monkeypatch):
 
     ts = _make_server()
     ts._task_control['tk_1'] = _make_control()
-    account = SimpleNamespace(userId='u', defaultTeam='t', sysPermissions=[])
+    account = SimpleNamespace(userId='u', devTeam='t', sysPermissions=[])
 
     with pytest.raises(PermissionError, match="'task.debug' denied"):
         ts.get_task_control('tk_1', account_info=account, require='task.debug')
@@ -245,7 +245,7 @@ def test_get_task_control_with_require_passes_when_granted(monkeypatch):
     ts = _make_server()
     control = _make_control()
     ts._task_control['tk_1'] = control
-    account = SimpleNamespace(userId='u', defaultTeam='t', sysPermissions=[])
+    account = SimpleNamespace(userId='u', devTeam='t', sysPermissions=[])
 
     assert ts.get_task_control('tk_1', account_info=account, require='task.debug') is control
 
@@ -259,7 +259,7 @@ def test_get_task_control_with_require_sys_admin_bypasses():
     control = _make_control()
     ts._task_control['tk_1'] = control
     # No organization at all: only the resolver's sys.admin expansion grants.
-    account = SimpleNamespace(userId='u', defaultTeam='t', sysPermissions=['sys.admin'], organization=None)
+    account = SimpleNamespace(userId='u', devTeam='t', sysPermissions=['sys.admin'], organization=None)
 
     assert ts.get_task_control('tk_1', account_info=account, require='task.debug') is control
 

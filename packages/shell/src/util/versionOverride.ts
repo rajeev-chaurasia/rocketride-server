@@ -63,7 +63,7 @@ export interface AppVersionOverride {
 	version: number;
 	/** The resolved artifact semver — for chip display. */
 	appVersion?: string;
-	/** Signed entry URL minted by rrext_app_deploy/entry. */
+	/** Signed entry URL minted by rrext_deploy_app entry. */
 	url?: string;
 }
 

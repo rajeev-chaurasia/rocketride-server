@@ -86,7 +86,7 @@ def _make_conn(*, account_info=None, server=None, connection_id=1):
     return conn
 
 
-def _account_info(*, user_id='user-1', auth='ak_x', default_team='team-1', organization=None):
+def _account_info(*, user_id='user-1', auth='ak_x', dev_team='team-1', organization=None):
     """Build an AccountInfo-shaped stub.
 
     The default organization contains the default team so the real org
@@ -97,8 +97,8 @@ def _account_info(*, user_id='user-1', auth='ak_x', default_team='team-1', organ
         userId=user_id,
         auth=auth,
         userToken='token-' + user_id,
-        defaultTeam=default_team,
-        organization=organization if organization is not None else {'id': 'org-1', 'teams': [{'id': default_team}]},
+        devTeam=dev_team,
+        organization=organization if organization is not None else {'id': 'org-1', 'teams': [{'id': dev_team}]},
         sysPermissions=[],
     )
 
@@ -112,7 +112,7 @@ def _account_info(*, user_id='user-1', auth='ak_x', default_team='team-1', organ
 async def test_on_execute_starts_task_with_resolved_org_id():
     """on_execute resolves org_id from the user's default team and calls start_task."""
     organization = {'id': 'org-B', 'teams': [{'id': 'team-1'}, {'id': 'team-other'}]}
-    account = _account_info(user_id='user-1', default_team='team-1', organization=organization)
+    account = _account_info(user_id='user-1', dev_team='team-1', organization=organization)
 
     server = MagicMock()
     server.start_task = AsyncMock(return_value={'token': 'tk_new'})
@@ -153,7 +153,7 @@ async def test_on_execute_ignores_client_team_override(monkeypatch):
     organization = {'id': 'org-1', 'teams': [{'id': 'team-1'}, {'id': 'team-target'}]}
     server = MagicMock()
     server.start_task = AsyncMock(return_value={'token': 'tk_new'})
-    conn = _make_conn(account_info=_account_info(default_team='team-1', organization=organization), server=server)
+    conn = _make_conn(account_info=_account_info(dev_team='team-1', organization=organization), server=server)
 
     # A stray teamId must NOT raise — it is silently ignored.
     await TaskCommands.on_execute(conn, {'arguments': {'teamId': 'team-target'}})
@@ -167,7 +167,7 @@ async def test_on_execute_ignores_client_team_override(monkeypatch):
 @pytest.mark.asyncio
 async def test_on_execute_accepts_team_id_matching_session_team(monkeypatch):
     """A teamId EQUAL to the session's team passes (the trusted in-process
-    dispatch sends teamId = the synthesized defaultTeam) and task.control is
+    dispatch sends teamId = the synthesized devTeam) and task.control is
     verified on that team.
     """
     from ai.account import account as account_mod
@@ -178,7 +178,7 @@ async def test_on_execute_accepts_team_id_matching_session_team(monkeypatch):
 
     server = MagicMock()
     server.start_task = AsyncMock(return_value={'token': 'tk_new'})
-    conn = _make_conn(account_info=_account_info(default_team='team-1'), server=server)
+    conn = _make_conn(account_info=_account_info(dev_team='team-1'), server=server)
 
     await TaskCommands.on_execute(conn, {'arguments': {'teamId': 'team-1'}})
 
@@ -186,7 +186,7 @@ async def test_on_execute_accepts_team_id_matching_session_team(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_on_execute_foreign_team_secrets_resolve_to_default_team(monkeypatch):
+async def test_on_execute_foreign_team_secrets_resolve_to_dev_team(monkeypatch):
     """A foreign teamId is ignored, so the env/secret merge resolves the
     SESSION's default team — never the client-supplied one. This closes the
     cross-team secret-exfiltration hole by construction: a client cannot point
@@ -199,7 +199,7 @@ async def test_on_execute_foreign_team_secrets_resolve_to_default_team(monkeypat
 
     server = MagicMock()
     server.start_task = AsyncMock(return_value={'token': 'tk_new'})
-    conn = _make_conn(account_info=_account_info(default_team='team-1'), server=server)
+    conn = _make_conn(account_info=_account_info(dev_team='team-1'), server=server)
 
     await TaskCommands.on_execute(conn, {'arguments': {'teamId': 'team-foreign'}})
 

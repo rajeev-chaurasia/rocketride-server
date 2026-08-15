@@ -369,7 +369,7 @@ export interface ConnectResult {
 	 * ID of the team that should be used by default for operations that do not
 	 * explicitly specify a team context.
 	 */
-	defaultTeam: string;
+	devTeam: string;
 
 	/**
 	 * The organisation the authenticated user belongs to, with its own

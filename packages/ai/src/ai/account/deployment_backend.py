@@ -137,10 +137,20 @@ _REVIEW_TRANSITIONS = {
     ('submit', 'ready'),
     ('submit', 'rejected'),
     ('submit', 'private'),
+    # Content-write compensation: a version whose bytes never fully landed
+    # is dead on arrival — 'failed' is terminal (re-deploying allocates a
+    # NEW version), so no exit edges exist.
+    ('private', 'failed'),
 }
 
 # History action verb recorded for each review target state.
-_REVIEW_ACTION = {'submit': 'request', 'ready': 'approved', 'rejected': 'rejected', 'private': 'withdrawn'}
+_REVIEW_ACTION = {
+    'submit': 'request',
+    'ready': 'approved',
+    'rejected': 'rejected',
+    'private': 'withdrawn',
+    'failed': 'failed',
+}
 
 
 def _assert_review_transition(current: str, target: str) -> None:
@@ -319,12 +329,16 @@ class FileDeploymentBackend:
         project_id: str,
         version: int,
         actor: Dict[str, Any],
+        billing_team_id: str = '',
     ) -> Dict[str, Any]:
         """Set ``team_id``'s deployment of ``project_id`` to ``version``.
 
         Creates the team deployment on first use; otherwise moves the
         pointer. Moving to a LOWER version is recorded as 'rollback' in the
-        history (same operation, honest audit label).
+        history (same operation, honest audit label). ``billing_team_id`` is
+        the ABSOLUTE billing/secrets stamp, decided by the command layer at
+        pointer time and re-stamped on every move — this store never
+        resolves it.
 
         Returns:
             The team's deployment record after the move.
@@ -332,6 +346,8 @@ class FileDeploymentBackend:
         _safe_id(org_id, 'org_id')
         _safe_id(team_id, 'team_id')
         _safe_id(project_id, 'project_id')
+        if billing_team_id:
+            _safe_id(billing_team_id, 'billing_team_id')
         who = _actor_record(actor)
         if not isinstance(version, int) or version < 1:
             raise ValueError('version must be a positive integer')
@@ -347,6 +363,7 @@ class FileDeploymentBackend:
                     'teamId': team_id,
                     'version': version,
                     'state': 'enabled',
+                    'billingTeamId': billing_team_id,
                     'createdAt': now,
                     'createdBy': who,
                     'schedules': {},
@@ -356,7 +373,9 @@ class FileDeploymentBackend:
             else:
                 action = 'rollback' if version < dep['version'] else 'deploy'
                 dep['version'] = version
-                # A pointer move revives a removed/errored deployment.
+                # A pointer move revives a removed/errored deployment — and
+                # RE-STAMPS the billing team: each pointer move re-decides.
+                dep['billingTeamId'] = billing_team_id
                 dep['state'] = 'enabled'
             dep['updatedAt'] = now
             dep['updatedBy'] = who
@@ -566,19 +585,27 @@ class FileDeploymentBackend:
     # READS
     # =========================================================================
 
-    async def list_team(self, org_id: str, team_id: str) -> List[Dict[str, Any]]:
-        """All non-removed deployments of one team, joined with registry info."""
+    async def list_team(self, org_id: str, team_id: 'Optional[str]' = None) -> List[Dict[str, Any]]:
+        """Non-removed deployments joined with registry info.
+
+        ``team_id`` scopes to one team (or ``user~`` personal space); None
+        returns the WHOLE org — every team and every personal space. The
+        backend is mechanical: who may see which rows is the COMMAND
+        layer's visibility model, which slices this list.
+        """
         _safe_id(org_id, 'org_id')
-        _safe_id(team_id, 'team_id')
+        if team_id is not None:
+            _safe_id(team_id, 'team_id')
         out: List[Dict[str, Any]] = []
         for project_id in await self._project_ids(org_id):
             meta = await self._read_meta(org_id, project_id)
             if meta is None:
                 continue
-            dep = meta['deployments'].get(team_id)
-            if not dep or dep.get('state') == 'removed':
-                continue
-            out.append(self._joined(meta, project_id, dep))
+            deps = [meta['deployments'].get(team_id)] if team_id is not None else list(meta['deployments'].values())
+            for dep in deps:
+                if not dep or dep.get('state') == 'removed':
+                    continue
+                out.append(self._joined(meta, project_id, dep))
         return out
 
     async def get(self, org_id: str, team_id: str, project_id: str) -> Optional[Dict[str, Any]]:
@@ -1050,6 +1077,9 @@ class FileDeploymentBackend:
             'teamId': dep['teamId'],
             'version': dep['version'],
             'state': dep['state'],
+            # The absolute billing/secrets stamp — runs read this, never
+            # resolve ('' on records from before the field existed).
+            'billingTeamId': dep.get('billingTeamId', ''),
             'schedules': dep.get('schedules', {}),
             'createdAt': dep.get('createdAt'),
             'createdBy': dep.get('createdBy'),

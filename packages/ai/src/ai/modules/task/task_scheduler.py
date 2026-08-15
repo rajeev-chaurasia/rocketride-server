@@ -341,19 +341,23 @@ class TaskScheduler:
             pipeline['source'] = source_id
 
             # Owner rung: a 'user~{uid}' slot is a PERSONAL (@me) deployment —
-            # the run is USER-owned and bills to the owner's team in this org;
-            # a plain team id is the team-owned dispatch (no human identity).
+            # the run is USER-owned; a plain team id is the team-owned
+            # dispatch (no human identity). Billing is ABSOLUTE: the stamp
+            # was written at pointer time, and fires only ever read it — a
+            # missing stamp (team deleted, pre-stamp record) is
+            # permission-shaped: permanent until a human re-publishes, so
+            # mark errored, don't retry.
+            billing_team = str(dep.get('billingTeamId') or '')
             if team_id.startswith('user~'):
                 owner_kind, owner_user = 'user', team_id[len('user~') :]
-                billing_team = await account.resolve_billing_team(org_id, owner_user)
-                if not billing_team:
-                    # Permission-shaped: permanent until a human acts (the owner
-                    # joined no team in this org) — mark errored, don't retry.
-                    error(f'[SCHEDULER] {entry.key}: owner has no billing team in org; marking errored')
-                    await self._mark_errored(org_id, team_id, project_id)
-                    return
             else:
-                owner_kind, owner_user, billing_team = 'team', '', team_id
+                owner_kind, owner_user = 'team', ''
+                # Team records from before the stamp bill their own audience.
+                billing_team = billing_team or team_id
+            if not billing_team:
+                error(f'[SCHEDULER] {entry.key}: no billing team stamped; marking errored')
+                await self._mark_errored(org_id, team_id, project_id)
+                return
 
             try:
                 ttl = sched.get('ttl')

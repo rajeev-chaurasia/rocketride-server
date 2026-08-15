@@ -48,6 +48,7 @@ import pytest
 from ai.account import account as account_singleton
 from ai.account import dev_overlay, file_store
 from ai.account.app_deploy import handle_app_add, handle_deploy_app, resolve_app_pins
+from ai.account.store import Store
 
 
 # =============================================================================
@@ -55,20 +56,8 @@ from ai.account.app_deploy import handle_app_add, handle_deploy_app, resolve_app
 # =============================================================================
 
 
-class _FakeStore:
-    """Records write_bytes calls (the deploy bundle write)."""
-
-    def __init__(self):
-        # path -> bytes written
-        self.writes = {}
-
-    async def write_bytes(self, path, data):
-        """Record the bundle write."""
-        self.writes[path] = data
-
-
 class _FakeConn:
-    """Minimal TaskConn stand-in: account info + response builders + store."""
+    """Minimal TaskConn stand-in: account info + response builders."""
 
     def __init__(self, user_id='u1', org_id='org1', teams=None, authenticated=True, developer_id='acme'):
         # Account info mirrors the dict-shaped organization the handler accepts
@@ -82,7 +71,10 @@ class _FakeConn:
             if authenticated
             else None
         )
-        self._server = SimpleNamespace(store=_FakeStore())
+        # Content writes go through Store.file_store(internal) — the process
+        # singleton (see the content_store fixture) — NOT through conn state,
+        # so no store fake exists here to drift from the real surface.
+        self._server = SimpleNamespace()
 
     def build_response(self, request, body=None):
         """Success envelope — shape is this fake's own convention."""
@@ -186,8 +178,14 @@ class _FakeRegistry:
             return ''
 
         async def set_artifact_state(org_id, project_id, version, new_state, actor):
+            # The REAL transition guard runs in the fake too — a handler
+            # requesting an edge the backend forbids must fail HERE, not
+            # only in production (the mock-drift lesson).
+            from ai.account.deployment_backend import _assert_review_transition
+
             for v in self.versions:
                 if int(v.get('version', 0)) == int(version):
+                    _assert_review_transition(str(v.get('state') or ''), new_state)
                     v['state'] = new_state
                     return dict(v)
             raise KeyError(version)
@@ -263,6 +261,26 @@ def registry(monkeypatch):
 
 
 @pytest.fixture
+def content_store(monkeypatch, tmp_path):
+    """The REAL Store singleton over a temp filesystem backend.
+
+    The receipt's content writes go through Store.file_store with the
+    internal identity — the actual resolve_scope path runs, and the bytes
+    land under this directory. No store fake: a call against a method the
+    real Store lacks fails here exactly as it would in production.
+    """
+    monkeypatch.setenv('RR_STORE_URL', f'filesystem://{tmp_path}')
+    Store.reset()
+    yield tmp_path
+    Store.reset()
+
+
+def _written(root):
+    """Physical files under the temp store root: relative posix path -> bytes."""
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
+@pytest.fixture
 def mint(monkeypatch):
     """Deterministic signed-URL minter; records nothing, raises never."""
 
@@ -332,12 +350,16 @@ async def test_unknown_subcommand_errors(registry):
 
 
 def _app_zip(manifest=None, files=None):
-    """An in-memory app SOURCE zip: src/ + package.json (+extras)."""
-    manifest = manifest if manifest is not None else {'id': 'acme.brandy', 'name': 'Brandy', 'version': '1.0.0'}
+    """An in-memory app SOURCE zip: src/ + package.json (+extras).
+
+    Mirrors a REAL app's package.json shape: the semver at the TOP level
+    (the control plane), the appManifest block without a version field.
+    """
+    manifest = manifest if manifest is not None else {'id': 'acme.brandy', 'name': 'Brandy'}
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w') as archive:
         archive.writestr('src/App.tsx', 'export default () => null')
-        archive.writestr('package.json', json.dumps({'name': 'brandy', 'appManifest': manifest}))
+        archive.writestr('package.json', json.dumps({'name': 'brandy', 'version': '1.0.0', 'appManifest': manifest}))
         for name, content in (files or {}).items():
             archive.writestr(name, content)
     return buffer.getvalue()
@@ -365,7 +387,7 @@ async def test_add_requires_data_and_valid_zip(registry):
 
 
 @pytest.mark.asyncio
-async def test_add_unpacks_zip_and_returns_rail_entry(registry):
+async def test_add_unpacks_zip_and_returns_rail_entry(registry, content_store):
     """The zip is retained at bundle/, unpacked at source/, and registered kind:'app'."""
     conn = _FakeConn()
     data = _app_zip(files={'assets/logo.svg': 'svg'})
@@ -381,7 +403,7 @@ async def test_add_unpacks_zip_and_returns_rail_entry(registry):
 
     # Content: retained transport zip + the unpacked SOURCE tree (app/ stays
     # reserved for the server build's output)
-    writes = conn._server.store.writes
+    writes = _written(content_store)
     home = 'orgs/org1/files/.apps/acme.brandy/v000001'
     assert f'{home}/bundle/acme.brandy-v000001.zip' in writes
     assert writes[f'{home}/source/src/App.tsx'] == b'export default () => null'
@@ -397,7 +419,7 @@ async def test_add_unpacks_zip_and_returns_rail_entry(registry):
 
 
 @pytest.mark.asyncio
-async def test_add_rejects_unsafe_zip_entries(registry):
+async def test_add_rejects_unsafe_zip_entries(registry, content_store):
     """Path traversal inside the archive is refused before any write."""
     conn = _FakeConn()
     buffer = io.BytesIO()
@@ -408,11 +430,11 @@ async def test_add_rejects_unsafe_zip_entries(registry):
     result = await handle_app_add(conn, _add_request(data=buffer.getvalue()))
     assert result['success'] is False
     assert 'unsafe path' in result['message']
-    assert conn._server.store.writes == {}
+    assert _written(content_store) == {}
 
 
 @pytest.mark.asyncio
-async def test_add_rejects_foreign_namespace_app_id(registry):
+async def test_add_rejects_foreign_namespace_app_id(registry, content_store):
     """Deploy fails fast when the manifest declares an app id outside the
     caller org's developer namespace — the impersonation ('I am org xyz but
     declare rocketride.pipeBuilder') dies before any artifact is created.
@@ -423,7 +445,7 @@ async def test_add_rejects_foreign_namespace_app_id(registry):
     assert result['success'] is False
     assert 'namespace' in result['message']
     assert registry.publish_calls == []
-    assert conn._server.store.writes == {}
+    assert _written(content_store) == {}
 
 
 @pytest.mark.asyncio
@@ -437,7 +459,7 @@ async def test_add_requires_a_developer_id(registry):
 
 
 @pytest.mark.asyncio
-async def test_add_rejects_zip_bomb_on_actual_size(registry, monkeypatch):
+async def test_add_rejects_zip_bomb_on_actual_size(registry, content_store, monkeypatch):
     """The unpacked cap is measured on REAL decompressed bytes, not the
     attacker-controlled declared size — a highly-compressible entry over the
     limit is refused before any registry row or file write.
@@ -455,7 +477,165 @@ async def test_add_rejects_zip_bomb_on_actual_size(registry, monkeypatch):
     assert 'unpacks past' in result['message']
     # Nothing was registered and nothing was written.
     assert registry.publish_calls == []
-    assert conn._server.store.writes == {}
+    assert _written(content_store) == {}
+
+
+@pytest.mark.asyncio
+async def test_add_withdraws_stale_pending_reviews(registry, content_store):
+    """Deploying a new version WITHDRAWS every other version still in
+    'submit' (the queue only ever reviews current work — submit → private,
+    history 'withdrawn'); 'ready' and 'rejected' rows are untouched.
+    """
+    registry.add_version(1, '1.0.0', state='submit')
+    registry.add_version(2, '1.1.0', state='ready')
+    registry.add_version(3, '1.1.5', state='rejected')
+    conn = _FakeConn()
+    result = await handle_app_add(conn, _add_request(data=_app_zip()))
+    assert result['success'] is True
+
+    states = {int(v['version']): str(v['state']) for v in registry.versions}
+    assert states[1] == 'private'  # withdrawn — was in review, now superseded
+    assert states[2] == 'ready'  # approved rows keep serving the store
+    assert states[3] == 'rejected'  # terminal rows never move
+    assert states[4] == 'private'  # the new row, born draft
+
+
+@pytest.mark.asyncio
+async def test_add_app_version_is_package_json_top_level_only(registry, content_store):
+    """package.json is the CONTROL-PLANE truth: appVersion comes from its
+    top-level ``version``, full stop. The appManifest block is a projection
+    (store listing / shell loading) — a stray ``appManifest.version`` can
+    never shadow the app's real semver.
+    """
+    conn = _FakeConn()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        archive.writestr('src/App.tsx', 'x')
+        archive.writestr(
+            'package.json',
+            json.dumps(
+                {
+                    'name': 'brandy',
+                    'version': '1.2.0',
+                    # Decoy: the projection claims a different version — ignored.
+                    'appManifest': {'id': 'acme.brandy', 'name': 'Brandy', 'version': '9.9.9'},
+                }
+            ),
+        )
+    result = await handle_app_add(conn, _add_request(data=buffer.getvalue()))
+    assert result['success'] is True
+    assert registry.publish_calls[0]['artifact']['appVersion'] == '1.2.0'
+    assert result['body']['artifact']['appVersion'] == '1.2.0'
+    # The stored manifest projection is verbatim — not mutated by the receipt.
+    assert registry.publish_calls[0]['metadata']['manifest']['version'] == '9.9.9'
+
+
+@pytest.mark.asyncio
+async def test_add_content_write_failure_flips_row_to_failed(registry, content_store, monkeypatch):
+    """A version whose content never fully lands is compensated: partial
+    writes are removed and the allocated registry row flips to 'failed'
+    (unpublishable, unservable) instead of surviving as a publishable
+    no-bytes version.
+    """
+    from ai.account.file_store import FileStore
+
+    real_write = FileStore.write
+
+    async def failing_write(self, path, data):
+        # The bundle write succeeds; the first source write dies — the
+        # partial-content shape a mid-flight crash leaves behind.
+        if '/source/' in path:
+            raise OSError('disk full')
+        return await real_write(self, path, data)
+
+    monkeypatch.setattr(FileStore, 'write', failing_write)
+    conn = _FakeConn()
+    result = await handle_app_add(conn, _add_request(data=_app_zip()))
+
+    assert result['success'] is False
+    assert 'marked failed' in result['message']
+    # The allocated row was compensated to 'failed' — never publishable
+    assert registry.versions[0]['state'] == 'failed'
+    # The partial bundle write was cleaned up
+    assert _written(content_store) == {}
+
+
+# =============================================================================
+# ADD — workspace-relative layout (metadata.appRoot)
+# =============================================================================
+
+
+def _workspace_zip(app_root='apps/brandy-ui', manifest=None, files=None):
+    """An in-memory WORKSPACE-RELATIVE source zip: the app under ``app_root``,
+    include extras (e.g. a shared source dir) at their own workspace paths.
+    """
+    manifest = manifest if manifest is not None else {'id': 'acme.brandy', 'name': 'Brandy'}
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        archive.writestr(f'{app_root}/src/App.tsx', 'export default () => null')
+        archive.writestr(
+            f'{app_root}/package.json', json.dumps({'name': 'brandy', 'version': '1.0.0', 'appManifest': manifest})
+        )
+        for name, content in (files or {}).items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_add_workspace_layout_reads_manifest_at_app_root(registry, content_store):
+    """With metadata.appRoot the manifest is read from <appRoot>/package.json,
+    the tree unpacks verbatim (include extras at their own paths), and appRoot
+    itself persists with the caller metadata for the build worker.
+    """
+    conn = _FakeConn()
+    data = _workspace_zip(files={'apps/shared/src/util.ts': 'export const u = 1'})
+    result = await handle_app_add(
+        conn,
+        _add_request(data=data, metadata={'projectId': 'wc-1', 'appRoot': 'apps/brandy-ui'}),
+    )
+    assert result['success'] is True
+
+    # The manifest came from the nested package.json, and appRoot persisted
+    call = registry.publish_calls[0]
+    assert call['metadata']['manifest']['id'] == 'acme.brandy'
+    assert call['metadata']['appRoot'] == 'apps/brandy-ui'
+
+    # The workspace tree unpacked AS-IS — relative references between the app
+    # and its include extras survive because nothing was re-rooted
+    writes = _written(content_store)
+    home = 'orgs/org1/files/.apps/acme.brandy/v000001'
+    assert writes[f'{home}/source/apps/brandy-ui/src/App.tsx'] == b'export default () => null'
+    assert writes[f'{home}/source/apps/shared/src/util.ts'] == b'export const u = 1'
+
+
+@pytest.mark.asyncio
+async def test_add_workspace_layout_missing_manifest_names_the_path(registry):
+    """A wrong appRoot names the exact package.json path it looked for."""
+    conn = _FakeConn()
+    result = await handle_app_add(
+        conn,
+        _add_request(data=_workspace_zip(), metadata={'appRoot': 'apps/ghost'}),
+    )
+    assert result['success'] is False
+    assert 'apps/ghost/package.json' in result['message']
+    assert registry.publish_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'app_root',
+    ['/apps/brandy-ui', 'apps/brandy-ui/', 'apps/../secrets', 'apps/./brandy-ui', 'apps\\brandy-ui', 'C:/apps'],
+)
+async def test_add_rejects_unsafe_app_root(registry, app_root):
+    """The appRoot value is guarded like a zip entry — absolute paths,
+    traversal, dot segments, backslashes, and drive letters are refused
+    before any read.
+    """
+    conn = _FakeConn()
+    result = await handle_app_add(conn, _add_request(data=_workspace_zip(), metadata={'appRoot': app_root}))
+    assert result['success'] is False
+    assert 'unsafe' in result['message']
+    assert registry.publish_calls == []
 
 
 # =============================================================================
@@ -559,6 +739,58 @@ async def test_public_publish_requires_dev_org_and_ready_deployment(registry, qu
 
 
 @pytest.mark.asyncio
+async def test_submit_is_latest_only(registry, quiet_push):
+    """Only the NEWEST non-'failed' version may enter review — review
+    tracks current work; older code that should ship is deployed again
+    (new review = new version). A 'failed' newest row never shadows the
+    real newest.
+    """
+    registry.add_version(1, '1.0.0', publisher_id='u1', state='private')
+    registry.add_version(2, '1.1.0', publisher_id='u1', state='private')
+    registry.add_version(3, '1.2.0', publisher_id='u1', state='failed')
+    dev = _FakeConn(teams=_TEAMS, developer_id='acme')
+
+    refused = await handle_deploy_app(dev, _request('submit', version=1))
+    assert refused['success'] is False
+    assert 'newest' in refused['message']
+    assert registry.versions[0]['state'] == 'private'  # nothing moved
+
+    # v2 is the newest LIVE version — the failed v3 does not shadow it.
+    result = await handle_deploy_app(dev, _request('submit', version=2))
+    assert result['success'] is True
+    assert registry.versions[1]['state'] == 'submit'
+
+
+@pytest.mark.asyncio
+async def test_withdraw_cancels_a_pending_review(registry, quiet_push):
+    """The developer's own cancel: withdraw flips submit -> private (back to
+    draft, out of the admin queue). Only 'submit' withdraws — every other
+    state is refused with the version's actual state named — and only the
+    developer org may do it.
+    """
+    registry.add_version(1, '1.0.0', publisher_id='u1', state='submit')
+    registry.add_version(2, '1.1.0', publisher_id='u1', state='ready')
+    dev = _FakeConn(teams=_TEAMS, developer_id='acme')
+
+    result = await handle_deploy_app(dev, _request('withdraw', version=1))
+    assert result['success'] is True
+    assert result['body']['artifact']['state'] == 'private'
+    assert registry.versions[0]['state'] == 'private'
+
+    # A version not in review is refused, naming its actual state.
+    refused = await handle_deploy_app(dev, _request('withdraw', version=2))
+    assert refused['success'] is False
+    assert 'not in review' in refused['message']
+    assert registry.versions[1]['state'] == 'ready'
+
+    # Only the developer namespace owner may withdraw.
+    registry.versions[0]['state'] = 'submit'
+    outsider = _FakeConn(teams=_TEAMS, developer_id='evil')
+    blocked = await handle_deploy_app(outsider, _request('withdraw', version=1))
+    assert blocked['success'] is False
+
+
+@pytest.mark.asyncio
 async def test_submit_flips_the_deployment_into_review(registry, quiet_push):
     """The 'Submit for review' verb flips the DEPLOYMENT private -> submit."""
     registry.add_version(1, '1.0.0', publisher_id='u1', state='private')
@@ -637,8 +869,10 @@ async def test_where_lists_visible_rows_with_deployment_states(registry):
     result = await handle_deploy_app(conn, _request('where'))
 
     pins = {(p['rung'], p['handle'], p['version'], p['state']) for p in result['body']['pins']}
+    # Personal reads back as '@me' — the ONE personal spelling everywhere
+    # ('@user' stays accepted on input, never shown).
     assert pins == {
-        ('personal', '@user', 1, 'ready'),
+        ('personal', '@me', 1, 'ready'),
         ('team', '@team/Development', 2, 'submit'),
         ('public', '@public', 2, 'submit'),
     }

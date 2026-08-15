@@ -114,7 +114,7 @@ class Account(AccountBase):
             phoneNumber='',
             phoneNumberVerified=False,
             locale='',
-            defaultTeam='local',
+            devTeam='local',
             # Single synthetic organisation with org.admin so that
             # resolve_team_permissions expands to the full permission set.
             organization={
@@ -195,7 +195,7 @@ class Account(AccountBase):
     async def update_user(self, user_id: str, display_name: str):
         self._saas_only()
 
-    async def set_default_team(self, user_id: str, team_id: str):
+    async def set_dev_team(self, user_id: str, team_id: str):
         self._saas_only()
 
     async def list_keys(self, user_id: str) -> List:
@@ -257,10 +257,6 @@ class Account(AccountBase):
     # resolve_db_dsn is inherited from AccountBase: env-gated broker call
     # (ROCKETRIDE_DB_BROKER_URL/_TOKEN); raises the cloud-sign-in error when
     # the environment is not configured — the open-source default.
-
-    async def resolve_billing_team(self, org_id: str, user_id: str) -> str:
-        """A personal (@me) run in OSS bills the single synthetic 'local' team."""
-        return 'local'
 
     # =========================================================================
     # APP MANIFEST — read from static apps.json

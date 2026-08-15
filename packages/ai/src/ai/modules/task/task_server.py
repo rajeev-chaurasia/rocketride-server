@@ -574,7 +574,7 @@ class TaskServer(DAPBase):
             phoneNumber='',
             phoneNumberVerified=False,
             locale='',
-            defaultTeam=control.teamId,
+            devTeam=control.teamId,
             organization={
                 'id': control.orgId,
                 'name': '',

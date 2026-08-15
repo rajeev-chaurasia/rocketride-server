@@ -24,7 +24,7 @@
 // FROZEN rocketride SDK contract — floor v1.3 — never edit by hand
 // =============================================================================
 // Floor key:     1.3 (MAJOR.MINOR of packages/client-typescript/package.json)
-// Source commit: f230fdbb15a8ac83c6ba38d78a4c8f9d53fafed3
+// Source commit: 6595b641ed441edc224eb2979fa195d0bd4aa632
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder client-typescript:freeze
 //
@@ -1734,7 +1734,7 @@ export interface ConnectResult {
      * ID of the team that should be used by default for operations that do not
      * explicitly specify a team context.
      */
-    defaultTeam: string;
+    devTeam: string;
     /**
      * The organisation the authenticated user belongs to, with its own
      * permission set and nested team memberships.  Null when the user
@@ -1867,6 +1867,14 @@ export interface ServerInfoResult {
      * public apps (e.g. landing page) before login.
      */
     apps?: AppManifestEntry[];
+    /**
+     * Stripe publishable key (`pk_*`) configured on this server.
+     *
+     * Lets clients initialise Stripe Elements with the key matching the
+     * server's Stripe account (test vs live) instead of a build-time value.
+     * Absent on servers without billing (OSS).
+     */
+    stripePublishableKey?: string;
 }
 /**
  * MIT License
@@ -3304,11 +3312,11 @@ declare class AccountApi {
      */
     updateProfile(fields: ProfileUpdate): Promise<void>;
     /**
-     * Sets the user's preferred default team.
+     * Sets the user's DEV team — the team dev-mode runs bill to and whose environment layer applies.
      *
      * @param teamId - The team ID to set as default.
      */
-    setDefaultTeam(teamId: string): Promise<void>;
+    setDevTeam(teamId: string): Promise<void>;
     /**
      * Switches the user's active organization.
      *
@@ -3920,16 +3928,21 @@ declare class DeployApi {
      * Kind dispatch:
      * - `kind: 'pipe'` (default) — pass `pipeline` (the full definition;
      *   `name` REQUIRED: it renders on every deploy surface forever).
-     * - `kind: 'app'` — pass `data` (ONE zip of the built bundle: dist/* at
-     *   the zip root + package.json carrying the appManifest). The server
-     *   retains the zip and unpacks it at receipt; the app deployment is born
-     *   state 'private' (internally publishable — an @me/@team binding may
-     *   serve it; the developer submits it for review to reach the public store).
+     * - `kind: 'app'` — pass `data` (ONE zip of the app's SOURCE — the server
+     *   owns the build and never trusts client-produced binaries). Two
+     *   layouts: package.json + src at the zip root (legacy), or
+     *   workspace-relative with `metadata.appRoot` naming the app folder so
+     *   `appManifest.include` extras ride at their real workspace paths. The
+     *   server retains the zip and unpacks it at receipt; the app deployment
+     *   is born state 'private' (internally publishable — an @me/@team binding
+     *   may serve it; the developer submits it for review to reach the public
+     *   store).
      *
      * @param options.kind - 'pipe' (default) | 'app'.
      * @param options.pipeline - The pipeline definition (kind 'pipe').
-     * @param options.data - The built-bundle zip bytes (kind 'app').
-     * @param options.metadata - Optional metadata blob (e.g. projectId provenance).
+     * @param options.data - The source zip bytes (kind 'app').
+     * @param options.metadata - Optional metadata blob (e.g. projectId
+     *   provenance, appRoot for workspace-relative app zips).
      * @param options.comment - "What changed" note kept in the registry.
      * @param options.deployTo - Team id to deploy the new version to
      *   immediately (one-step add+deploy; pipes only).
@@ -5180,6 +5193,18 @@ export declare class RocketRideClient extends DAPClient {
      * @returns The binding row ({audience, version, state, artifactState, ...})
      */
     publishApp(appId: string, registryVersion: number, target: string): Promise<{
+        publish: Record<string, unknown>;
+    }>;
+    /**
+     * Remove an audience binding — the app stops serving to that audience.
+     * SOFT: the registry versions and the audit history survive; publishing
+     * to the audience again revives it.
+     *
+     * @param appId - App id
+     * @param target - '@user', '@team/<name-or-id>', or '@public'
+     * @returns The final binding row (state 'removed')
+     */
+    removeAppPublish(appId: string, target: string): Promise<{
         publish: Record<string, unknown>;
     }>;
     /**

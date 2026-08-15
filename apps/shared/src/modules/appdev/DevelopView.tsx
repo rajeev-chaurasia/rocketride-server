@@ -922,10 +922,10 @@ export const DevelopView: React.FC<IDevelopViewProps> = ({ host, previewPane, co
 							Zoom
 							<button
 								style={styles.zoomStepBtn}
-								title="Zoom in 5%"
+								title="Zoom out 5%"
 								disabled={fitMode}
-								onClick={() => setPreviewZoom((z) => Math.min(2, Math.round((z + 0.05) * 100) / 100))}
-							>+</button>
+								onClick={() => setPreviewZoom((z) => Math.max(0.25, Math.round((z - 0.05) * 100) / 100))}
+							>-</button>
 							<input
 								type="range"
 								min={25}
@@ -939,10 +939,10 @@ export const DevelopView: React.FC<IDevelopViewProps> = ({ host, previewPane, co
 							/>
 							<button
 								style={styles.zoomStepBtn}
-								title="Zoom out 5%"
+								title="Zoom in 5%"
 								disabled={fitMode}
-								onClick={() => setPreviewZoom((z) => Math.max(0.25, Math.round((z - 0.05) * 100) / 100))}
-							>-</button>
+								onClick={() => setPreviewZoom((z) => Math.min(2, Math.round((z + 0.05) * 100) / 100))}
+							>+</button>
 							<span style={styles.zoomValue}>{Math.round(effectiveZoom * 100)}%</span>
 						</label>
 						<button

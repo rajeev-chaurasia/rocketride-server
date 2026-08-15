@@ -607,6 +607,7 @@
 		"adm-zip": "^0.5.17",
 		"chart.js": "^4.4.0",
 		"dockerode": "^4.0.12",
+		"ignore": "^7.0.5",
 		"proper-lockfile": "^4.1.2",
 		"shared": "file:../shared",
 		"tar": "^7.5.15",

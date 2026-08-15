@@ -196,7 +196,9 @@ class MiscCommands(DAPConn):
             if hasattr(self, '_account_info') and self._account_info:
                 # Determine org and team IDs from account info
                 org_id = ''
-                team_id = getattr(self._account_info, 'defaultTeam', '') or ''
+                # The dev team's environment layer — one of devTeam's two
+                # legitimate jobs (billing being the other).
+                team_id = getattr(self._account_info, 'devTeam', '') or ''
                 org = getattr(self._account_info, 'organization', None)
                 if org:
                     org_id = org.get('id', '') if isinstance(org, dict) else getattr(org, 'id', '')

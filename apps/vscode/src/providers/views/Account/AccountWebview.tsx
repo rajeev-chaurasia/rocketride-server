@@ -265,9 +265,9 @@ const AccountWebview: React.FC = () => {
 		sendMessageRef.current({ type: 'account:saveProfile', fields });
 	}, []);
 
-	/** Sets the user's preferred default team. */
-	const handleSetDefaultTeam = useCallback(async (teamId: string): Promise<void> => {
-		sendMessageRef.current({ type: 'account:setDefaultTeam', teamId });
+	/** Sets the user's dev team (dev-run billing + env layer). */
+	const handleSetDevTeam = useCallback(async (teamId: string): Promise<void> => {
+		sendMessageRef.current({ type: 'account:setDevTeam', teamId });
 	}, []);
 
 	/** Switches the user's active organization. */
@@ -487,7 +487,7 @@ const AccountWebview: React.FC = () => {
 				activeTeamId={activeTeamId}
 				onActiveTeamIdChange={setActiveTeamId}
 				onSaveProfile={handleSaveProfile}
-				onSetDefaultTeam={handleSetDefaultTeam}
+				onSetDevTeam={handleSetDevTeam}
 				onSetDefaultOrg={handleSetDefaultOrg}
 				onLogout={handleLogout}
 				onDeleteAccount={handleDeleteAccount}

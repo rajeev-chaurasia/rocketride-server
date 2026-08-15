@@ -91,8 +91,12 @@ class AccountInfo(BaseModel):
     phoneNumberVerified: bool = False
     locale: str = ''
 
-    # Default team ID for this session (pre-resolved server-side)
-    defaultTeam: str = ''
+    # The session's DEVELOPMENT team (pre-resolved server-side): the team a
+    # dev-mode run is billed to and whose environment layer applies. Carries
+    # NO authorization meaning — permission checks resolve the union of
+    # memberships (has_permission) or the addressed team
+    # (verify_team_permission), never this field.
+    devTeam: str = ''
 
     # Single org/team/permissions structure — all permission checks resolve through this.
     # None when the user has no org membership (e.g. freshly invited, not yet provisioned).

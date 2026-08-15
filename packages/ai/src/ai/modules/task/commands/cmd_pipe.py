@@ -43,8 +43,10 @@
 # ``_DeployBase`` (cmd_deploy.py), which this mixin inherits.
 #
 # Permission model (checked HERE, at the command layer — the account module is
-# mechanical): reads need task.monitor on the addressed team; mutations, runs,
-# and scheduling need task.control on the TARGET team.
+# mechanical). Reads follow the VISIBILITY model: an org admin sees anything
+# deployed anywhere (any team, any user's personal space); a regular user
+# sees their own personal space and the teams they are a MEMBER of.
+# Mutations, runs, and scheduling need task.control on the TARGET team.
 # =============================================================================
 
 from datetime import datetime
@@ -191,7 +193,11 @@ class DeployPipeCommands(_DeployBase):
         team_id = self._require_team(args, 'task.control')
         org_id = self._org_id()
 
-        dep = await account.deployments_deploy(org_id, team_id, project_id, version, self._actor())
+        # The billing decision happens HERE, at pointer time (absolute):
+        # team audiences bill themselves; @me stamps the publisher's dev
+        # team or refuses. Runs read the stamp and never resolve.
+        billing_team = self._billing_team_of(team_id)
+        dep = await account.deployments_deploy(org_id, team_id, project_id, version, self._actor(), billing_team)
         self._scheduler.sync(org_id, dep)
         await account.audit(
             self._account_info.userId,
@@ -208,21 +214,29 @@ class DeployPipeCommands(_DeployBase):
     # =========================================================================
 
     async def _deploy_list(self, request: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
-        """Deployments for one team (``teamId``) or every monitor-able team."""
+        """Deployments for one addressed scope (``teamId``) or everything visible.
+
+        Visibility model: an org admin sees the WHOLE org — every team and
+        every user's personal space. A regular user sees their own personal
+        space plus the teams they are a member of.
+        """
         org_id = self._org_id()
         if args.get('teamId'):
-            team_id = self._require_team(args, 'task.monitor')
-            team_ids = [team_id]
+            team_id = self._visible_team_ref(args)
+            deployments = await account.deployments_list(org_id, team_id)
         else:
-            team_ids = self._teams_with('task.monitor')
-
-        deployments: List[Dict[str, Any]] = []
-        for team_id in team_ids:
-            deployments.extend(await account.deployments_list(org_id, team_id))
+            # ONE org-wide query, then the caller's visible slice — admins
+            # keep every row; users keep member teams + their own space.
+            deployments = await account.deployments_list(org_id, None)
+            if not self._is_org_admin():
+                visible = set(self._member_team_ids())
+                if self._account_info.userId:
+                    visible.add(f'user~{self._account_info.userId}')
+                deployments = [d for d in deployments if d.get('teamId') in visible]
         # Standard list-API envelope ({rows,total,page,pageSize}): rows are
-        # already materialized (bounded by the caller's team memberships),
-        # so the shared in-Python convention applies. History, by contrast,
-        # pages in the BACKEND (unbounded audit trail).
+        # already materialized (bounded per-org), so the shared in-Python
+        # convention applies. History, by contrast, pages in the BACKEND
+        # (unbounded audit trail).
         body = paginate_rows(
             deployments,
             args,
@@ -233,11 +247,11 @@ class DeployPipeCommands(_DeployBase):
         return self.build_response(request, body=body)
 
     async def _deploy_get(self, request: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
-        """One team deployment, registry-joined."""
+        """One team deployment, registry-joined (visibility-gated scope)."""
         project_id = args.get('projectId')
         if not project_id:
             raise ValueError('projectId is required')
-        team_id = self._require_team(args, 'task.monitor')
+        team_id = self._visible_team_ref(args)
 
         dep = await account.deployments_get(self._org_id(), team_id, project_id)
         if dep is None:
@@ -450,16 +464,20 @@ class DeployPipeCommands(_DeployBase):
         from ..task_server_facade import start_server_task_as_team
 
         # Owner rung: a 'user~{uid}' slot is a PERSONAL (@me) deployment —
-        # the run is USER-owned (private storage/logs/visibility) and its
-        # billing/secrets team is resolved from the owner's context in the
-        # deployment's org; a plain team id stays the team-owned dispatch.
+        # the run is USER-owned (private storage/logs/visibility). Billing
+        # is ABSOLUTE: every publish stamped its billing/secrets team at
+        # pointer time, and runs only ever read the stamp — a missing one
+        # (stamped team deleted, or a pre-stamp record) refuses loudly
+        # instead of resolving anything.
+        billing_team = str(dep.get('billingTeamId') or '')
         if team_id.startswith('user~'):
             owner_kind, owner_user = 'user', team_id[len('user~') :]
-            billing_team = await account.resolve_billing_team(org_id, owner_user)
-            if not billing_team:
-                raise ValueError('Personal deployments need a team in this organization for billing/secrets')
         else:
-            owner_kind, owner_user, billing_team = 'team', '', team_id
+            owner_kind, owner_user = 'team', ''
+            # Team records from before the stamp bill their own audience.
+            billing_team = billing_team or team_id
+        if not billing_team:
+            raise ValueError('This deployment has no billing team — re-publish it after setting your development team')
 
         # A manual run honors the source's execution settings but NOT its
         # run window: the ttl window belongs to scheduled fires — a run the

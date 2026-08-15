@@ -157,8 +157,8 @@ export class AccountProvider {
 				await this.handleSaveProfile(panel, message.fields as Record<string, string>);
 				break;
 
-			case 'account:setDefaultTeam':
-				await this.handleSetDefaultTeam(panel, message.teamId as string);
+			case 'account:setDevTeam':
+				await this.handleSetDevTeam(panel, message.teamId as string);
 				break;
 
 			case 'account:setDefaultOrg':
@@ -416,20 +416,20 @@ export class AccountProvider {
 	}
 
 	/**
-	 * Sets the user's default team and posts the refreshed profile.
+	 * Sets the user's dev team and posts the refreshed profile.
 	 *
 	 * @param panel  - The webview panel.
 	 * @param teamId - The team ID to set as default.
 	 */
-	private async handleSetDefaultTeam(panel: vscode.WebviewPanel, teamId: string): Promise<void> {
+	private async handleSetDevTeam(panel: vscode.WebviewPanel, teamId: string): Promise<void> {
 		const { client } = this.resolveClient();
 		if (!client) {
 			this.postError(panel, 'Not connected');
 			return;
 		}
 
-		// Step 1: send the set_default_team request.
-		await client.account.setDefaultTeam(teamId);
+		// Step 1: send the set_dev_team request.
+		await client.account.setDevTeam(teamId);
 
 		// Step 2: the server pushes a refreshed ConnectResult to all connections
 		// via push_account_update. The SDK updates getAccountInfo() automatically.

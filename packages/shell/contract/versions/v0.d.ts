@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV0 — never edit by hand
 // =============================================================================
-// Generated:     2026-08-10T18:07:26.623Z
-// Source commit: 04eddb914d2f6e59c8af5537444566b08809a0d4
+// Generated:     2026-08-15T06:03:19.276Z
+// Source commit: 6595b641ed441edc224eb2979fa195d0bd4aa632
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -1299,14 +1299,16 @@ export interface SchedulePreview {
  * A task's run log is ONE continuous JSONL event stream per identity;
  * individual runs are chapters (tracks) inside it. Streams are addressed by
  * the plain identity pair (`projectId` + `source`) plus the SCOPE — never by
- * token. THE SCOPE IS THE KIND: `teamId` present addresses that team's
- * DEPLOY continuum (deploy runs execute as the team and log into its tree —
- * teammates with monitor rights can watch/replay); absent addresses the
- * caller's own DEV stream. There is no run-kind wire argument.
+ * token. `teamId` present addresses that team's DEPLOY continuum (deploy
+ * runs execute as the team and log into its tree — teammates with monitor
+ * rights can watch/replay). Absent, the optional `runKind` selects the
+ * caller's OWN continuum: the dev stream (default) or the caller's PERSONAL
+ * (@me) deploy stream — deploy-kind but user-owned, the one case
+ * teamId-presence cannot express.
  */
 /**
- * The two run kinds. Not part of stream addressing (the scope decides) —
- * still stamped on event bodies for client-side filtering.
+ * The two run kinds. Stamped on event bodies for client-side filtering,
+ * and usable as the teamless-scope selector on LogStreamRef (the @me case).
  */
 export type LogRunKind = "dev" | "deploy";
 /** Identity addressing one run-log stream. */
@@ -1315,9 +1317,15 @@ export interface LogStreamRef {
     source: string;
     /**
      * A team id addresses that team's deploy continuum; omitted = the
-     * caller's own dev stream.
+     * caller's own stream (see runKind).
      */
     teamId?: string;
+    /**
+     * Teamless-scope selector: omitted/'dev' = the caller's dev stream;
+     * 'deploy' = the caller's personal (@me) deploy stream. Ignored when
+     * teamId is set (a team scope is always the deploy continuum).
+     */
+    runKind?: LogRunKind;
 }
 /** One chapter (track) — a run inside the continuum. */
 export interface LogChapter {
@@ -1755,7 +1763,7 @@ export interface ConnectResult {
      * ID of the team that should be used by default for operations that do not
      * explicitly specify a team context.
      */
-    defaultTeam: string;
+    devTeam: string;
     /**
      * The organisation the authenticated user belongs to, with its own
      * permission set and nested team memberships.  Null when the user
@@ -1882,6 +1890,14 @@ export interface ServerInfoResult {
      * public apps (e.g. landing page) before login.
      */
     apps?: AppManifestEntry[];
+    /**
+     * Stripe publishable key (`pk_*`) configured on this server.
+     *
+     * Lets clients initialise Stripe Elements with the key matching the
+     * server's Stripe account (test vs live) instead of a build-time value.
+     * Absent on servers without billing (OSS).
+     */
+    stripePublishableKey?: string;
 }
 /**
  * MIT License
@@ -3353,11 +3369,11 @@ declare class AccountApi {
      */
     updateProfile(fields: ProfileUpdate): Promise<void>;
     /**
-     * Sets the user's preferred default team.
+     * Sets the user's DEV team — the team dev-mode runs bill to and whose environment layer applies.
      *
      * @param teamId - The team ID to set as default.
      */
-    setDefaultTeam(teamId: string): Promise<void>;
+    setDevTeam(teamId: string): Promise<void>;
     /**
      * Switches the user's active organization.
      *
@@ -3968,16 +3984,21 @@ declare class DeployApi {
      * Kind dispatch:
      * - `kind: 'pipe'` (default) — pass `pipeline` (the full definition;
      *   `name` REQUIRED: it renders on every deploy surface forever).
-     * - `kind: 'app'` — pass `data` (ONE zip of the built bundle: dist/* at
-     *   the zip root + package.json carrying the appManifest). The server
-     *   retains the zip and unpacks it at receipt; the artifact is born
-     *   state 'submitted' (internally publishable; admin processing gates
-     *   the public track).
+     * - `kind: 'app'` — pass `data` (ONE zip of the app's SOURCE — the server
+     *   owns the build and never trusts client-produced binaries). Two
+     *   layouts: package.json + src at the zip root (legacy), or
+     *   workspace-relative with `metadata.appRoot` naming the app folder so
+     *   `appManifest.include` extras ride at their real workspace paths. The
+     *   server retains the zip and unpacks it at receipt; the app deployment
+     *   is born state 'private' (internally publishable — an @me/@team binding
+     *   may serve it; the developer submits it for review to reach the public
+     *   store).
      *
      * @param options.kind - 'pipe' (default) | 'app'.
      * @param options.pipeline - The pipeline definition (kind 'pipe').
-     * @param options.data - The built-bundle zip bytes (kind 'app').
-     * @param options.metadata - Optional metadata blob (e.g. projectId provenance).
+     * @param options.data - The source zip bytes (kind 'app').
+     * @param options.metadata - Optional metadata blob (e.g. projectId
+     *   provenance, appRoot for workspace-relative app zips).
      * @param options.comment - "What changed" note kept in the registry.
      * @param options.deployTo - Team id to deploy the new version to
      *   immediately (one-step add+deploy; pipes only).
@@ -4466,9 +4487,13 @@ export declare class DataPipe {
  * - `{ projectId, source }` — monitors the CALLER's own dev run of the
  *   project/source (the server binds the connection's user identity).
  * - `{ teamId, projectId, source }` — monitors the team's DEPLOYED run.
+ * - `{ runKind: 'deploy', projectId, source }` — monitors the CALLER's own
+ *   PERSONAL (@me) deploy run: deploy-kind but user-owned, the one case
+ *   teamId-presence cannot express.
  *
- * The scope IS the kind: teamId present addresses the deploy continuum,
- * absent addresses your dev run — there is no run-kind argument.
+ * teamId present always addresses the team's deploy continuum (runKind is
+ * ignored there); absent, the optional runKind selects between your dev
+ * run (default) and your personal deploy run.
  */
 export type MonitorKey = {
     token: string;
@@ -4477,6 +4502,7 @@ export type MonitorKey = {
     projectId: string;
     source: string;
     pipeId?: number;
+    runKind?: "dev" | "deploy";
 };
 export declare class RocketRideClient extends DAPClient {
     /** Maps pipe_id → SSE callback for pipe-scoped real-time event dispatch. */
@@ -5199,17 +5225,42 @@ export declare class RocketRideClient extends DAPClient {
         rungs: string[];
     }>>;
     /**
-     * Publish a deployment to an audience — first publish, update, promote,
-     * and rollback are all this one verb ("repoint, never rebuild").
-     * Private audiences serve immediately; '@public' creates the store row
-     * in 'submitted' state (admin approval flips it live).
+     * Submit a deployed version for store review — flips the DEPLOYMENT's own
+     * state 'private' -> 'submit' (it enters the sys.admin review queue). The
+     * review state lives on the deployment, not a binding. Developer-org and
+     * developer-namespace gated.
+     *
+     * @param appId - App id
+     * @param registryVersion - Registry version number from the rail
+     * @returns The refreshed rail entry ({registryVersion, state, ...})
+     */
+    submitApp(appId: string, registryVersion: number): Promise<{
+        artifact: Record<string, unknown>;
+    }>;
+    /**
+     * Bind a deployment to an audience — first publish, update, promote, and
+     * rollback are all this one verb ("repoint, never rebuild"). The binding
+     * is a pure pointer; '@public' requires the deployment be 'ready'
+     * (approved), '@user'/'@team' accept any non-'failed' deployment.
      *
      * @param appId - App id
      * @param registryVersion - Registry version number from the rail
      * @param target - '@user', '@team/<name-or-id>', or '@public'
-     * @returns The publish row ({audience, version, state, snapshot, ...})
+     * @returns The binding row ({audience, version, state, artifactState, ...})
      */
     publishApp(appId: string, registryVersion: number, target: string): Promise<{
+        publish: Record<string, unknown>;
+    }>;
+    /**
+     * Remove an audience binding — the app stops serving to that audience.
+     * SOFT: the registry versions and the audit history survive; publishing
+     * to the audience again revives it.
+     *
+     * @param appId - App id
+     * @param target - '@user', '@team/<name-or-id>', or '@public'
+     * @returns The final binding row (state 'removed')
+     */
+    removeAppPublish(appId: string, target: string): Promise<{
         publish: Record<string, unknown>;
     }>;
     /**
@@ -6257,6 +6308,17 @@ interface ShellConnectionEventMap {
      */
     "shell:accountUpdate": ConnectResult;
     /**
+     * The user's default organization changed. A pure NOTIFICATION — the
+     * server never swaps a live connection's identity or dictates a
+     * response; each client reacts its own way (the browser shell reloads,
+     * VS Code reloads its window, an app webview with its own connection
+     * does whatever suits it). Re-authenticating resolves the new default
+     * org. Triggered by the `apaext_org_changed` DAP event.
+     */
+    "shell:orgChanged": {
+        orgId: string;
+    };
+    /**
      * Emitted when the service catalog is fetched or refreshed.
      *
      * Contains the full services map, the summary's deduplicated icon
@@ -6514,6 +6576,14 @@ on(event: 'shell:accountUpdate', handler: (payload: ShellConnectionEventMap['she
  * @param handler - Callback invoked when the event fires.
  * @returns An unsubscribe function — call it to remove the handler.
  */
+on(event: 'shell:orgChanged', handler: (payload: ShellConnectionEventMap['shell:orgChanged']) => void): () => void;
+/**
+ * Registers a handler for a typed shell event.
+ *
+ * @param event   - The event name from `ShellConnectionEventMap`.
+ * @param handler - Callback invoked when the event fires.
+ * @returns An unsubscribe function — call it to remove the handler.
+ */
 on(event: 'shell:servicesUpdated', handler: (payload: ShellConnectionEventMap['shell:servicesUpdated']) => void): () => void;
 /**
  * Registers a handler for a typed shell event.
@@ -6722,6 +6792,16 @@ emit(event: 'shell:event', payload: ShellConnectionEventMap['shell:event']): voi
  * @param payload - The payload matching the event's type.
  */
 emit(event: 'shell:accountUpdate', payload: ShellConnectionEventMap['shell:accountUpdate']): void;
+/**
+ * Emits a typed shell event, dispatching to all registered handlers.
+ *
+ * Public so that any code (sidebar, home app, plugins) can fire UI
+ * coordination events through the connection manager.
+ *
+ * @param event   - The event name from `ShellConnectionEventMap`.
+ * @param payload - The payload matching the event's type.
+ */
+emit(event: 'shell:orgChanged', payload: ShellConnectionEventMap['shell:orgChanged']): void;
 /**
  * Emits a typed shell event, dispatching to all registered handlers.
  *
@@ -6982,7 +7062,7 @@ export interface IWorkspaceContext {
     }) => void;
     /** Emit a named event to all subscribers. Does NOT mutate workspace state. */
     /** Emit a named event to all subscribers. Does NOT mutate workspace state. */
-emit: ((event: 'shell:connected', payload: ShellConnectionEventMap['shell:connected']) => void) & ((event: 'shell:disconnected', payload: ShellConnectionEventMap['shell:disconnected']) => void) & ((event: 'shell:statusMessage', payload: ShellConnectionEventMap['shell:statusMessage']) => void) & ((event: 'shell:statusChange', payload: ShellConnectionEventMap['shell:statusChange']) => void) & ((event: 'shell:error', payload: ShellConnectionEventMap['shell:error']) => void) & ((event: 'shell:event', payload: ShellConnectionEventMap['shell:event']) => void) & ((event: 'shell:accountUpdate', payload: ShellConnectionEventMap['shell:accountUpdate']) => void) & ((event: 'shell:servicesUpdated', payload: ShellConnectionEventMap['shell:servicesUpdated']) => void) & ((event: 'shell:appsUpdated', payload: ShellConnectionEventMap['shell:appsUpdated']) => void) & ((event: 'shell:login', payload: ShellConnectionEventMap['shell:login']) => void) & ((event: 'shell:logout', payload: ShellConnectionEventMap['shell:logout']) => void) & ((event: 'shell:loginRequest', payload: ShellConnectionEventMap['shell:loginRequest']) => void) & ((event: 'shell:logoutRequest', payload: ShellConnectionEventMap['shell:logoutRequest']) => void) & ((event: 'shell:switchApp', payload: ShellConnectionEventMap['shell:switchApp']) => void) & ((event: 'shell:subscribe', payload: ShellConnectionEventMap['shell:subscribe']) => void) & ((event: 'shell:unsubscribe', payload: ShellConnectionEventMap['shell:unsubscribe']) => void) & ((event: 'shell:myApps', payload: ShellConnectionEventMap['shell:myApps']) => void) & ((event: 'shell:openOverlay', payload: ShellConnectionEventMap['shell:openOverlay']) => void) & ((event: 'shell:sidebarCollapsing', payload: ShellConnectionEventMap['shell:sidebarCollapsing']) => void) & ((event: 'shell:themeChange', payload: ShellConnectionEventMap['shell:themeChange']) => void) & ((event: 'shell:viewActivated', payload: ShellConnectionEventMap['shell:viewActivated']) => void) & ((event: 'shell:manifestRefresh', payload: ShellConnectionEventMap['shell:manifestRefresh']) => void) & ((event: 'app:statusChanged', payload: ShellConnectionEventMap['app:statusChanged']) => void) & ((event: 'store:changed', payload: ShellConnectionEventMap['store:changed']) => void);
+emit: ((event: 'shell:connected', payload: ShellConnectionEventMap['shell:connected']) => void) & ((event: 'shell:disconnected', payload: ShellConnectionEventMap['shell:disconnected']) => void) & ((event: 'shell:statusMessage', payload: ShellConnectionEventMap['shell:statusMessage']) => void) & ((event: 'shell:statusChange', payload: ShellConnectionEventMap['shell:statusChange']) => void) & ((event: 'shell:error', payload: ShellConnectionEventMap['shell:error']) => void) & ((event: 'shell:event', payload: ShellConnectionEventMap['shell:event']) => void) & ((event: 'shell:accountUpdate', payload: ShellConnectionEventMap['shell:accountUpdate']) => void) & ((event: 'shell:orgChanged', payload: ShellConnectionEventMap['shell:orgChanged']) => void) & ((event: 'shell:servicesUpdated', payload: ShellConnectionEventMap['shell:servicesUpdated']) => void) & ((event: 'shell:appsUpdated', payload: ShellConnectionEventMap['shell:appsUpdated']) => void) & ((event: 'shell:login', payload: ShellConnectionEventMap['shell:login']) => void) & ((event: 'shell:logout', payload: ShellConnectionEventMap['shell:logout']) => void) & ((event: 'shell:loginRequest', payload: ShellConnectionEventMap['shell:loginRequest']) => void) & ((event: 'shell:logoutRequest', payload: ShellConnectionEventMap['shell:logoutRequest']) => void) & ((event: 'shell:switchApp', payload: ShellConnectionEventMap['shell:switchApp']) => void) & ((event: 'shell:subscribe', payload: ShellConnectionEventMap['shell:subscribe']) => void) & ((event: 'shell:unsubscribe', payload: ShellConnectionEventMap['shell:unsubscribe']) => void) & ((event: 'shell:myApps', payload: ShellConnectionEventMap['shell:myApps']) => void) & ((event: 'shell:openOverlay', payload: ShellConnectionEventMap['shell:openOverlay']) => void) & ((event: 'shell:sidebarCollapsing', payload: ShellConnectionEventMap['shell:sidebarCollapsing']) => void) & ((event: 'shell:themeChange', payload: ShellConnectionEventMap['shell:themeChange']) => void) & ((event: 'shell:viewActivated', payload: ShellConnectionEventMap['shell:viewActivated']) => void) & ((event: 'shell:manifestRefresh', payload: ShellConnectionEventMap['shell:manifestRefresh']) => void) & ((event: 'app:statusChanged', payload: ShellConnectionEventMap['app:statusChanged']) => void) & ((event: 'store:changed', payload: ShellConnectionEventMap['store:changed']) => void);
     /** Subscribe to a named event. Returns an unsubscribe function. */
     /** Subscribe to a named event. Returns an unsubscribe function. */
 on(event: 'shell:connected', handler: (payload: ShellConnectionEventMap['shell:connected']) => void): () => void;
@@ -6998,6 +7078,8 @@ on(event: 'shell:error', handler: (payload: ShellConnectionEventMap['shell:error
 on(event: 'shell:event', handler: (payload: ShellConnectionEventMap['shell:event']) => void): () => void;
 /** Subscribe to a named event. Returns an unsubscribe function. */
 on(event: 'shell:accountUpdate', handler: (payload: ShellConnectionEventMap['shell:accountUpdate']) => void): () => void;
+/** Subscribe to a named event. Returns an unsubscribe function. */
+on(event: 'shell:orgChanged', handler: (payload: ShellConnectionEventMap['shell:orgChanged']) => void): () => void;
 /** Subscribe to a named event. Returns an unsubscribe function. */
 on(event: 'shell:servicesUpdated', handler: (payload: ShellConnectionEventMap['shell:servicesUpdated']) => void): () => void;
 /** Subscribe to a named event. Returns an unsubscribe function. */
@@ -7575,6 +7657,14 @@ emit(event: 'shell:accountUpdate', payload: ShellConnectionEventMap['shell:accou
  * @param event   - The event name from ShellConnectionEventMap.
  * @param payload - The payload matching the event's type.
  */
+emit(event: 'shell:orgChanged', payload: ShellConnectionEventMap['shell:orgChanged']): void;
+/**
+ * Emit a typed shell event, dispatching to all registered handlers.
+ * Also pushes to the debug log for the ALT+D panel.
+ *
+ * @param event   - The event name from ShellConnectionEventMap.
+ * @param payload - The payload matching the event's type.
+ */
 emit(event: 'shell:servicesUpdated', payload: ShellConnectionEventMap['shell:servicesUpdated']): void;
 /**
  * Emit a typed shell event, dispatching to all registered handlers.
@@ -7767,6 +7857,14 @@ on(event: 'shell:event', handler: (payload: ShellConnectionEventMap['shell:event
  * @returns An unsubscribe function.
  */
 on(event: 'shell:accountUpdate', handler: (payload: ShellConnectionEventMap['shell:accountUpdate']) => void): () => void;
+/**
+ * Register a typed handler for a shell event.
+ *
+ * @param event   - The event name from ShellConnectionEventMap.
+ * @param handler - Callback invoked when the event fires.
+ * @returns An unsubscribe function.
+ */
+on(event: 'shell:orgChanged', handler: (payload: ShellConnectionEventMap['shell:orgChanged']) => void): () => void;
 /**
  * Register a typed handler for a shell event.
  *
@@ -10865,7 +10963,7 @@ export interface AppVersionOverride {
     version: number;
     /** The resolved artifact semver — for chip display. */
     appVersion?: string;
-    /** Signed entry URL minted by rrext_app_deploy/entry. */
+    /** Signed entry URL minted by rrext_deploy_app entry. */
     url?: string;
 }
 /**
@@ -11114,8 +11212,8 @@ interface IAccountViewProps {
     onActiveTeamIdChange: (id: string | null) => void;
     /** Persists updated profile fields. */
     onSaveProfile: (fields: ProfileUpdate) => Promise<void>;
-    /** Sets the user's preferred default team. */
-    onSetDefaultTeam: (teamId: string) => Promise<void>;
+    /** Sets the user's dev team (dev-run billing + env layer). */
+    onSetDevTeam: (teamId: string) => Promise<void>;
     /** Switches the user's active organization. */
     onSetDefaultOrg: (orgId: string) => Promise<void>;
     /**

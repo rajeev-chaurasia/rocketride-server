@@ -125,15 +125,20 @@ class TaskCommands(DAPConn):
             Exception: If task creation or execution startup fails
         """
         try:
-            # The run team is ALWAYS the session's team context: the user's
-            # profile-assigned development team for client connections, or the
-            # deployment's team for the trusted in-process dispatch (which
-            # synthesizes an AccountInfo with defaultTeam = the run's team).
-            # A client-supplied teamId is IGNORED, never honored — the caller
-            # must not be able to pick the team a run is billed/authorized/
-            # secret-resolved under (same doctrine as the org IDOR fixes).
+            # The run team is ALWAYS the session's DEV TEAM: the team a
+            # development-mode run is billed to and whose environment layer
+            # applies — the user's profile-assigned team for client
+            # connections, or the deployment's team for the trusted
+            # in-process dispatch (which synthesizes an AccountInfo with
+            # devTeam = the run's team). A client-supplied teamId is
+            # IGNORED, never honored — the caller must not be able to pick
+            # the team a run is billed/authorized/secret-resolved under
+            # (same doctrine as the org IDOR fixes).
             args = request.get('arguments') or {}
-            team_id = self._account_info.defaultTeam
+            team_id = self._account_info.devTeam
+            # Billing must never guess: no dev team = no dev run.
+            if not team_id:
+                raise PermissionError('No development team is set — pick one in your profile before running pipelines')
 
             # Verify task.control on the run team BEFORE any secret handling,
             # since the env merge below pulls that team's secrets.
@@ -234,9 +239,9 @@ class TaskCommands(DAPConn):
             Exception: If task creation or execution startup fails
         """
         try:
-            # Authorize against the TASK'S team, not defaultTeam: get_task
+            # Authorize against the TASK'S team, not the dev team: get_task
             # resolves the token to its control entry and requires
-            # task.control on that team (sys.admin bypasses). A defaultTeam
+            # task.control on that team (sys.admin bypasses). A dev-team
             # check alone let any task.control holder restart other teams'
             # token-addressed tasks.
             self.get_task(request, 'task.control')

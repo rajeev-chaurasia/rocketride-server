@@ -47,7 +47,8 @@ Verbs: uploading is the generic ``rrext_deploy add`` verb (kind-dispatched;
 ``handle_app_add`` here is its app branch — zip transport, unpacked at
 receipt). The ``rrext_deploy_app`` command carries the audience/publish
 concerns: ``versions`` (the rail + the caller's rungs), ``submit`` (flip the
-deployment private → submit for review), ``publish`` (bind @me/@team/@public —
+deployment private → submit for review), ``withdraw`` (the developer's own
+cancel: submit → private), ``publish`` (bind @me/@team/@public —
 update, promote, and rollback are all this one pointer move), ``where`` (the
 reverse index), ``entry`` (mint a signed bundle URL for one registry version —
 the desktop version selector's launch path; entitlement-checked at minting),
@@ -132,8 +133,9 @@ def _team_ids_of(conn: Any) -> Dict[str, str]:
 
 def _resolve_target(conn: Any, target: str) -> Dict[str, str]:
     """
-    Resolves a wire target ('@user' | '@team/<name-or-id>' | '@public') to
-    an audience dict ({'type', 'id'}).
+    Resolves a wire target ('@me' | '@team/<name-or-id>' | '@public') to
+    an audience dict ({'type', 'id'}). '@user' is a legacy alias for '@me',
+    accepted on input, never displayed.
 
     The org rung does not exist: org = the governance container; "org-wide"
     distribution is an org-admin-maintained team. @public requires the
@@ -165,7 +167,7 @@ def _resolve_target(conn: Any, target: str) -> Dict[str, str]:
         if ref not in teams:
             raise ValueError(f'Unknown team: {ref!r} (you are not a member, or it does not exist)')
         return {'type': 'team', 'id': teams[ref]}
-    raise ValueError(f'Unknown publish target: {target!r} (use @user, @team/<name>, or @public)')
+    raise ValueError(f'Unknown publish target: {target!r} (use @me, @team/<name>, or @public)')
 
 
 def _audiences_of(conn: Any) -> List[Dict[str, str]]:
@@ -272,21 +274,35 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
     """
     The app branch of the generic ``rrext_deploy add`` verb: DEPLOY an app.
 
-    Receives ONE zip (the built bundle: dist/* at the zip root + package.json
-    + icon/README) via the binary ``arguments.data`` frame. The zip carries
+    Receives ONE zip via the binary ``arguments.data`` frame. The zip carries
     the app's SOURCE (the server owns the build — client-produced binaries
     are never trusted): it is retained at ``$org/.apps/<app_id>/v<N>/bundle/``
     for provenance and unpacked immediately into ``.../v<N>/source/``. The
     ``.../v<N>/app/`` tree stays reserved for the SERVER build's output (the
     build-worker phase) — entry minting points there, so a version serves
-    only once the server has built it. The appManifest read from the packed
-    package.json becomes ``metadata.manifest`` (the listing truth); the
-    optional client-side ``.rrapp`` projectId rides as metadata.projectId.
+    only once the server has built it.
+
+    Two zip layouts, told apart by ``metadata.appRoot``:
+
+    - Absent: legacy app-at-root — package.json at the zip root.
+    - Present: WORKSPACE-RELATIVE — the packer roots the zip at the app's
+      workspace folder so ``appManifest.include`` extras (a shared source
+      dir, a local lib) ride at their real positions and relative
+      references between them survive unpacking verbatim. ``appRoot``
+      names the app folder inside the tree; the manifest is read from
+      ``<appRoot>/package.json`` and the build worker roots there.
+
+    The appManifest read from the packed package.json becomes
+    ``metadata.manifest`` (the listing truth); the optional client-side
+    ``.rrapp`` projectId rides as metadata.projectId, and appRoot itself
+    persists with the caller metadata for the build worker.
 
     Governance: any authenticated org member may deploy (org-open rail).
     The app deployment is born state='private' — internally publishable (an
     @me/@team binding may serve it); the developer submits it for review, and
-    admin approval to 'ready' gates the public store track.
+    admin approval to 'ready' gates the public store track. Deploying also
+    WITHDRAWS every prior version still in 'submit' (→ 'private', history
+    'withdrawn') — the review queue only ever holds current work.
     """
     from ai.account import account
 
@@ -309,8 +325,21 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
         archive = zipfile.ZipFile(io.BytesIO(data))
     except zipfile.BadZipFile:
         return conn.build_error(request, 'data is not a valid zip archive')
+    # appRoot names the app folder inside a workspace-relative zip; its shape
+    # is guarded like a zip entry (it becomes a path inside the source tree).
+    caller_meta = args.get('metadata') if isinstance(args.get('metadata'), dict) else {}
+    app_root = str(caller_meta.get('appRoot') or '')
+    if app_root and (
+        app_root.startswith('/')
+        or app_root.endswith('/')
+        or '\\' in app_root
+        or ':' in app_root
+        or '..' in app_root.split('/')
+        or '.' in app_root.split('/')
+    ):
+        return conn.build_error(request, f'metadata.appRoot has an unsafe path: {app_root!r}')
     try:
-        manifest = _manifest_of_zip(archive)
+        manifest, app_version = _manifest_of_zip(archive, app_root)
     except ValueError as exc:
         return conn.build_error(request, str(exc))
     app_id = str(manifest.get('id') or '')
@@ -328,13 +357,12 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
         return conn.build_error(request, guard_error)
 
     # ── Registry row first: version allocation names the content paths ────
-    caller_meta = args.get('metadata') if isinstance(args.get('metadata'), dict) else {}
     artifact = {
         'kind': 'app',
         'appId': app_id,
         'moduleId': str(manifest.get('moduleId') or app_id.replace('.', '_').replace('-', '_')),
         'name': str(manifest.get('name') or app_id),
-        'appVersion': str(manifest.get('version') or ''),
+        'appVersion': app_version,
         'bundleSha256': hashlib.sha256(data).hexdigest(),
     }
     metadata = {**caller_meta, 'manifest': manifest}
@@ -346,36 +374,103 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
     # ── Content: retained transport zip + the unpacked SOURCE tree ───────
     # source/ holds what the developer shipped; app/ stays reserved for the
     # server build's output so source and servable bytes never mix.
-    home = app_bundle_dir(org_id, app_id, version)
-    await conn._server.store.write_bytes(f'{home}/bundle/{app_id}-v{version:06d}.zip', bytes(data))
-    for item in archive.infolist():
-        if item.is_dir():
+    # EVERYTHING goes through the Store interface — authority is carried by
+    # the IDENTITY, not by which method was called: the internal identity
+    # passes resolve_scope's internal branch (id references, system trees
+    # included), the same pattern as the run-log writer. @/Org/=<id>/<rest>
+    # resolves to the org's .apps registry tree.
+    from ai.account.models import RequestContext
+    from ai.account.store import Store
+
+    fs = Store.file_store(RequestContext.internal('app-deploy'), client_id=info.userId)
+    home = f'@/Org/={org_id}/.apps/{app_id}/v{version:06d}'
+    written: List[str] = []
+    try:
+        path = f'{home}/bundle/{app_id}-v{version:06d}.zip'
+        await fs.write(path, bytes(data))
+        written.append(path)
+        for item in archive.infolist():
+            if item.is_dir():
+                continue
+            path = f'{home}/source/{item.filename}'
+            await fs.write(path, archive.read(item))
+            written.append(path)
+    except Exception as exc:
+        # Compensation: the registry row was allocated BEFORE the content
+        # writes (version allocation names these paths), so a write failure
+        # would otherwise strand an internally-publishable version with no
+        # bytes behind it. Best-effort partial cleanup, then flip the row
+        # to 'failed' — the rail already refuses to publish or serve that
+        # state — and surface the real cause.
+        for path in written:
+            try:
+                await fs.delete(path)
+            except Exception:
+                pass  # best-effort: the 'failed' state alone gates serving
+        try:
+            await account.set_artifact_state(org_id, app_id, version, 'failed', _actor_of(conn))
+        except Exception as flip_exc:
+            debug(f'[app_deploy] could not flip {app_id} v{version} to failed: {flip_exc}')
+        debug(f'[app_deploy] content write failed for {app_id} v{version}: {exc}')
+        return conn.build_error(
+            request, f'deploy failed while storing content (version {version} marked failed): {exc}'
+        )
+
+    # ── Deploying supersedes pending reviews ─────────────────────────────
+    # Every OTHER version still sitting in 'submit' is WITHDRAWN (submit →
+    # private, the legal edge; history records 'withdrawn'): a new deploy
+    # makes older submissions stale by definition, and leaving them queued
+    # spends admin review effort on code that has already been replaced.
+    # Best-effort per row — the deploy itself already succeeded.
+    try:
+        rail = await account.deployments_versions(org_id, app_id)
+    except Exception:
+        rail = []
+    for row in rail:
+        row_version = int(row.get('version', 0))
+        if row_version == version or str(row.get('state') or '') != 'submit':
             continue
-        await conn._server.store.write_bytes(f'{home}/source/{item.filename}', archive.read(item))
+        try:
+            await account.set_artifact_state(org_id, app_id, row_version, 'private', _actor_of(conn))
+            debug(f'[app_deploy] withdrew stale review of {app_id} v{row_version} (superseded by v{version})')
+        except Exception as exc:
+            debug(f'[app_deploy] could not withdraw {app_id} v{row_version}: {exc}')
 
     debug(f'[app_deploy] deployed {app_id} v{artifact["appVersion"]} as registry v{version} (private)')
     # One generic response shape for every kind: rrext_deploy add -> {artifact}
     return conn.build_response(request, body={'artifact': _rail_entry(entry, artifact)})
 
 
-def _manifest_of_zip(archive: Any) -> Dict[str, Any]:
-    """The appManifest from the zip's packed package.json.
+def _manifest_of_zip(archive: Any, app_root: str = '') -> 'tuple[Dict[str, Any], str]':
+    """The appManifest and app semver from the zip's packed package.json.
+
+    ``app_root`` names the app folder inside a workspace-relative zip; when
+    empty the zip is the legacy app-at-root layout and package.json sits at
+    the zip root.
+
+    Returns ``(manifest, version)``. package.json is the CONTROL-PLANE
+    truth: the version is its top-level ``version`` field, full stop. The
+    appManifest block is a PROJECTION for the store listing and the shell's
+    boot-time loading — it is stored verbatim as metadata.manifest and is
+    never consulted for control fields, so a stray ``appManifest.version``
+    can never shadow the app's real semver.
 
     Raises:
         ValueError: package.json missing/unparseable or appManifest absent.
     """
     import json as _json
 
-    if 'package.json' not in archive.namelist():
-        raise ValueError('zip must contain package.json (the appManifest carrier)')
+    pkg_path = f'{app_root}/package.json' if app_root else 'package.json'
+    if pkg_path not in archive.namelist():
+        raise ValueError(f'zip must contain {pkg_path} (the appManifest carrier)')
     try:
-        package = _json.loads(archive.read('package.json'))
+        package = _json.loads(archive.read(pkg_path))
     except Exception:
-        raise ValueError('package.json is not valid JSON')
+        raise ValueError(f'{pkg_path} is not valid JSON')
     manifest = package.get('appManifest')
     if not isinstance(manifest, dict) or not manifest:
         raise ValueError('package.json has no appManifest block')
-    return dict(manifest)
+    return dict(manifest), str(package.get('version') or '')
 
 
 # Zip guards: transport caps that stop hostile archives before extraction.
@@ -588,8 +683,47 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
         artifact = await _artifact_of(account, home, app_id, {'version': version})
         if not isinstance(artifact, dict) or artifact.get('kind') != 'app':
             return conn.build_error(request, f'Registry version {version} of {app_id} is not an app artifact')
+        # Latest-only review: submission is legal ONLY for the newest
+        # non-'failed' version — review tracks current work (deploying
+        # already withdraws stale submissions). Older code that should
+        # ship is deployed again: new review = new version. Enforced HERE,
+        # not just hidden in the UI, so the rule cannot drift.
+        rail = await account.deployments_versions(home, app_id)
+        newest = max((int(r.get('version', 0)) for r in rail if str(r.get('state') or '') != 'failed'), default=0)
+        if version != newest:
+            return conn.build_error(
+                request,
+                f'v{version} is not the newest version of {app_id} (newest is v{newest}) — deploy that code again to submit it for review',
+            )
         try:
             updated = await account.set_artifact_state(home, app_id, version, 'submit', _actor_of(conn))
+        except Exception as exc:
+            return conn.build_error(request, str(exc))
+        return conn.build_response(request, body={'artifact': _rail_entry(updated, artifact)})
+
+    # ── withdraw — cancel a pending review (submit -> private) ────────────
+    # The developer's own cancel: the version leaves the admin queue and
+    # returns to draft (internally publishable as before); history records
+    # 'withdrawn'. Only 'submit' withdraws — terminal states never move.
+    if sub == 'withdraw':
+        version = args.get('version')
+        if not isinstance(version, int):
+            return conn.build_error(request, 'version (registry version number) is required')
+        if not developer:
+            return conn.build_error(request, f'Only the developer organization can withdraw {app_id} from review')
+        try:
+            _assert_owns_namespace(conn, app_id)
+        except ValueError as exc:
+            return conn.build_error(request, str(exc))
+        artifact = await _artifact_of(account, home, app_id, {'version': version})
+        if not isinstance(artifact, dict) or artifact.get('kind') != 'app':
+            return conn.build_error(request, f'Registry version {version} of {app_id} is not an app artifact')
+        entry = await _registry_entry_of(account, home, app_id, version)
+        state = str((entry or {}).get('state') or 'unknown')
+        if state != 'submit':
+            return conn.build_error(request, f'v{version} of {app_id} is not in review (state {state!r})')
+        try:
+            updated = await account.set_artifact_state(home, app_id, version, 'private', _actor_of(conn))
         except Exception as exc:
             return conn.build_error(request, str(exc))
         return conn.build_response(request, body={'artifact': _rail_entry(updated, artifact)})
@@ -715,9 +849,13 @@ def manifest_snapshot(entry: Dict[str, Any], artifact: Dict[str, Any]) -> Dict[s
 
 
 def _audience_handle(conn: Any, audience: Dict[str, str]) -> str:
-    """The display handle of one audience ('@user' | '@team/<name>' | '@public')."""
+    """The display handle of one audience ('@me' | '@team/<name>' | '@public').
+
+    Personal reads back as '@me' — the ONE personal spelling across the
+    platform ('@user' is accepted on input for compatibility, never shown).
+    """
     if audience['type'] == 'user':
-        return '@user'
+        return '@me'
     if audience['type'] == 'public':
         return '@public'
     # Prefer the team's name spelling when the caller can see it

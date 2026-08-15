@@ -26,6 +26,15 @@ export default defineConfig(({ command }) => {
 	}
 
 	return {
+		// Treat .pipe files as JSON so pipeline definitions can be imported.
+		// `as const` keeps the rule's `type` a literal for the config typecheck.
+		tools: {
+			rspack: {
+				module: {
+					rules: [{ test: /\.pipe$/, type: 'json' } as const],
+				},
+			},
+		},
 		server: {
 			port: 3002,
 			base: '/chat/',

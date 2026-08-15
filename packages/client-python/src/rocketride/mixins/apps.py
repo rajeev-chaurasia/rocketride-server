@@ -75,17 +75,40 @@ class AppsMixin(DAPClient):
             version=registry_version,
         )
 
+    async def withdraw_app(self, app_id: str, registry_version: int) -> Dict[str, Any]:
+        """
+        Withdraw a pending review — the developer's own cancel.
+
+        Flips the DEPLOYMENT 'submit' -> 'private': the version leaves the
+        admin queue and returns to draft (internally publishable as before);
+        history records 'withdrawn'. Only a version in 'submit' withdraws.
+        Developer-org and developer-namespace gated, like submit.
+
+        Args:
+            app_id:           App id.
+            registry_version: Registry version number from the rail.
+
+        Returns:
+            Dict with the refreshed ``artifact`` rail entry.
+        """
+        return await self.call(
+            'rrext_deploy_app',
+            subcommand='withdraw',
+            appId=app_id,
+            version=registry_version,
+        )
+
     async def publish_app(self, app_id: str, registry_version: int, target: str) -> Dict[str, Any]:
         """
         Bind a deployment to an audience (first publish / promote / rollback).
 
         The binding is a pure pointer; '@public' requires the deployment be
-        'ready' (approved), '@user'/'@team' accept any non-'failed' deployment.
+        'ready' (approved), '@me'/'@team' accept any non-'failed' deployment.
 
         Args:
             app_id:           App id.
             registry_version: Registry version number from the rail.
-            target:           '@user', '@team/<name-or-id>', or '@public'.
+            target:           '@me', '@team/<name-or-id>', or '@public' ('@user' = legacy alias).
 
         Returns:
             Dict with the ``publish`` binding row ({audience, version, state,
@@ -96,6 +119,27 @@ class AppsMixin(DAPClient):
             subcommand='publish',
             appId=app_id,
             version=registry_version,
+            target=target,
+        )
+
+    async def remove_app_publish(self, app_id: str, target: str) -> Dict[str, Any]:
+        """
+        Remove an audience binding — the app stops serving to that audience.
+
+        SOFT: the registry versions and the audit history survive; publishing
+        to the audience again revives it.
+
+        Args:
+            app_id: App id.
+            target: '@me', '@team/<name-or-id>', or '@public' ('@user' = legacy alias).
+
+        Returns:
+            Dict with the final ``publish`` binding row (state 'removed').
+        """
+        return await self.call(
+            'rrext_deploy_app',
+            subcommand='remove',
+            appId=app_id,
             target=target,
         )
 

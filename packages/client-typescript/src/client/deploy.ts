@@ -100,29 +100,27 @@ export class DeployApi {
 	 * Kind dispatch:
 	 * - `kind: 'pipe'` (default) — pass `pipeline` (the full definition;
 	 *   `name` REQUIRED: it renders on every deploy surface forever).
-	 * - `kind: 'app'` — pass `data` (ONE zip of the built bundle: dist/* at
-	 *   the zip root + package.json carrying the appManifest). The server
-	 *   retains the zip and unpacks it at receipt; the app deployment is born
-	 *   state 'private' (internally publishable — an @me/@team binding may
-	 *   serve it; the developer submits it for review to reach the public store).
+	 * - `kind: 'app'` — pass `data` (ONE zip of the app's SOURCE — the server
+	 *   owns the build and never trusts client-produced binaries). Two
+	 *   layouts: package.json + src at the zip root (legacy), or
+	 *   workspace-relative with `metadata.appRoot` naming the app folder so
+	 *   `appManifest.include` extras ride at their real workspace paths. The
+	 *   server retains the zip and unpacks it at receipt; the app deployment
+	 *   is born state 'private' (internally publishable — an @me/@team binding
+	 *   may serve it; the developer submits it for review to reach the public
+	 *   store).
 	 *
 	 * @param options.kind - 'pipe' (default) | 'app'.
 	 * @param options.pipeline - The pipeline definition (kind 'pipe').
-	 * @param options.data - The built-bundle zip bytes (kind 'app').
-	 * @param options.metadata - Optional metadata blob (e.g. projectId provenance).
+	 * @param options.data - The source zip bytes (kind 'app').
+	 * @param options.metadata - Optional metadata blob (e.g. projectId
+	 *   provenance, appRoot for workspace-relative app zips).
 	 * @param options.comment - "What changed" note kept in the registry.
 	 * @param options.deployTo - Team id to deploy the new version to
 	 *   immediately (one-step add+deploy; pipes only).
 	 * @returns The artifact entry, plus the deployment when `deployTo` was given.
 	 */
-	async add(options: {
-		kind?: 'pipe' | 'app' | 'node';
-		pipeline?: PipelineConfig & { name: string };
-		data?: Uint8Array;
-		metadata?: Record<string, unknown>;
-		comment?: string;
-		deployTo?: string;
-	}): Promise<PublishResult> {
+	async add(options: { kind?: 'pipe' | 'app' | 'node'; pipeline?: PipelineConfig & { name: string }; data?: Uint8Array; metadata?: Record<string, unknown>; comment?: string; deployTo?: string }): Promise<PublishResult> {
 		return this.client.call<PublishResult>('rrext_deploy', {
 			subcommand: 'add',
 			kind: options.kind ?? 'pipe',

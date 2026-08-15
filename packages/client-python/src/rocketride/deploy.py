@@ -137,17 +137,22 @@ class DeployApi:
             dict; ``name`` is REQUIRED (server-enforced): artifacts are
             immutable and pipelineName renders on every deploy surface, so a
             nameless deploy would show as a project GUID forever.
-          - ``kind='app'``: pass ``data`` — ONE zip of the built bundle
-            (dist/* at the zip root + package.json carrying the appManifest).
-            The server retains the zip and unpacks it at receipt; the app
-            deployment is born state 'private' (an @me/@team binding may serve
-            it; the developer submits it for review to reach the public store).
+          - ``kind='app'``: pass ``data`` — ONE zip of the app's SOURCE (the
+            server owns the build and never trusts client-produced binaries).
+            Two layouts: package.json + src at the zip root (legacy), or
+            workspace-relative with ``metadata.appRoot`` naming the app folder
+            so ``appManifest.include`` extras ride at their real workspace
+            paths. The server retains the zip and unpacks it at receipt; the
+            app deployment is born state 'private' (an @me/@team binding may
+            serve it; the developer submits it for review to reach the public
+            store).
 
         Args:
             pipeline: Pipeline definition (kind 'pipe').
             kind: 'pipe' (default) or 'app'.
-            data: Built-bundle zip bytes (kind 'app').
-            metadata: Optional metadata blob (e.g. projectId provenance).
+            data: Source zip bytes (kind 'app').
+            metadata: Optional metadata blob (e.g. projectId provenance,
+                appRoot for workspace-relative app zips).
             comment: Optional "what changed" note kept in the registry.
             deploy_to: Optional team id to deploy the new version to
                 immediately (one-step add+deploy; pipes only).
