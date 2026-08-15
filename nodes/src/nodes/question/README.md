@@ -1,6 +1,12 @@
 # question
 
-A RocketRide filter node that wraps incoming text as a `Question` object without modification.
+A RocketRide filter node that trims incoming text and wraps it as a `Question` object.
+
+## About RocketRide
+
+RocketRide is the pipeline runtime that hosts this node and provides the lanes
+that move values between components. Question is implemented as a RocketRide
+Python filter.
 
 ## What it does
 
@@ -8,19 +14,31 @@ Takes raw text from the `text` lane, strips surrounding whitespace, and encapsul
 
 If the text is empty or whitespace-only after stripping, the node calls `preventDefault` and skips processing. The pipeline continues to the next node without emitting a question.
 
-The implementation is pure Python with no external dependencies (`requirements.txt` is empty).
+Choose Question when a pipeline has text that a downstream component expects as
+a typed question. Choose Prompt instead when the question must also be combined
+with instructions, documents, tables, or other context.
 
----
-
-## Configuration
-
-### Lanes
+## Lanes
 
 | Lane in | Lane out    | Description                                     |
 |---------|-------------|-------------------------------------------------|
 | `text`  | `questions` | Wrap text as a Question and pass it downstream  |
 
-None. The node has no configurable fields and ships a single empty `default` profile.
+## Configuration
+
+This node has no configurable fields. The single `default` profile is empty,
+so wiring is the only setup: send non-empty text to `text` and consume the
+result from `questions`.
+
+## Requirements
+
+The node is marked GPU-capable in its metadata, but its implementation only
+strips text and creates a `Question`; it does not load or call a model. Any
+hardware requirement belongs to the downstream node that handles the question.
+
+## Upstream docs
+
+- [RocketRide documentation](https://docs.rocketride.org)
 
 ---
 

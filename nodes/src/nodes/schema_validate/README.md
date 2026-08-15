@@ -4,6 +4,12 @@ A RocketRide guard node that flags inconsistencies in structured financial facts
 most notably a **cost row stored as revenue** — and makes sure **provenance is never
 dropped**. It is the validation step of the audit-grade financial extraction node suite.
 
+## About RocketRide
+
+RocketRide is the pipeline runtime that hosts this node and carries structured
+answers between nodes. Schema Validate is a RocketRide Python filter whose
+validation logic is deterministic and does not call a remote service.
+
 ## What it does
 
 Reads structured facts on the `answers` lane and, for every fact, runs a set of
@@ -20,7 +26,7 @@ Records that are not fact objects (plain text, bare numbers), and non-dict eleme
 inside a list payload, are **passed through unchanged** — the node never drops a
 record.
 
-## Fact-record convention
+### Fact-record convention
 
 A "fact" is a JSON object. The relevant fields are configurable:
 
@@ -32,7 +38,7 @@ A "fact" is a JSON object. The relevant fields are configurable:
 An answer payload may be a single fact object or a list of fact objects; other shapes
 pass through untouched.
 
-## Checks
+### Checks
 
 | Flag code | Severity | Fires when |
 |---|---|---|
@@ -58,7 +64,7 @@ guessing, and a label matching none is simply not classified. Because it is heur
 categories are recognised from the built-in aliases **plus** the keys of `category_metric_map`, so a
 custom category (e.g. `equity`) added to the map is accepted rather than flagged `unknown_category`.
 
-## Example
+### Example
 
 Input — a cost row wrongly declared as revenue, positive amount, no provenance:
 
@@ -102,7 +108,7 @@ carrying a positive amount.
 A clean fact receives `validation: { "op": "schema_validate", "valid": true, "severity": "ok", "flags": [] }`
 and a provenance entry with `"flag_codes": []` — proof it was checked.
 
-## Provenance handling
+### Provenance handling
 
 The node always appends its own `{ "op": "schema_validate", ... }` entry, never
 rewriting existing entries and preserving order:
@@ -119,32 +125,48 @@ rewriting existing entries and preserving order:
 `missing_provenance` is evaluated against the **incoming** fact, before this node
 appends its own entry, so the guard can actually fire.
 
+## Lanes
+
+| Lane in | Lane out | Description |
+|---|---|---|
+| `answers` | `answers` | Annotates fact dictionaries and re-emits every record; non-fact values pass through. |
+
 ## Configuration
 
-### Lanes
+The default profile expects conventional financial field names and applies all
+checks. Change the field names only when upstream facts use a different schema;
+otherwise the defaults keep the validator and its provenance records consistent.
 
-| Lane      | In → Out              | Behaviour                                                                                     |
-|-----------|-----------------------|-----------------------------------------------------------------------------------------------|
-| `answers` | `answers` → `answers` | Annotates fact objects with a `validation` block; all other records pass through unchanged. |
+### Fact field names
 
-### Fields
+`amount_field`, `currency_field`, `metric_field`, and `category_field` select
+the keys read from each fact. The defaults are `amount`, `currency`, `metric`,
+and `category`. Change all relevant names to match an upstream extraction
+schema; changing only one can turn valid facts into missing-field warnings.
+Blank or whitespace-only configured names fall back to their defaults.
 
-| Field                 | Type    | Default      | Description                                                                                       |
-|-----------------------|---------|--------------|---------------------------------------------------------------------------------------------------|
-| `amount_field`        | string  | `amount`     | The fact field holding the numeric amount.                                                        |
-| `currency_field`      | string  | `currency`   | The fact field holding the currency code.                                                         |
-| `metric_field`        | string  | `metric`     | The fact field naming the line item — classifier input for the mismatch check.                    |
-| `category_field`      | string  | `category`   | The fact field holding the declared classification.                                               |
-| `category_metric_map` | object  | built-in map | Map of canonical category → metric keyword substrings. Empty ⇒ the mismatch check is skipped.      |
-| `sign`                | enum    | `warning`    | Severity for `sign_category_mismatch` (`off` / `warning` / `error`).                               |
-| `require_provenance`  | enum    | `error`      | Severity for `missing_provenance` (`off` / `warning` / `error`).                                   |
+### Category → metric keywords
 
-The node runs with these defaults out of the box. Misconfiguration (an invalid
-severity or a malformed map) logs a warning and falls back to the default rather than
-failing the run. A fact that already carries a `validation` key is re-validated and
-that key is overwritten — this node is its sole owner.
+`category_metric_map` maps a canonical category to a list of metric-label
+substrings. Its default map recognizes revenue, expense, asset, and liability.
+Extend it for corpus-specific labels, or use an empty object to skip the
+metric/category mismatch check. A keyword that appears in more than one
+category makes the metric ambiguous and suppresses that mismatch check, so use
+distinct, deliberate keywords. A malformed map logs a warning and retains the
+built-in default.
 
-## Pipeline position
+### Sign and provenance severity
+
+`sign` and `require_provenance` accept `off`, `warning`, or `error`; their
+defaults are `warning` and `error`. Set either to `off` when that check is not
+meaningful for an input source, use `warning` for review queues, and use
+`error` when the check must make the record invalid. Any other value logs a
+warning and falls back to the default. A pre-existing `validation` field is
+replaced when the fact is re-validated.
+
+## Notes
+
+### Pipeline position
 
 ```text
 datalab_parse → extract_facts → normalize_facts → currency_convert_explicit → schema_validate → authoritative_overlay → reconcile
@@ -156,6 +178,10 @@ extraction suite (epic #1432) and are not all on `develop` yet; `schema_validate
 runs on any upstream that emits fact objects on the `answers` lane.
 
 This node is marked **experimental**.
+
+## Upstream docs
+
+- [RocketRide documentation](https://docs.rocketride.org)
 
 <!-- ROCKETRIDE:GENERATED:PARAMS START -->
 <!-- Generated by nodes:docs-generate. Do not edit by hand. -->
