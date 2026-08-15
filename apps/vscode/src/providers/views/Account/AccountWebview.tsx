@@ -22,6 +22,7 @@ import type { ApiKeyRecord, OrgDetail, MemberRecord, TeamRecord, TeamDetail, Acc
 import type { CheckoutPlan, PromoRedemption, PromoValidation } from 'shell';
 import type { ConnectResult } from 'shell';
 import { useMessaging } from '../hooks/useMessaging';
+import { useStripeKey } from '../hooks/useStripeKey';
 import type { AccountHostToWebview, AccountWebviewToHost } from '../../types/accountTypes';
 
 // =============================================================================
@@ -40,6 +41,9 @@ const AccountWebview: React.FC = () => {
 
 	const [ready, setReady] = useState(false);
 	const [isConnected, setIsConnected] = useState(false);
+	// Server-supplied Stripe publishable key — matches the connected server's
+	// Stripe account instead of a build-time value.
+	const stripeKey = useStripeKey();
 	const [profile, setProfile] = useState<ConnectResult | null>(null);
 	const [authUser, setAuthUser] = useState<ConnectResult | null>(null);
 	const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
@@ -261,9 +265,9 @@ const AccountWebview: React.FC = () => {
 		sendMessageRef.current({ type: 'account:saveProfile', fields });
 	}, []);
 
-	/** Sets the user's preferred default team. */
-	const handleSetDefaultTeam = useCallback(async (teamId: string): Promise<void> => {
-		sendMessageRef.current({ type: 'account:setDefaultTeam', teamId });
+	/** Sets the user's dev team (dev-run billing + env layer). */
+	const handleSetDevTeam = useCallback(async (teamId: string): Promise<void> => {
+		sendMessageRef.current({ type: 'account:setDevTeam', teamId });
 	}, []);
 
 	/** Switches the user's active organization. */
@@ -434,8 +438,6 @@ const AccountWebview: React.FC = () => {
 	// "disconnected" flash while the provider fetches data.
 	if (!ready) return null;
 
-	const stripeKey = process.env.RR_STRIPE_PUBLISHABLE_KEY || '';
-
 	return (
 		<>
 			<AccountView
@@ -485,7 +487,7 @@ const AccountWebview: React.FC = () => {
 				activeTeamId={activeTeamId}
 				onActiveTeamIdChange={setActiveTeamId}
 				onSaveProfile={handleSaveProfile}
-				onSetDefaultTeam={handleSetDefaultTeam}
+				onSetDevTeam={handleSetDevTeam}
 				onSetDefaultOrg={handleSetDefaultOrg}
 				onLogout={handleLogout}
 				onDeleteAccount={handleDeleteAccount}

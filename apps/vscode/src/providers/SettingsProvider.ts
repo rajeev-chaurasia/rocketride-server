@@ -39,6 +39,7 @@ import { getConnectionManager, getEngineRegistry } from '../extension';
 import { AgentManager } from '../agents/agent-manager';
 import { DeployManager } from '../connection/deploy-manager';
 import { ConnectionMessageHandler } from './shared/connection-message-handler';
+import { getStripePublishableKey } from './shared/stripe-key';
 import { isSubscribed } from '../shared/util/subscriptionGate';
 import { PIPE_BUILDER_APP_ID } from '../shared/types';
 
@@ -210,6 +211,14 @@ export class SettingsProvider {
 							const msg = err instanceof Error ? err.message : String(err);
 							panel.webview.postMessage({ type: 'checkout:confirmResult', error: msg });
 						}
+						break;
+					}
+
+					case 'checkout:getStripeKey': {
+						// Server-supplied publishable key (cached per URI) so the
+						// CheckoutModal mounts Stripe for THIS server's account.
+						const key = await getStripePublishableKey(getConnectionManager()?.getClient());
+						panel.webview.postMessage({ type: 'checkout:stripeKey', key });
 						break;
 					}
 

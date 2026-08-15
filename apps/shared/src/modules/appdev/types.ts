@@ -75,12 +75,17 @@ export interface AppSummary {
 // DEPLOY — versions + rungs
 // =============================================================================
 
-/** The four rungs of the publish ladder. */
-export type RungKind = 'personal' | 'team' | 'org' | 'public';
+/** The rungs of the publish ladder: @me (personal), @team, @public.
+ * (There is no org rung — "org-wide" is an org-admin-maintained team.) */
+export type RungKind = 'personal' | 'team' | 'public';
 
 /** One immutable published version, as rendered on the version rail. */
 export interface AppVersionInfo {
-	/** Version label (e.g. "0.5.0-rc.1"). */
+	/** Registry version int — THE wire identity (unique, immutable); every
+	 * action addresses versions by this, never by the display semver. */
+	registryVersion: number;
+	/** The app's semver from the package.json top level (display only —
+	 * may repeat across deploys, and is '' on legacy rows). */
 	version: string;
 	/** Publisher display name (denormalized, like deploy-panel). */
 	author: string;
@@ -92,6 +97,10 @@ export interface AppVersionInfo {
 	message?: string;
 	/** Rungs this version is currently pinned to (chip row). */
 	rungs: RungKind[];
+	/** The deployment's per-version review state: private (draft, internally
+	 * publishable), submit (in review), ready (approved for the store),
+	 * rejected, or failed. */
+	state?: 'private' | 'submit' | 'ready' | 'rejected' | 'failed';
 }
 
 /** One row of the "Where this app is live" reverse index. */
@@ -100,8 +109,11 @@ export interface RungPin {
 	rung: RungKind;
 	/** Row label ("Personal", "Team", "Org", "Public"). */
 	label: string;
-	/** Mono handle ("@rod", "@acme/staging", "App Store"). */
+	/** Mono handle ('@me', '@team/<name>', '@public') — doubles as the
+	 * wire target for publish/remove verbs. */
 	handle: string;
+	/** Pinned registry version int (the wire identity). */
+	registryVersion: number;
 	/** Pinned version label. */
 	version: string;
 	/** Rung state — internal rungs are enabled; public is approved/pending. */
@@ -118,32 +130,44 @@ export interface RungPin {
 // STORE — listing, pre-flight, review
 // =============================================================================
 
-/** One pricing tier of the listing's proposal (live on approval). */
-export interface PricingTier {
-	/** Tier display name ("Basic", "Pro"). */
+/**
+ * One billing plan of the manifest's `appManifest.billing.plans` — the
+ * Stripe-shaped pricing proposal that rides every deploy (the packed
+ * package.json is the listing truth) and goes live on store approval.
+ */
+export interface BillingPlan {
+	/** Plan display name ("Starter", "Pro"). */
 	nickname: string;
 	/** Price in cents. */
 	amountCents: number;
 	/** ISO currency code. */
 	currency: string;
-	/** Billing interval ("month", "year"). */
+	/** Billing interval ("month", "year", "one_time"). */
 	interval: string;
-	/** Credits included per interval, if the tier grants credits. */
-	credits?: number;
+	/**
+	 * Opaque plan metadata (credits, seats, features, ordering, display
+	 * overrides) — preserved verbatim on the save round-trip, never edited
+	 * by the listing form.
+	 */
+	metadata?: Record<string, unknown>;
 }
 
-/** The editable Store listing draft (projection of the app record). */
+/**
+ * The editable Store listing draft — a direct projection of the app's
+ * `package.json` appManifest (mode, name, description, billing.plans).
+ * package.json is the storage: loading reads it, saving writes it back.
+ */
 export interface ListingDraft {
 	/** App id — read-only projection. */
 	appId: string;
-	/** Billing mode. */
+	/** Billing mode (appManifest.mode). */
 	mode: 'free' | 'subscription' | 'paywall';
-	/** Display name. */
+	/** Display name (appManifest.name). */
 	name: string;
-	/** Listing description. */
+	/** Listing description (appManifest.description). */
 	description: string;
-	/** Pricing proposal tiers (empty for free mode). */
-	tiers: PricingTier[];
+	/** Pricing plans (appManifest.billing.plans; empty for free mode). */
+	plans: BillingPlan[];
 }
 
 /** One pre-flight submission check row. */
@@ -285,14 +309,29 @@ export interface IAppBuilderHost {
 	setPref?: (key: string, value: unknown) => void;
 
 	// ── Deploy ───────────────────────────────────────────────────────────
-	/** List published immutable versions, newest first. */
+	/** List deployed immutable versions, newest first. */
 	listVersions?: () => Promise<AppVersionInfo[]>;
-	/** Publish (snapshot) the current build as an immutable version. */
-	publish?: (message: string) => Promise<void>;
-	/** Deploy: pin a rung to a version (update/promote/rollback included). */
-	deploy?: (version: string, target: string) => Promise<void>;
+	/** Deploy: snapshot the current build as the next immutable registry
+	 * version (DEPLOY = copy code to the server). Binds nothing — that is the
+	 * separate publish step. */
+	deploy?: (message: string) => Promise<void>;
+	/** Publish: bind a version to an audience (@me/@team/@public) — the one
+	 * verb for first publish, update, promote, and rollback. Addressed by the
+	 * REGISTRY version int (display semvers may repeat across deploys). */
+	publish?: (version: number, target: string) => Promise<void>;
+	/** Remove an audience binding (SOFT — republishing revives it). The
+	 * target is the pin's handle ('@me' | '@team/<name>' | '@public'). */
+	removePublish?: (target: string) => Promise<void>;
+	/** The caller's team roster — the publish picker's team rows. */
+	listTeams?: () => Promise<Array<{ id: string; name: string }>>;
 	/** The reverse index for the Where-live panel. */
 	getWhereLive?: () => Promise<RungPin[]>;
+	/** The org's registered developer id ('' = not a developer yet). An app can
+	 * only deploy inside a claimed developer namespace (`<developerId>.<name>`). */
+	getDeveloperId?: () => Promise<string>;
+	/** Claim the org's developer id slug (org.admin, self-service — letters and
+	 * underscore only). Returns the assigned slug. */
+	registerDeveloper?: (developerId: string) => Promise<string>;
 
 	// ── Store ────────────────────────────────────────────────────────────
 	/** Load the current listing draft (null = no server record yet). */
@@ -301,8 +340,12 @@ export interface IAppBuilderHost {
 	saveListing?: (draft: ListingDraft) => Promise<void>;
 	/** Run the pre-flight checks for the current build. */
 	runPreflight?: () => Promise<PreflightCheck[]>;
-	/** Submit the given version for public review. */
-	submitForReview?: (version: string) => Promise<void>;
+	/** Submit the given version for public review (addressed by the registry
+	 * version int, like publish). */
+	submitForReview?: (version: number) => Promise<void>;
+	/** Withdraw a pending review (submit -> private) — the developer's own
+	 * cancel; the version returns to draft. */
+	withdrawReview?: (version: number) => Promise<void>;
 	/** Load the per-version review history, newest first. */
 	loadReviewHistory?: () => Promise<ReviewTimelineItem[]>;
 }

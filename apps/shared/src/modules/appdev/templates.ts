@@ -82,12 +82,12 @@ const TS_HEADER = `// ==========================================================
 function packageJson(v: TemplateVars): string {
 	return `${JSON.stringify(
 		{
-			name: v.appId.replace(/\./g, '-'),
+			// npm forbids uppercase in package names; the app id may carry it
+			name: v.appId.replace(/\./g, '-').toLowerCase(),
 			version: '0.1.0',
 			private: true,
-			// ESM package: rsbuild.config.ts uses import syntax — without this
-			// Node re-parses the config per run (MODULE_TYPELESS_PACKAGE_JSON)
-			type: 'module',
+			// No "type" field: the rsbuild config is .mts (self-declaring ESM),
+			// so the package stays typeless and CJS helper scripts keep working.
 			description: `${v.appName} — a RocketRide app`,
 			license: 'MIT',
 			appManifest: {
@@ -131,7 +131,7 @@ function packageJson(v: TemplateVars): string {
 }
 
 /**
- * rsbuild.config.ts — the standalone MF remote shape from
+ * rsbuild.config.mts — the standalone MF remote shape from
  * docs/README-apps.md: moduleId derived from appManifest.id in-config, the
  * src/index.ts async boundary as the entry, shell shared.
  */
@@ -155,6 +155,15 @@ export default defineConfig(() => ({
 			filename: 'remoteEntry.js',
 			exposes: { './AppDescriptor': './src/AppDescriptor.ts' },
 			dts: false,
+			// runtime: false — the host (the shell) provides the MF runtime;
+			// remotes don't embed their own copy, keeping remoteEntry.js
+			// stable across app-code-only rebuilds.
+			runtime: false,
+			// loaded-first: use the host's already-loaded shared instances
+			// instead of version-first's boot-time download of EVERY registered
+			// remoteEntry.js just to compare shared versions (everything here
+			// is singleton + co-deployed).
+			shareStrategy: 'loaded-first',
 			shared: {
 				react: { singleton: true, eager: true, requiredVersion: '^18.2.0' },
 				'react-dom': { singleton: true, eager: true, requiredVersion: '^18.2.0' },
@@ -163,6 +172,10 @@ export default defineConfig(() => ({
 				// platform checkout to build — editor types come from the
 				// installed shell package (the workspace's vendored shell.tgz).
 				'shell': { singleton: true, requiredVersion: false, import: false },
+				// The SDK surface — runtime values (protocol classes, enums,
+				// constants) resolve to the host's singleton so class identity
+				// holds across the container boundary.
+				'rocketride': { singleton: true, requiredVersion: false, import: false },
 				// react-refresh/runtime is deliberately NOT shared: the app's
 				// own copy late-attaches to the devtools hook the dev-flavor
 				// shell created BEFORE react-dom loaded (injectIntoGlobalHook
@@ -171,11 +184,26 @@ export default defineConfig(() => ({
 			},
 		}),
 	],
-	server: { port: ${v.port} },
-	// hmr on, liveReload OFF: hot updates apply in place (the dev-flavor
-	// preview shell carries development React + the refresh runtime), and a
-	// FAILED hot update surfaces as an error instead of location.reload()ing
-	// the embedding shell — the page-reload fallback is what looped forever.
+	// Treat .pipe files as JSON so pipeline definitions can be imported and
+	// passed to client.use({ pipeline }) — the browser has no filesystem, so
+	// filepath loading is Node-only.
+	// \`as const\` keeps the rule's \`type\` a literal for the config typecheck.
+	tools: {
+		rspack: {
+			module: {
+				rules: [{ test: /\\.pipe$/, type: 'json' } as const],
+			},
+		},
+	},
+	// CORS: explicitly allow any origin — the serving host isn't fixed, so no
+	// allowlist is possible; declaring it also stops the MF plugin injecting
+	// its own wildcard defaults (and warning about it).
+	server: { port: ${v.port}, cors: { origin: '*' } },
+	// hmr on; liveReload stays at its DEFAULT (true): a failed hot update
+	// that rejects check() falls back to a full reload of the preview page.
+	// (The historic reload loop came from zombie multi-container HMR clients,
+	// gone since dev-remote injection became once-per-page; the silent-freeze
+	// class is prevented at the source by the AppDescriptor jsx anchor.)
 	// lazyCompilation stays off: compile-on-request made every served bundle
 	// one hash behind, so the dev client always saw itself as stale.
 	// client: the bundle runs INSIDE the preview shell's page (a different
@@ -183,7 +211,7 @@ export default defineConfig(() => ({
 	// from that page's location and never reaches this dev server. '<port>'
 	// is rsbuild's runtime placeholder for the ACTUAL port, so dynamic port
 	// assignment keeps working.
-	dev: { hmr: true, liveReload: false, lazyCompilation: false, client: { protocol: 'ws', host: 'localhost', port: '<port>' } },
+	dev: { hmr: true, lazyCompilation: false, client: { protocol: 'ws', host: 'localhost', port: '<port>' } as const },
 	source: { entry: { index: './src/index.ts' } },
 	output: { assetPrefix: 'auto' },
 }));
@@ -217,11 +245,26 @@ function tsconfigJson(): string {
 				// the shell's share scope at runtime, so nothing platform-side
 				// is ever checked out or copied into the app.
 			},
-			include: ['src'],
+			// The rsbuild config joins the project so the editor checks it with
+			// real settings (a loose config file gets inferred-project noise).
+			include: ['src', 'rsbuild.config.mts'],
 		},
 		null,
 		2,
 	)}\n`;
+}
+
+/** src/global.d.ts — ambient module declarations for bundler-loaded assets. */
+function globalDts(): string {
+	return `${TS_HEADER}
+/** RocketRide pipeline files — JSON with a .pipe extension (see the .pipe
+ * rule in rsbuild.config.mts). Import one and pass it to
+ * client.use({ pipeline }) — browser bundles cannot use filepath loading. */
+declare module '*.pipe' {
+	const value: Record<string, unknown>;
+	export default value;
+}
+`;
 }
 
 /** src/AppDescriptor.ts — the single MF expose. */
@@ -232,6 +275,12 @@ function appDescriptor(v: TemplateVars): string {
  * The shell lazy-loads it on activation and renders \`app\` raw; the app
  * declares its layout inside with <AppLayout>.
  */
+
+// HMR anchor: keeps the shared jsx runtime referenced even when the app's
+// root component fails to compile — an error build otherwise orphans it, the
+// hot runtime tombstones its factory, and every later fix-apply dies
+// silently (the frozen-preview bug).
+import 'react/jsx-dev-runtime';
 
 import type { AppDescriptor } from 'shell';
 import App from './App';
@@ -462,9 +511,10 @@ export function renderTemplate(name: TemplateName, vars: TemplateVars, frame: Fr
 		// The app DOCUMENT (.pipe-style): opening this file is opening the
 		// app in the App Builder; it carries the binding id as JSON.
 		{ path: `${vars.appId.split('.').pop()}.rrapp`, content: `${JSON.stringify({ id: vars.appId }, null, 2)}\n` },
-		{ path: 'rsbuild.config.ts', content: rsbuildConfig(vars) },
+		{ path: 'rsbuild.config.mts', content: rsbuildConfig(vars) },
 		{ path: 'tsconfig.json', content: tsconfigJson() },
 		{ path: 'src/index.ts', content: asyncBoundary() },
+		{ path: 'src/global.d.ts', content: globalDts() },
 		{ path: 'src/AppDescriptor.ts', content: appDescriptor(vars) },
 		{ path: 'src/App.tsx', content: name === 'Dashboard' ? dashboardApp(vars, frame) : blankApp(vars, frame) },
 	];

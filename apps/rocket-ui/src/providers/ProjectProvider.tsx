@@ -764,7 +764,8 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 			// The spread builds publish()'s required-name shape statically —
 			// a truthiness check alone would not narrow the property type.
 			const snapshot = { ...pipeline, name: pipeline.name || documentName };
-			await client.deploy.publish(snapshot, {
+			await client.deploy.add({
+				pipeline: snapshot,
 				...(comment ? { comment } : {}),
 				...(deployTo ? { deployTo } : {}),
 			});
@@ -773,46 +774,67 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 		[client, pipeline, filename, refreshDeployments]
 	);
 
+	/** Own 'user~{uid}' rows are addressed as '@me' on the wire — the server
+	    never accepts raw owner keys, and only the caller's own space is
+	    addressable at all. */
+	const wireOwnTeam = useCallback(
+		(teamId: string): string => {
+			const uid = client?.getAccountInfo?.()?.userId ?? '';
+			return uid && teamId === `user~${uid}` ? '@me' : teamId;
+		},
+		[client]
+	);
+
 	/** Point a team at a version (promotion and rollback alike). */
 	const handleDeployVersion = useCallback(
 		async (version: number, teamId: string): Promise<void> => {
 			if (!client) throw new Error('Not connected');
-			await client.deploy.deploy(projectId, version, teamId);
+			await client.deploy.deploy(projectId, version, wireOwnTeam(teamId));
 			refreshDeployments();
 		},
-		[client, projectId, refreshDeployments]
+		[client, projectId, refreshDeployments, wireOwnTeam]
 	);
 
 	/** Toggle one team deployment's kill switch (where-live state dot). */
 	const handleDeploySetDisabled = useCallback(
 		async (teamId: string, disabled: boolean): Promise<void> => {
 			if (!client) throw new Error('Not connected');
-			if (disabled) await client.deploy.disable(projectId, teamId);
-			else await client.deploy.enable(projectId, teamId);
+			if (disabled) await client.deploy.disable(projectId, wireOwnTeam(teamId));
+			else await client.deploy.enable(projectId, wireOwnTeam(teamId));
 			refreshDeployments();
 		},
-		[client, projectId, refreshDeployments]
+		[client, projectId, refreshDeployments, wireOwnTeam]
+	);
+
+	/** Soft-remove one team's deployment (where-live header verb). */
+	const handleDeployRemove = useCallback(
+		async (teamId: string): Promise<void> => {
+			if (!client) throw new Error('Not connected');
+			await client.deploy.remove(projectId, wireOwnTeam(teamId));
+			refreshDeployments();
+		},
+		[client, projectId, refreshDeployments, wireOwnTeam]
 	);
 
 	/** Set/clear one source's schedule from the where-live pill editor. */
 	const handleDeploySetSchedule = useCallback(
 		async (teamId: string, sourceId: string, cron: string | null, ttl: number | null): Promise<void> => {
 			if (!client) throw new Error('Not connected');
-			await client.deploy.setSchedule(projectId, sourceId, cron, teamId, { ...(ttl !== null ? { ttl } : {}) });
+			await client.deploy.setSchedule(projectId, sourceId, cron, wireOwnTeam(teamId), { ...(ttl !== null ? { ttl } : {}) });
 			refreshDeployments();
 		},
-		[client, projectId, refreshDeployments]
+		[client, projectId, refreshDeployments, wireOwnTeam]
 	);
 
 	/** Pause/resume one source's schedule (the editor's footer verb). */
 	const handleDeploySetSchedulePaused = useCallback(
 		async (teamId: string, sourceId: string, paused: boolean): Promise<void> => {
 			if (!client) throw new Error('Not connected');
-			if (paused) await client.deploy.pauseSchedule(projectId, sourceId, teamId);
-			else await client.deploy.resumeSchedule(projectId, sourceId, teamId);
+			if (paused) await client.deploy.pauseSchedule(projectId, sourceId, wireOwnTeam(teamId));
+			else await client.deploy.resumeSchedule(projectId, sourceId, wireOwnTeam(teamId));
 			refreshDeployments();
 		},
-		[client, projectId, refreshDeployments]
+		[client, projectId, refreshDeployments, wireOwnTeam]
 	);
 
 	/** Fetch one immutable artifact (the version cards' record drawer). */
@@ -867,7 +889,7 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 						const docState = getDocs()?.getState();
 						return (docState ? Object.values(docState.editors).find((editor) => editor.documentUri === uri)?.label : undefined) || projectDisplayName(filename);
 					})()}
-					{...(isReadonly ? {} : { fetchDeployLifecycle, teamDeployments, deployTeams, onDeployPublish: handleDeployPublish, onDeployVersion: handleDeployVersion, onOpenDeployment: handleOpenDeployment, onDeploySetDisabled: handleDeploySetDisabled, onDeploySetSchedule: handleDeploySetSchedule, onDeploySetSchedulePaused: handleDeploySetSchedulePaused, onDeployPreviewSchedule: handleDeployPreviewSchedule, fetchDeployArtifact: handleDeployFetchArtifact, onSaveDocument: () => performSave(filename, pipeline) })}
+					{...(isReadonly ? {} : { fetchDeployLifecycle, teamDeployments, deployTeams, onDeployPublish: handleDeployPublish, onDeployVersion: handleDeployVersion, onOpenDeployment: handleOpenDeployment, onDeploySetDisabled: handleDeploySetDisabled, onDeployRemove: handleDeployRemove, onDeploySetSchedule: handleDeploySetSchedule, onDeploySetSchedulePaused: handleDeploySetSchedulePaused, onDeployPreviewSchedule: handleDeployPreviewSchedule, fetchDeployArtifact: handleDeployFetchArtifact, onSaveDocument: () => performSave(filename, pipeline) })}
 					servicesJson={servicesJson}
 					isConnected={isConnected}
 					isSubscribed={isSubscribed}

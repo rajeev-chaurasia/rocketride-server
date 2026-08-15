@@ -28,6 +28,7 @@ import { getLogger } from '../shared/util/output';
 import { renderTemplate } from 'shared/modules/appdev/templates';
 import type { FrameOptions, TemplateName } from 'shared/modules/appdev/templates';
 import { getExtensionContext } from '../extension';
+import { ensureAppTrigger, ensureProjectId } from './appMarker';
 import { vendorAppTypes } from './appTypes';
 import { getWatchManager } from './watchManager';
 
@@ -35,8 +36,10 @@ import { getWatchManager } from './watchManager';
 // VALIDATION
 // =============================================================================
 
-/** App id shape: `<publisher>.<name>` — lowercase, digits, hyphens per segment. */
-export const APP_ID_RE = /^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/;
+/** App id shape: `<publisher>.<name>` — publisher is letters+underscore
+ * (matches the server developerId rule); name starts with a lowercase
+ * letter, then any mix of letters, underscores, and hyphens. */
+export const APP_ID_RE = /^[a-z][a-z_]*\.[a-z][a-zA-Z_-]*$/;
 
 // =============================================================================
 // TYPES
@@ -229,7 +232,7 @@ export async function scaffoldApp(params: ScaffoldParams): Promise<string> {
 
 	// ── 1. Validate identity (submit-time — the form state may be stale) ─
 	if (!APP_ID_RE.test(appId)) {
-		throw new Error(`Invalid app id "${appId}" — use <publisher>.<name>, lowercase letters, digits, hyphens.`);
+		throw new Error(`Invalid app id "${appId}" — use <publisher>.<name>; the name starts with a lowercase letter, then letters, underscores, and hyphens.`);
 	}
 	if (!appName.trim()) {
 		throw new Error('Display name is required.');
@@ -281,6 +284,12 @@ export async function scaffoldApp(params: ScaffoldParams): Promise<string> {
 		const uri = vscode.Uri.joinPath(target, ...file.path.split('/'));
 		await vscode.workspace.fs.writeFile(uri, Buffer.from(file.content, 'utf8'));
 	}
+
+	// The .rrapp trigger + the appManifest projectId are generated AT
+	// CREATION — deploy provenance never depends on the app having been
+	// opened in the App Builder first.
+	await ensureAppTrigger(target.fsPath, appId);
+	await ensureProjectId(target.fsPath);
 
 	// F5 debug config lives in the WORKSPACE root's .vscode/launch.json —
 	// VSCode only surfaces launch configs from workspace-folder roots, so an

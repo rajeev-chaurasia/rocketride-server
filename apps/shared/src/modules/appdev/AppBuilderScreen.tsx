@@ -26,7 +26,7 @@
 
 /**
  * The App Builder's entire view surface: a top TabControl strip switching
- * the three activity views — DEVELOP | DEPLOY | STORE — with the app's
+ * the three activity views — DEVELOP | STORE | DEPLOY — with the app's
  * `id · version` in the trailing slot (revised decision D1: activity names,
  * no coach bar, no artifact views).
  *
@@ -37,7 +37,7 @@
  * code surfaces are the only host-rendered pieces, passed in as slots.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { TabControl } from 'shell';
 import type { ViewMenu } from 'shell';
 import { DevelopView } from './DevelopView';
@@ -91,6 +91,19 @@ const styles: Record<string, React.CSSProperties> = {
 		alignSelf: 'center',
 		paddingRight: 4,
 	},
+	// Namespace-mismatch banner above the STORE/DEPLOY views — the pages
+	// below it render read-only.
+	nsBanner: {
+		margin: '12px 26px 0',
+		padding: '10px 14px',
+		border: '1px solid var(--rr-color-warning)',
+		borderRadius: 8,
+		background: 'rgba(232,185,49,0.10)',
+		fontSize: 12.5,
+		color: 'var(--rr-text-primary)',
+		lineHeight: 1.5,
+		flexShrink: 0,
+	},
 };
 
 // =============================================================================
@@ -108,12 +121,24 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 	// ── Stage — the active activity view ─────────────────────────────────
 	const [stage, setStage] = useState<AppBuilderStage>(initialStage ?? 'develop');
 
+	// ── Namespace gate ───────────────────────────────────────────────────
+	// The app id's prefix must match the org's developerId to publish. On a
+	// mismatch STORE and DEPLOY render read-only (DEVELOP is untouched —
+	// local work is always allowed). null = unknown (signed out / no org):
+	// no gate, the server enforces ownership anyway.
+	const [developerId, setDeveloperId] = useState<string | null>(null);
+	useEffect(() => {
+		if (!host.getDeveloperId) { setDeveloperId(null); return; }
+		void host.getDeveloperId().then((id) => setDeveloperId(id || null)).catch(() => setDeveloperId(null));
+	}, [host]);
+	const namespaceMismatch = developerId !== null && app.id.split('.')[0] !== developerId;
+
 	// The three activity views, per the settled UI model
 	const viewMenu: ViewMenu = useMemo(() => ({
 		entries: [
 			{ id: 'develop', label: 'Develop' },
-			{ id: 'deploy', label: 'Deploy' },
 			{ id: 'store', label: 'Store' },
+			{ id: 'deploy', label: 'Deploy' },
 		],
 	}), []);
 
@@ -138,13 +163,22 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 				}
 			/>
 
+			{/* Namespace-mismatch banner — why the page below is read-only */}
+			{namespaceMismatch && stage !== 'develop' && (
+				<div style={styles.nsBanner}>
+					<strong>Read-only:</strong> this app&rsquo;s id <code>{app.id}</code> is outside your
+					organization&rsquo;s developer namespace <code>{developerId}</code>. Rename the app id
+					in package.json to <code>{developerId}.&lt;name&gt;</code> to publish it from this org.
+				</div>
+			)}
+
 			{/* Active view body */}
 			<div style={styles.body}>
 				{stage === 'develop' && (
 					<DevelopView host={host} previewPane={previewPane} codePane={codePane} />
 				)}
-				{stage === 'deploy' && <DeployView host={host} app={app} />}
-				{stage === 'store' && <StoreView host={host} app={app} />}
+				{stage === 'deploy' && <DeployView host={host} app={app} readOnly={namespaceMismatch} />}
+				{stage === 'store' && <StoreView host={host} app={app} readOnly={namespaceMismatch} />}
 			</div>
 		</div>
 	);

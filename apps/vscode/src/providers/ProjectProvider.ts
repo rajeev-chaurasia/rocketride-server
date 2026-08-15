@@ -27,9 +27,10 @@ import { PipelineFileParser } from '../shared/util/pipelineParser';
 import { isSubscribed } from '../shared/util/subscriptionGate';
 import { isDeployRunBody } from '../shared/util/runClassification';
 import { handleMissingEnvVars } from '../shared/util/envVarCheck';
-import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo } from '../shared/util/deployMapping';
+import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentRows, mapScheduleRows, teamNameOf, mapDeploymentInfo, wireTeamIdOf } from '../shared/util/deployMapping';
 import type { DeploymentWebviewToHost, DeploymentLoadPayload } from './types/deployTypes';
 import type { LogSessionWebviewToHost } from './types/logTypes';
+import { getStripePublishableKey } from './shared/stripe-key';
 
 // =============================================================================
 // CONSTANTS
@@ -749,6 +750,14 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				}
 
 				// Checkout flow — bridge billing SDK calls for the CheckoutModal
+				case 'checkout:getStripeKey': {
+					// Server-supplied publishable key (cached per URI) so the
+					// CheckoutModal mounts Stripe for THIS server's account.
+					const key = await getStripePublishableKey(this.connectionManager.getClient());
+					webview.postMessage({ type: 'checkout:stripeKey', key });
+					break;
+				}
+
 				case 'checkout:fetchPlans': {
 					try {
 						const billingClient = this.connectionManager.getClient();
@@ -846,7 +855,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 									?.replace(/\.pipe(?:\.json)?$/, '') ||
 								document.uri.path,
 						};
-						await deployClient.deploy.publish(pipeline, { ...(data.comment ? { comment: data.comment as string } : {}), ...(data.deployTo ? { deployTo: data.deployTo as string } : {}) });
+						await deployClient.deploy.add({ pipeline, ...(data.comment ? { comment: data.comment as string } : {}), ...(data.deployTo ? { deployTo: data.deployTo as string } : {}) });
 						webview.postMessage({ type: 'deploy:actionResult', requestId: data.requestId });
 						// Re-push the lifecycle so the strip/history show the new truth.
 						await this.sendDeployData(webview, editorState);
@@ -1033,7 +1042,11 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	 */
 	private async handleDeploymentMessage(webview: vscode.Webview, editorState: EditorState, message: DeploymentWebviewToHost): Promise<void> {
 		const projectId = editorState.projectId ?? '';
-		const teamId = message.teamId;
+		// Personal rows arrive with their raw 'user~{uid}' owner key — the
+		// server only accepts '@me' for the caller's own space, so translate
+		// ONCE here and every fetch/action below addresses it correctly.
+		const ownUid = this.connectionManager.getClient()?.getAccountInfo?.()?.userId ?? '';
+		const teamId = wireTeamIdOf(message.teamId, ownUid);
 
 		switch (message.type) {
 			// -- Snapshot (drawer open, push-triggered and post-mutation refresh) --
@@ -1273,7 +1286,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				schedules: mapScheduleRows(pipeline, dep),
 				...(Object.keys(nextRuns).length > 0 ? { nextRuns } : {}),
 				versions: mapVersionCards(versions.rows ?? []),
-				history: mapHistoryRows(history.rows ?? [], teams),
+				history: mapHistoryRows(history.rows ?? [], teams, client.getAccountInfo?.()?.userId ?? ''),
 				...(nextRun ? { nextRun } : {}),
 				runningSources,
 				canControl: teams.find((t) => t.id === teamId)?.canControl ?? false,
@@ -1329,7 +1342,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			webview.postMessage({
 				type: 'deploy:data',
 				versions: mapVersionCards(versions.rows ?? []),
-				deployments: mapTeamDeploymentRows(deploymentRows, projectId, teams),
+				deployments: mapTeamDeploymentRows(deploymentRows, projectId, teams, client.getAccountInfo?.()?.userId ?? ''),
 				teams,
 			});
 		} catch (error) {

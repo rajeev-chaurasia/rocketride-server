@@ -77,8 +77,13 @@ interface IDeploymentProviderProps {
  * adapters) and re-fetches after each mutation so the header/state chips
  * always reflect the server's truth, not an optimistic guess.
  */
-const DeploymentProvider: React.FC<IDeploymentProviderProps> = ({ teamId, sourceId, projectId, onClose, onOpenSource }) => {
+const DeploymentProvider: React.FC<IDeploymentProviderProps> = ({ teamId: rawTeamId, sourceId, projectId, onClose, onOpenSource }) => {
 	const { client, isConnected } = useShellConnection();
+	// Personal rows arrive with their raw 'user~{uid}' owner key — the server
+	// only accepts '@me' for the caller's own space, so translate ONCE here
+	// and every fetch/action/monitor below addresses it correctly.
+	const ownUid = client?.getAccountInfo?.()?.userId ?? '';
+	const teamId = ownUid && rawTeamId === `user~${ownUid}` ? '@me' : rawTeamId;
 	const { teams, teamName, refresh: refreshDeployments } = useDeployments();
 
 	// --- Server state ---------------------------------------------------------

@@ -17,6 +17,7 @@ import cloudLogoDark from '../../../../../rocketride-dark-icon.png';
 import cloudLogoLight from '../../../../../rocketride-light-icon.png';
 import { settingsStyles as S } from '../../Settings/SettingsWebview';
 import { useTheme } from '../../hooks/useTheme';
+import { useStripeKey } from '../../hooks/useStripeKey';
 import { CheckoutModal } from 'shell';
 import type { CheckoutPlan } from 'shell';
 
@@ -60,7 +61,9 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 	const theme = useTheme();
 	const [showCheckout, setShowCheckout] = useState(false);
 
-	const stripeKey = process.env.RR_STRIPE_PUBLISHABLE_KEY || '';
+	// Server-supplied Stripe publishable key — only fetched when this panel
+	// can actually render a checkout (simplified/Welcome panels never do).
+	const stripeKey = useStripeKey(Boolean(onFetchPlans));
 
 	const handleCheckoutSuccess = useCallback(() => {
 		setShowCheckout(false);

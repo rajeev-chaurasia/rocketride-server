@@ -67,7 +67,7 @@ export type {
 	IAppBuilderHost,
 	ListingDraft,
 	PreflightCheck,
-	PricingTier,
+	BillingPlan,
 	ReviewTimelineItem,
 	RungKind,
 	RungPin,
