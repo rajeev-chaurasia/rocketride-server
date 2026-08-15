@@ -94,13 +94,23 @@ _ANTHROPIC_DEPLOYMENT_SUFFIXES = ('-fast',)
 
 
 def _anthropic_base_model_id(model_gate: str) -> str:
-    """Strip dated (``-YYYYMMDD``) and deployment (``-fast``) suffixes from a model id."""
-    base = _ANTHROPIC_DATED_ID_RE.sub('', model_gate)
-    for suffix in _ANTHROPIC_DEPLOYMENT_SUFFIXES:
-        if base.endswith(suffix):
-            base = base[: -len(suffix)]
-            break
-    return base
+    """Strip dated (``-YYYYMMDD``) and deployment (``-fast``) suffixes from a model id.
+
+    Strips repeatedly so the two compose in either order: both
+    ``claude-opus-4-6-20251101-fast`` and ``claude-opus-4-6-fast-20251101``
+    reduce to ``claude-opus-4-6``. Each pass strictly shortens the id, so the
+    loop terminates.
+    """
+    base = model_gate
+    while True:
+        stripped = _ANTHROPIC_DATED_ID_RE.sub('', base)
+        for suffix in _ANTHROPIC_DEPLOYMENT_SUFFIXES:
+            if stripped.endswith(suffix):
+                stripped = stripped[: -len(suffix)]
+                break
+        if stripped == base:
+            return base
+        base = stripped
 
 
 def _anthropic_uses_legacy_thinking(model_gate: str) -> bool:

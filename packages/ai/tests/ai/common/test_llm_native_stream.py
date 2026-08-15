@@ -222,10 +222,42 @@ def test_legacy_ids_match_whole_segments_not_prefixes(model):
         ('claude-opus-5-fast', 'claude-opus-5'),
         ('claude-sonnet-4-50', 'claude-sonnet-4-50'),  # 2 digits: not a date
         ('claude-sonnet-5', 'claude-sonnet-5'),
+        # Composed suffixes must reduce in either order.
+        ('claude-opus-4-6-20251101-fast', 'claude-opus-4-6'),
+        ('claude-opus-4-6-fast-20251101', 'claude-opus-4-6'),
     ],
 )
 def test_base_model_id_strips_only_dated_and_deployment_suffixes(model, expected_base):
     assert _anthropic_base_model_id(model) == expected_base
+
+
+@pytest.mark.parametrize(
+    'model',
+    [
+        'claude-opus-4-6-20251101-fast',
+        'claude-opus-4-6-fast-20251101',
+        'claude-haiku-4-5-20251001-fast',
+        'claude-sonnet-4-5-20250929-fast',
+    ],
+)
+def test_composed_suffix_legacy_ids_keep_enabled_shape(model):
+    """A dated + deployment id is still the legacy base model, in either suffix order."""
+    kwargs = build_anthropic_thinking_kwargs(gate_model_name(model), _OUT)
+    assert kwargs['thinking']['type'] == 'enabled'
+    assert kwargs['betas'] == ['interleaved-thinking-2025-05-14']
+
+
+@pytest.mark.parametrize(
+    'model',
+    [
+        'claude-opus-5-20260901-fast',
+        'claude-sonnet-5-fast-20260901',
+    ],
+)
+def test_composed_suffix_claude5_ids_keep_adaptive(model):
+    """Composed-suffix normalization must not drag a Claude 5 id into the legacy shape."""
+    kwargs = build_anthropic_thinking_kwargs(gate_model_name(model), _OUT)
+    assert kwargs == {'thinking': _ADAPTIVE}
 
 
 # ---------------------------------------------------------------------------
