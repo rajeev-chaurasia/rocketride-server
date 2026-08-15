@@ -41,10 +41,19 @@ const EnvironmentProvider: React.FC = () => {
 
 	// ── Permission flags ────────────────────────────────────────────────
 	const orgId = authUser?.organization?.id;
-	// ConnectResult.devTeam IS the dev team id ('' when unset).
-	const teamId = authUser?.devTeam || authUser?.organization?.teams?.[0]?.id;
+	const teams = authUser?.organization?.teams;
+	// ConnectResult.devTeam IS the dev team id ('' when unset). After an org
+	// switch it can still name a team from a DIFFERENT org, which the active
+	// org doesn't contain — a foreign id would sail past the non-empty `||`
+	// guard, resolve isTeamAdmin=false, and drive team-scope env reads/writes
+	// against a team the server rejects. Honor devTeam ONLY when it belongs to
+	// the active org's teams; otherwise fall back to the first team.
+	const devTeamId = authUser?.devTeam;
+	const teamId = (devTeamId && teams?.some((t: any) => t.id === devTeamId))
+		? devTeamId
+		: teams?.[0]?.id;
 	const isOrgAdmin = authUser?.organization?.permissions?.includes('org.admin') ?? false;
-	const isTeamAdmin = teamId ? (authUser?.organization?.teams?.find((t: any) => t.id === teamId)?.permissions?.includes('team.admin') ?? false) : false;
+	const isTeamAdmin = teamId ? (teams?.find((t: any) => t.id === teamId)?.permissions?.includes('team.admin') ?? false) : false;
 
 	// ── Single slot config ──────────────────────────────────────────────
 	const slots: EnvironmentSlotConfig[] = [

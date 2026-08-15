@@ -136,6 +136,31 @@ const styles = {
 type RenderPhase = 'loading' | 'shell' | 'error' | 'goodbye' | 'waitlisted';
 
 // =============================================================================
+// VERSION-OVERRIDE ERROR CLASSIFICATION
+// =============================================================================
+
+/**
+ * Whether an appEntry mint failure is a DEFINITIVE server rejection — the
+ * pinned version can never be launched by this user (withdrawn from the
+ * registry, entitlement lost, permission denied) — as opposed to a transient
+ * transport failure (timeout, dropped socket, server briefly unreachable).
+ *
+ * Only a definitive rejection should drop the user's session version override;
+ * a transport failure keeps it so a later boot can re-mint the URL. The server
+ * raises these as PermissionError / ValueError / StorageError whose messages
+ * carry the signals matched below; anything unrecognised is treated as
+ * transient (conservative — a flaky socket must never silently discard a
+ * deep-linked or pinned version).
+ *
+ * @param err - The error thrown by client.appEntry.
+ * @returns True when the override should be dropped.
+ */
+function isDefinitiveOverrideRejection(err: unknown): boolean {
+	const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+	return /not in the registry|not published|no publish|not entitled|entitlement|permission|privilege|forbidden|denied|not found|unknown app|no such/.test(msg);
+}
+
+// =============================================================================
 // SHELL COMPONENT
 // =============================================================================
 
@@ -163,20 +188,30 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 	const [sessionAppId] = useState<string>(() => {
 		const params = new URLSearchParams(window.location.search);
 		const fromUrl = params.get('appId') || params.get('appid') || '';
-		// Deep-link version pin (?appid=X&version=7) — REGISTRY INTS ONLY
-		// (semver is developer-controlled display and never a wire identity).
-		// Non-numeric values are ignored; the post-auth mint effect below
-		// resolves the int to a signed entry URL.
-		const versionParam = Number.parseInt(params.get('version') ?? '', 10);
-		if (fromUrl && Number.isInteger(versionParam) && versionParam > 0) {
-			setAppVersionOverride(fromUrl, { version: versionParam });
-		}
 		if (fromUrl) {
 			cm.setSessionAppId(fromUrl);
 			return fromUrl;
 		}
 		return cm.getSessionAppId();
 	});
+
+	// Deep-link version pin (?appid=X&version=7): seed the session override on
+	// mount — NOT in the useState initializer above, which is impure and would
+	// fire the write twice under StrictMode. REGISTRY INTS ONLY (semver is
+	// developer-controlled display, never a wire identity); a value with any
+	// trailing non-digit (?version=7abc) is REJECTED outright rather than
+	// silently pinned to 7 by parseInt's prefix parsing. The post-auth mint
+	// effect below resolves the int to a signed entry URL.
+	useEffect(() => {
+		const params = new URLSearchParams(window.location.search);
+		const fromUrl = params.get('appId') || params.get('appid') || '';
+		const raw = params.get('version') ?? '';
+		if (fromUrl && /^\d+$/.test(raw)) {
+			const version = Number.parseInt(raw, 10);
+			if (version > 0) setAppVersionOverride(fromUrl, { version });
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- URL is read once on mount
+	}, []);
 
 	// ── Derived flags ─────────────────────────────────────────────────────
 	const isSaas = (config.capabilities ?? []).includes('saas');
@@ -304,13 +339,11 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 
 			// Run the auth bootstrap
 			try {
-				console.log('[boot] Shell: cm.bootstrap START; config.apps ids =', (config.apps ?? []).map((a) => a.id), 'capabilities =', config.capabilities);
 				const result = await cm.bootstrap({
 					apps: config.apps,
 					workspaceDir: config.workspaceDir,
 					onThemeChange: config.themeConfig?.onThemeChange,
 				});
-				console.log('[boot] Shell: cm.bootstrap RETURNED', result ? { hasResult: true, appId: result.appId, apps: (result.result?.apps ?? []).map((a: { id: string }) => a.id) } : null);
 				if (!mountedRef.current) return;
 
 				// Popup completion: deliver the session to the opener's iframe
@@ -390,8 +423,14 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 				// Dev-owned containers keep the live build; unknown apps keep
 				// their override dormant until the app appears in the manifest.
 				if (!app || isDevRemote(app.moduleId)) continue;
+				// Already minted this session and the container is registered at
+				// that URL — nothing to reconcile. Skips a redundant appEntry
+				// round trip every time the `apps` memo yields a new array
+				// identity (identity.apps / config.apps / localAppsSeq change).
+				const current = overrides[appId];
+				if (current.url && getRegisteredEntry(app.moduleId) === current.url) continue;
 				try {
-					const minted = await client.appEntry(appId, overrides[appId].version);
+					const minted = await client.appEntry(appId, current.version);
 					if (cancelled) return;
 					setAppVersionOverride(appId, {
 						version: minted.registryVersion,
@@ -399,13 +438,30 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 						url: minted.url,
 					});
 					if (getRegisteredEntry(app.moduleId) !== minted.url) {
-						repointRemote(app.moduleId, minted.url);
-						invalidateAppDescriptor(appId);
+						// repointRemote refuses a container that already loaded
+						// this document (repointing corrupts its shared getters);
+						// a full reload re-registers the minted URL at boot,
+						// before anything loads.
+						if (repointRemote(app.moduleId, minted.url)) {
+							invalidateAppDescriptor(appId);
+						} else {
+							window.location.reload();
+							return;
+						}
 					}
 				} catch (err) {
 					if (cancelled) return;
-					console.log(`[shell] dropping version override for ${appId}: ${err instanceof Error ? err.message : String(err)}`);
-					clearAppVersionOverride(appId);
+					// Only DROP the pin on a definitive server rejection (the
+					// version is gone or the user lost entitlement). A transient
+					// transport failure (timeout, dropped socket) keeps it so the
+					// next boot can re-mint — losing a deep-linked or pinned
+					// version to a flaky socket would silently strand the user.
+					if (isDefinitiveOverrideRejection(err)) {
+						console.log(`[shell] dropping version override for ${appId}: ${err instanceof Error ? err.message : String(err)}`);
+						clearAppVersionOverride(appId);
+					} else {
+						console.log(`[shell] keeping version override for ${appId} after transient mint failure: ${err instanceof Error ? err.message : String(err)}`);
+					}
 				}
 			}
 		})();
@@ -572,8 +628,6 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 	// frame, so a user-gesture button opens this origin as an auth POPUP
 	// ('rrauth' — see the bootstrap popup role); the popup hands the session
 	// back over BroadcastChannel and this shell reboots authenticated.
-	console.log('[boot] Shell render:', { renderPhase, hasIdentity: !!identity, isSaas, defaultAppId, activeAppId, showApiKeyLogin, showEmbeddedSignIn });
-
 	if (showEmbeddedSignIn) {
 		return (
 			<div style={styles.statusScreen}>

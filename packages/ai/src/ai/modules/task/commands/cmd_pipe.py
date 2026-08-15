@@ -450,53 +450,69 @@ class DeployPipeCommands(_DeployBase):
 
         # The manual path honors the SAME overlap guard as the cron loop:
         # two concurrent runs of one source would share the team storage
-        # anchor (teams/<team>/files/tasks/<project>).
-        if self._scheduler.is_run_active(team_id, project_id, source_id):
+        # anchor (teams/<team>/files/tasks/<project>). RESERVE the slot now,
+        # atomically (no await between check and claim) — checking here and
+        # only registering the token after the awaits below let two concurrent
+        # run-now requests both pass and both start. Everything after the
+        # reservation runs under a try that releases the slot on any failure,
+        # so a failed start never wedges the guard.
+        if not self._scheduler.try_reserve_run(team_id, project_id, source_id):
             raise ValueError(f'A run of {project_id}/{source_id} is already active for team {team_id}')
 
-        # The pointed-at artifact, sha256-verified: what was published is
-        # what runs. The chosen source becomes the run's entry point.
-        pipeline = dict(await account.deployments_artifact(org_id, project_id, dep['version']))
-        pipeline['source'] = source_id
+        try:
+            # The pointed-at artifact, sha256-verified: what was published is
+            # what runs. The chosen source becomes the run's entry point.
+            pipeline = dict(await account.deployments_artifact(org_id, project_id, dep['version']))
+            pipeline['source'] = source_id
 
-        # Function-level import: the facade imports TaskConn, and this module
-        # is a TaskConn mixin — a top-level import would be circular.
-        from ..task_server_facade import start_server_task_as_team
+            # Function-level import: the facade imports TaskConn, and this
+            # module is a TaskConn mixin — a top-level import would be circular.
+            from ..task_server_facade import start_server_task_as_team
 
-        # Owner rung: a 'user~{uid}' slot is a PERSONAL (@me) deployment —
-        # the run is USER-owned (private storage/logs/visibility). Billing
-        # is ABSOLUTE: every publish stamped its billing/secrets team at
-        # pointer time, and runs only ever read the stamp — a missing one
-        # (stamped team deleted, or a pre-stamp record) refuses loudly
-        # instead of resolving anything.
-        billing_team = str(dep.get('billingTeamId') or '')
-        if team_id.startswith('user~'):
-            owner_kind, owner_user = 'user', team_id[len('user~') :]
-        else:
-            owner_kind, owner_user = 'team', ''
-            # Team records from before the stamp bill their own audience.
-            billing_team = billing_team or team_id
-        if not billing_team:
-            raise ValueError('This deployment has no billing team — re-publish it after setting your development team')
+            # Owner rung: a 'user~{uid}' slot is a PERSONAL (@me) deployment —
+            # the run is USER-owned (private storage/logs/visibility). Billing
+            # is ABSOLUTE: every publish stamped its billing/secrets team at
+            # pointer time, and runs only ever read the stamp — a missing one
+            # (stamped team deleted, or a pre-stamp record) refuses loudly
+            # instead of resolving anything.
+            billing_team = str(dep.get('billingTeamId') or '')
+            if team_id.startswith('user~'):
+                owner_kind, owner_user = 'user', team_id[len('user~') :]
+            else:
+                owner_kind, owner_user = 'team', ''
+                # Team records from before the stamp bill their own audience.
+                billing_team = billing_team or team_id
+            if not billing_team:
+                raise ValueError(
+                    'This deployment has no billing team — re-publish it after setting your development team'
+                )
 
-        # A manual run honors the source's execution settings but NOT its
-        # run window: the ttl window belongs to scheduled fires — a run the
-        # user started runs until it finishes or the user stops it.
-        sched = (dep.get('schedules') or {}).get(source_id) or {}
-        token = await start_server_task_as_team(
-            self._server,
-            pipeline,
-            org_id=org_id,
-            team_id=billing_team,
-            trigger='manual',
-            ttl=None,
-            trace_level=sched.get('traceLevel') or 'full',
-            debug_out=bool(sched.get('debugOut')),
-            owner_kind=owner_kind,
-            owner_user_id=owner_user,
-        )
+            # A manual run honors the source's execution settings but NOT its
+            # run window: the ttl window belongs to scheduled fires — a run the
+            # user started runs until it finishes or the user stops it.
+            sched = (dep.get('schedules') or {}).get(source_id) or {}
+            token = await start_server_task_as_team(
+                self._server,
+                pipeline,
+                org_id=org_id,
+                team_id=billing_team,
+                trigger='manual',
+                ttl=None,
+                trace_level=sched.get('traceLevel') or 'full',
+                debug_out=bool(sched.get('debugOut')),
+                owner_kind=owner_kind,
+                owner_user_id=owner_user,
+            )
+        except BaseException:
+            # The start never completed — free the reservation so a retry (or
+            # the cron tick) can dispatch. register_manual_run below is what
+            # promotes the reservation to a real token on success.
+            self._scheduler.release_run(team_id, project_id, source_id)
+            raise
+
         # Register the token with the scheduler so the next cron tick sees
-        # this run and skips instead of dispatching a second one.
+        # this run and skips instead of dispatching a second one (this
+        # overwrites the reservation marker with the real run token).
         self._scheduler.register_manual_run(team_id, project_id, source_id, token)
         await account.deployments_mark_run(org_id, team_id, project_id, source_id)
         await account.audit(

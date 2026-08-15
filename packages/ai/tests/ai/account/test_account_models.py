@@ -37,7 +37,7 @@ def test_to_push_result_blanks_usertoken_and_excludes_auth():
 def test_to_push_result_does_not_mutate_the_model():
     info = AccountInfo(userId='u1', auth='rr_k', userToken='rr_k')
     info.to_push_result()
-    # to_connect_result returns a fresh dict; blanking its userToken must not
+    # to_push_result returns a fresh dict; blanking its userToken must not
     # touch the live AccountInfo (whose auth still drives permission checks).
     assert info.userToken == 'rr_k'
     assert info.auth == 'rr_k'

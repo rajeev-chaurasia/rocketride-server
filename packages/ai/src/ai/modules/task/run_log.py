@@ -400,6 +400,7 @@ class RunLogWriter:
         raise_seq_floor: Any,
         *,
         team_id: str = '',
+        owner_kind: str = 'team',
         org_id: str = '',
         spool_root: Optional[str] = None,
         debug: Any = None,
@@ -416,8 +417,15 @@ class RunLogWriter:
             project_id: Pipeline project id.
             source: Source component id.
             run_kind: 'dev' or 'deploy' — separate continua per kind.
-            team_id: REQUIRED for deploy runs — the continuum then lives in
-                the team's tree (teammates watch/replay); ignored for dev.
+            team_id: The run's BILLING/secrets team — recorded verbatim as the
+                control record's team provenance, ALWAYS (even for an @me
+                deploy, whose billing team is real). It does NOT decide where
+                logs live; owner_kind does. Ignored for provenance on dev runs.
+            owner_kind: 'team' | 'user' — the STORAGE scope selector. A
+                team-owned deploy writes the team tree (teammates watch/replay);
+                a user-owned (@me) deploy writes the owner's private user tree.
+                Kept SEPARATE from team_id so a private @me log never lands in
+                the billing team's tree AND its billing provenance is not lost.
             stamp: Callable(message, *, event_time=None) -> message; the
                 task's stamp_log_event (synthetic events go through it too).
             raise_seq_floor: Callable(int); the task's raise_log_seq_floor —
@@ -431,16 +439,21 @@ class RunLogWriter:
         self._source = source
         self._run_kind = run_kind
         # Provenance stamps for the control record (B14): the org+team
-        # context the stream's runs resolve secrets/billing under.
+        # context the stream's runs resolve secrets/billing under. team_id is
+        # the REAL billing team for every run kind, including @me deploys.
         self._team_id = team_id
         self._org_id = org_id
         self._stamp = stamp
         self._raise_seq_floor = raise_seq_floor
         self._debug = debug or (lambda _msg: None)
 
-        # Identity-derived names/paths. Deploy continua live in the TEAM
-        # tree (scope prefix); the scope id qualifies spool + registry.
-        self._scope_prefix, self._scope_id = scope_paths(run_kind, client_id, team_id)
+        # Identity-derived names/paths. STORAGE scope is chosen by owner_kind,
+        # NOT by the billing team: a team-owned deploy lives in the team tree
+        # (teammates watch/replay); a user-owned (@me) deploy scopes to '' so
+        # its logs stay in the owner's private user tree even though its
+        # billing team above is real. The scope id qualifies spool + registry.
+        scope_team = team_id if owner_kind == 'team' else ''
+        self._scope_prefix, self._scope_id = scope_paths(run_kind, client_id, scope_team)
         self._stream = stream_name(project_id, source, run_kind)
         self._spool_root = spool_root or default_spool_root()
 

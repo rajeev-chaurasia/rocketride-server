@@ -94,10 +94,11 @@ def _make_conn(account_info, scheduler=None):
     # satisfy the chain on the stub server instead of mutating the class.
     sched = scheduler or MagicMock()
     if scheduler is None:
-        # The manual-run overlap guard defaults OPEN (a bare MagicMock would
-        # return a truthy mock and refuse every run); tests exercising the
-        # refusal flip it to True themselves.
-        sched.is_run_active.return_value = False
+        # The manual-run overlap guard defaults OPEN: try_reserve_run returns
+        # True (slot claimed, no live run) so a bare MagicMock's truthy return
+        # doesn't accidentally reserve-then-refuse. Tests exercising the
+        # refusal flip it to False themselves.
+        sched.try_reserve_run.return_value = True
     server = MagicMock()
     # broadcast_server_event is AWAITED by the deploy-change notifier; a
     # plain MagicMock attribute returns a non-awaitable, the await raises,
@@ -405,7 +406,8 @@ class TestReads:
 
         monkeypatch.setattr('ai.modules.task.task_server_facade.start_server_task_as_team', fake_dispatch)
         conn = _make_conn(_account_info())
-        conn._test_scheduler.is_run_active.return_value = True
+        # A live run holds the slot: the atomic reservation is refused.
+        conn._test_scheduler.try_reserve_run.return_value = False
         with pytest.raises(ValueError, match='already active'):
             await conn._deploy_run({}, {'projectId': 'proj-1', 'sourceId': 's1', 'teamId': 'team-1'})
 

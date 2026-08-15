@@ -388,12 +388,12 @@ fixes and deploys a NEW version. `@user`/`@team` bindings need no approval.
 
 ### Deploy
 
-Accessed via `client.deploy`. Teams-as-environments deployments: `publish`
+Accessed via `client.deploy`. Teams-as-environments deployments: `deploy.add`
 snapshots a pipeline as an **immutable, sha256-locked artifact version** in
 the org registry; `deploy` points a **team** (the environment — Staging,
 Production, ...) at a version. Promotion and rollback are the same pointer
 move. Deploy targets are always explicit — there is no default-team
-fallback. Every publish and pointer change lands in an immutable audit
+fallback. Every registry add and pointer change lands in an immutable audit
 history.
 
 | Method                | Signature                                                                                                       | Returns                | Description                                                                                                       |
