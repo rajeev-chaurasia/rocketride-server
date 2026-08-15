@@ -430,7 +430,6 @@ export const DeployPanel: React.FC<IDeployPanelProps> = ({ fetchLifecycle, deplo
 			setPendingDeploy(null);
 			setPublishOpen(false);
 			setPublishComment('');
-			setPublishAndDeploy(false);
 			await refresh();
 		} catch (err) {
 			setError(err instanceof Error ? err.message : String(err));
