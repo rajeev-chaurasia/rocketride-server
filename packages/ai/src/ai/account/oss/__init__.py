@@ -114,7 +114,7 @@ class Account(AccountBase):
             phoneNumber='',
             phoneNumberVerified=False,
             locale='',
-            defaultTeam='local',
+            devTeam='local',
             # Single synthetic organisation with org.admin so that
             # resolve_team_permissions expands to the full permission set.
             organization={
@@ -140,14 +140,33 @@ class Account(AccountBase):
                 ],
             },
             # OSS: all apps are on the desktop and free — return full manifest
-            # entries so the shell can register MF remotes after auth
-            apps=[
-                {**a, 'appStatus': 'free', 'onDesktop': True}
-                for a in self._read_apps_json(public_only=False)
-                if a.get('id')
-            ],
+            # entries so the shell can register MF remotes after auth. The
+            # scope walk folds in published apps (user > team > public) so
+            # the INITIAL connect sees them, not just post-publish refreshes.
+            apps=await self._assemble_apps(),
             capabilities=self.capabilities,
         )
+
+    async def _assemble_apps(self) -> List[Dict]:
+        """The full OSS app list: apps.json built-ins + published apps.
+
+        Publish rows win on id collisions (a published copy of a built-in
+        supersedes the static entry), matching get_apps_for_user's merge.
+        """
+        from ai.account.app_deploy import resolve_app_pins
+
+        apps = {
+            a['id']: {**a, 'appStatus': 'free', 'onDesktop': True}
+            for a in self._read_apps_json(public_only=False)
+            if a.get('id')
+        }
+        try:
+            for entry in await resolve_app_pins('local', 'local', ['local']):
+                apps[entry['id']] = entry
+        except Exception:
+            # A broken publish store must never block sign-in
+            pass
+        return list(apps.values())
 
     # =========================================================================
     # ACCOUNT MANAGEMENT  (not available in OSS)
@@ -176,7 +195,7 @@ class Account(AccountBase):
     async def update_user(self, user_id: str, display_name: str):
         self._saas_only()
 
-    async def set_default_team(self, user_id: str, team_id: str):
+    async def set_dev_team(self, user_id: str, team_id: str):
         self._saas_only()
 
     async def list_keys(self, user_id: str) -> List:

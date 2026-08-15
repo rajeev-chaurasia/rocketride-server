@@ -340,20 +340,39 @@ class TaskScheduler:
             pipeline = dict(pipeline)
             pipeline['source'] = source_id
 
+            # Owner rung: a 'user~{uid}' slot is a PERSONAL (@me) deployment —
+            # the run is USER-owned; a plain team id is the team-owned
+            # dispatch (no human identity). Billing is ABSOLUTE: the stamp
+            # was written at pointer time, and fires only ever read it — a
+            # missing stamp (team deleted, pre-stamp record) is
+            # permission-shaped: permanent until a human re-publishes, so
+            # mark errored, don't retry.
+            billing_team = str(dep.get('billingTeamId') or '')
+            if team_id.startswith('user~'):
+                owner_kind, owner_user = 'user', team_id[len('user~') :]
+            else:
+                owner_kind, owner_user = 'team', ''
+                # Team records from before the stamp bill their own audience.
+                billing_team = billing_team or team_id
+            if not billing_team:
+                error(f'[SCHEDULER] {entry.key}: no billing team stamped; marking errored')
+                await self._mark_errored(org_id, team_id, project_id)
+                return
+
             try:
                 ttl = sched.get('ttl')
-                # The run executes AS THE TEAM and carries no human identity —
-                # who deployed lives in the deployment history, not on the run.
                 task_token = await start_server_task_as_team(
                     self._server,
                     pipeline,
                     org_id=org_id,
-                    team_id=team_id,
+                    team_id=billing_team,
                     trigger='schedule',
                     ttl=int(ttl) if isinstance(ttl, (int, float)) and ttl else None,
                     # Per-source execution settings ride the schedule record.
                     trace_level=sched.get('traceLevel') or 'full',
                     debug_out=bool(sched.get('debugOut')),
+                    owner_kind=owner_kind,
+                    owner_user_id=owner_user,
                 )
             except PermissionError as e:
                 # Permission-shaped failures are permanent until a human acts —

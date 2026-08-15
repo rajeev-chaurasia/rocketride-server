@@ -154,3 +154,38 @@ def test_reregister_refreshes_idle_expiry():
 
     remaining = dev_overlay._overlay['alice']['mod_a']['expires_at'] - time.time()
     assert remaining > dev_overlay._IDLE_TTL_SECONDS - 60
+
+
+# =============================================================================
+# ORG-SWITCH DROP (drop_user)
+# =============================================================================
+
+
+def test_drop_user_clears_the_whole_bucket():
+    """Every entry for the user is removed regardless of registering
+    connection — the org-switch sweep (a reconnect alone cannot clear the
+    userId-keyed bucket, and apply_overlay would re-apply it).
+    """
+    _reset_overlay()
+    dev_overlay.register('alice', 1, 'mod_one', 'http://localhost:3011/remoteEntry.js', 'acme.one')
+    dev_overlay.register('alice', 2, 'mod_two', 'http://localhost:3012/remoteEntry.js', 'acme.two')
+
+    assert dev_overlay.drop_user('alice') is True
+    assert dev_overlay.entries_for('alice') == []
+
+
+def test_drop_user_is_a_noop_on_an_empty_bucket():
+    """No entries -> False, no raise (the switch handler drops unconditionally)."""
+    _reset_overlay()
+    assert dev_overlay.drop_user('nobody') is False
+
+
+def test_drop_user_only_targets_the_named_user():
+    """A sibling user's overlay survives another user's org switch."""
+    _reset_overlay()
+    dev_overlay.register('alice', 1, 'mod_a', 'http://localhost:3011/remoteEntry.js', 'acme.a')
+    dev_overlay.register('bob', 1, 'mod_b', 'http://localhost:3012/remoteEntry.js', 'acme.b')
+
+    dev_overlay.drop_user('alice')
+    assert dev_overlay.entries_for('alice') == []
+    assert len(dev_overlay.entries_for('bob')) == 1

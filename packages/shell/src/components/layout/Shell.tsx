@@ -50,7 +50,8 @@ import { CheckoutFlow } from './CheckoutFlow';
 import { ApiKeyLogin } from './ApiKeyLogin';
 import LoadingScreen from './LoadingScreen';
 import { SS_PENDING_APP_ID, getHomeAppId } from '../../constants';
-import { registerAndMapApps, getRegisteredEntry, invalidateAppDescriptor, getLocalAppEntries, setLocalAppsListener, isDevRemote } from '../../util/appLoader';
+import { registerAndMapApps, getRegisteredEntry, invalidateAppDescriptor, getLocalAppEntries, setLocalAppsListener, isDevRemote, repointRemote } from '../../util/appLoader';
+import { getAppVersionOverrides, setAppVersionOverride, clearAppVersionOverride } from '../../util/versionOverride';
 import type { ServerAppEntry } from '../../util/appLoader';
 import { waitForEmbeddedSession } from '../../util/devMode';
 
@@ -162,6 +163,14 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 	const [sessionAppId] = useState<string>(() => {
 		const params = new URLSearchParams(window.location.search);
 		const fromUrl = params.get('appId') || params.get('appid') || '';
+		// Deep-link version pin (?appid=X&version=7) — REGISTRY INTS ONLY
+		// (semver is developer-controlled display and never a wire identity).
+		// Non-numeric values are ignored; the post-auth mint effect below
+		// resolves the int to a signed entry URL.
+		const versionParam = Number.parseInt(params.get('version') ?? '', 10);
+		if (fromUrl && Number.isInteger(versionParam) && versionParam > 0) {
+			setAppVersionOverride(fromUrl, { version: versionParam });
+		}
 		if (fromUrl) {
 			cm.setSessionAppId(fromUrl);
 			return fromUrl;
@@ -295,11 +304,13 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 
 			// Run the auth bootstrap
 			try {
+				console.log('[boot] Shell: cm.bootstrap START; config.apps ids =', (config.apps ?? []).map((a) => a.id), 'capabilities =', config.capabilities);
 				const result = await cm.bootstrap({
 					apps: config.apps,
 					workspaceDir: config.workspaceDir,
 					onThemeChange: config.themeConfig?.onThemeChange,
 				});
+				console.log('[boot] Shell: cm.bootstrap RETURNED', result ? { hasResult: true, appId: result.appId, apps: (result.result?.apps ?? []).map((a: { id: string }) => a.id) } : null);
 				if (!mountedRef.current) return;
 
 				// Popup completion: deliver the session to the opener's iframe
@@ -359,6 +370,48 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 		for (const a of changed) invalidateAppDescriptor(a.id);
 	}, [identity?.apps]);
 
+	// Re-mint session version overrides once authenticated. Every boot mints
+	// fresh signed entry URLs for the overridden apps (URLs expire; deep-link
+	// overrides start with no URL at all) and repoints containers whose
+	// registered entry differs — the same reconciliation the entry-change
+	// effect above performs for server-side repoints. An override the server
+	// rejects (entitlement lost, version gone) is dropped so the app falls
+	// back to default resolution instead of failing to load.
+	useEffect(() => {
+		const overrides = getAppVersionOverrides();
+		const appIds = Object.keys(overrides);
+		if (!identity || appIds.length === 0) return;
+		const client = cm.getClient();
+		if (!client) return;
+		let cancelled = false;
+		(async () => {
+			for (const appId of appIds) {
+				const app = apps.find((a) => a.id === appId);
+				// Dev-owned containers keep the live build; unknown apps keep
+				// their override dormant until the app appears in the manifest.
+				if (!app || isDevRemote(app.moduleId)) continue;
+				try {
+					const minted = await client.appEntry(appId, overrides[appId].version);
+					if (cancelled) return;
+					setAppVersionOverride(appId, {
+						version: minted.registryVersion,
+						appVersion: minted.appVersion,
+						url: minted.url,
+					});
+					if (getRegisteredEntry(app.moduleId) !== minted.url) {
+						repointRemote(app.moduleId, minted.url);
+						invalidateAppDescriptor(appId);
+					}
+				} catch (err) {
+					if (cancelled) return;
+					console.log(`[shell] dropping version override for ${appId}: ${err instanceof Error ? err.message : String(err)}`);
+					clearAppVersionOverride(appId);
+				}
+			}
+		})();
+		return () => { cancelled = true; };
+	}, [identity, apps, cm]);
+
 	// Refresh identity on account update
 	useEffect(() => {
 		return cm.on('shell:accountUpdate', (result: ConnectResult) => {
@@ -372,6 +425,16 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 			}
 		});
 	}, [cm, renderPhase]);
+
+	// The user's default org changed (this tab or any other connection). The
+	// server only NOTIFIES — what to do is this client's choice. The shell's
+	// choice: reload, which re-authenticates and re-bootstraps under the
+	// user's current default org.
+	useEffect(() => {
+		return cm.on('shell:orgChanged', () => {
+			window.location.reload();
+		});
+	}, [cm]);
 
 	// Sign-in request from marketplace
 	useEffect(() => {
@@ -509,6 +572,8 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 	// frame, so a user-gesture button opens this origin as an auth POPUP
 	// ('rrauth' — see the bootstrap popup role); the popup hands the session
 	// back over BroadcastChannel and this shell reboots authenticated.
+	console.log('[boot] Shell render:', { renderPhase, hasIdentity: !!identity, isSaas, defaultAppId, activeAppId, showApiKeyLogin, showEmbeddedSignIn });
+
 	if (showEmbeddedSignIn) {
 		return (
 			<div style={styles.statusScreen}>

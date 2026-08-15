@@ -41,8 +41,8 @@ const EnvironmentProvider: React.FC = () => {
 
 	// ── Permission flags ────────────────────────────────────────────────
 	const orgId = authUser?.organization?.id;
-	// ConnectResult.defaultTeam IS the default team id ('' when unset).
-	const teamId = authUser?.defaultTeam || authUser?.organization?.teams?.[0]?.id;
+	// ConnectResult.devTeam IS the dev team id ('' when unset).
+	const teamId = authUser?.devTeam || authUser?.organization?.teams?.[0]?.id;
 	const isOrgAdmin = authUser?.organization?.permissions?.includes('org.admin') ?? false;
 	const isTeamAdmin = teamId ? (authUser?.organization?.teams?.find((t: any) => t.id === teamId)?.permissions?.includes('team.admin') ?? false) : false;
 

@@ -25,7 +25,7 @@ Per-user dev overlay — the live-manifest mechanism for app development.
 
 A developer's inner loop points THEIR shell at a locally built (or cloud
 dev-built) app bundle by registering a ``moduleId -> entry URL`` override
-via ``rrext_app_submission.register_dev``. The overlay is:
+via ``rrext_app.register_dev``. The overlay is:
 
 - **Per user.** Entries registered by one user are applied only to that
   user's app manifest and pushed only to that user's connections —
@@ -174,6 +174,27 @@ def drop_connection(user_id: str, connection_id: Any) -> bool:
 # =============================================================================
 
 
+def drop_user(user_id: str) -> bool:
+    """
+    Drop EVERY overlay entry for a user, regardless of registering connection.
+
+    Called on an org switch: the bucket is keyed by ``user_id`` with no org
+    stamp, so a reconnect alone will not clear it and ``apply_overlay`` would
+    keep re-applying the previous org's dev bundles onto the new org's manifest
+    on every rebuild. Emptying the bucket is the only reliable clear.
+
+    Args:
+        user_id: Owner of the overlay bucket.
+
+    Returns:
+        True when the bucket held at least one entry (callers push a refresh).
+    """
+    bucket = _overlay.pop(user_id, None)
+    if bucket:
+        debug(f'[dev_overlay] dropped all {len(bucket)} entries for user {user_id} (org switch)')
+    return bool(bucket)
+
+
 def apply_overlay(user_id: str, apps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Apply a user's overlay to an assembled app list.
@@ -271,13 +292,17 @@ async def push_refresh(server: Any, user_id: str, source: str) -> None:
             info = getattr(conn, '_account_info', None)
             if apps is None or not info or info.userId != user_id:
                 continue
+            # Skip task-scoped connections (see push_account_update): never push
+            # a full-user rebuild onto a pk_/tk_ socket.
+            if (getattr(info, 'auth', '') or '').startswith(('pk_', 'tk_')):
+                continue
             try:
                 # Mirror the OSS authenticate() decoration: everything is
                 # free and on the desktop on a local engine.
                 info.apps = [
                     {**a, 'appStatus': a.get('appStatus', 'free'), 'onDesktop': True} for a in apps if a.get('id')
                 ]
-                await conn.send_event('apaext_account', body=info.to_connect_result())
+                await conn.send_event('apaext_account', body=info.to_push_result())
             except Exception as exc:
                 debug(f'[dev_overlay] OSS account push failed: {exc}')
 
@@ -293,7 +318,7 @@ async def push_refresh(server: Any, user_id: str, source: str) -> None:
 
 
 # =============================================================================
-# DAP HANDLER — rrext_app_submission.register_dev
+# DAP HANDLER — rrext_app.register_dev
 # =============================================================================
 
 

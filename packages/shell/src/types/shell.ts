@@ -133,6 +133,16 @@ export interface ShellConnectionEventMap {
 	'shell:accountUpdate': ConnectResult;
 
 	/**
+	 * The user's default organization changed. A pure NOTIFICATION — the
+	 * server never swaps a live connection's identity or dictates a
+	 * response; each client reacts its own way (the browser shell reloads,
+	 * VS Code reloads its window, an app webview with its own connection
+	 * does whatever suits it). Re-authenticating resolves the new default
+	 * org. Triggered by the `apaext_org_changed` DAP event.
+	 */
+	'shell:orgChanged': { orgId: string };
+
+	/**
 	 * Emitted when the service catalog is fetched or refreshed.
 	 *
 	 * Contains the full services map, the summary's deduplicated icon

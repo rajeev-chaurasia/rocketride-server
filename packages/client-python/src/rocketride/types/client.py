@@ -302,7 +302,7 @@ class ConnectResult(TypedDict, total=False):
         phoneNumber (str): Primary phone number in E.164 format.
         phoneNumberVerified (bool): True when the phone number has been verified.
         locale (str): BCP-47 locale tag (e.g. "en-US").
-        defaultTeam (str): ID of the team selected as the default context.
+        devTeam (str): The user's DEV team — dev-mode runs bill to it and use its environment layer.
         organization (OrgInfo | None): The organisation the user belongs to, or None.
         apps (list[AppManifestEntry]): Apps on the user's desktop — full manifest entries with subscription status.
         serverVersion (str): Version string of the server that handled the handshake; newer servers only.
@@ -320,7 +320,7 @@ class ConnectResult(TypedDict, total=False):
     phoneNumber: str
     phoneNumberVerified: bool
     locale: str
-    defaultTeam: str
+    devTeam: str
     organization: OrgInfo
     capabilities: list[str]
     serverVersion: str
@@ -344,9 +344,14 @@ class ServerInfoResult(TypedDict, total=False):
             ``['saas']`` for cloud.
         platform (str): Server platform (e.g. ``'linux'``, ``'win32'``, ``'darwin'``).
         apps (list[AppManifestEntry]): Public apps visible without authentication.
+        stripePublishableKey (str): Stripe publishable key (``pk_*``) configured
+            on this server, so clients initialise Stripe Elements with the key
+            matching the server's Stripe account (test vs live) instead of a
+            build-time value. Absent on servers without billing (OSS).
     """
 
     version: str
     capabilities: list[str]
     platform: str
     apps: list[AppManifestEntry]
+    stripePublishableKey: str
