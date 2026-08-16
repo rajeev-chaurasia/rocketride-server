@@ -99,14 +99,25 @@ class _FakeRegistry:
         self.publish_calls = []
         self.set_calls = []
 
-    def add_version(self, version, app_version, publisher_id='dev1', kind='app', state='ready', manifest=None):
-        """Seed one deployed registry version + its artifact."""
+    def add_version(
+        self, version, app_version, publisher_id='dev1', kind='app', state='ready', manifest=None, build='ok'
+    ):
+        """Seed one deployed registry version + its artifact.
+
+        ``build`` is the version's metadata.build.status — 'ok' by default
+        (a servable version is the normal case; the worker stamps it after
+        compiling); pass 'queued'/'building'/'failed' to exercise the built
+        gates, or None for a pre-worker legacy row with no build blob.
+        """
+        metadata = {'manifest': manifest or {'name': 'Brandy', 'version': app_version}}
+        if build is not None:
+            metadata['build'] = {'status': build}
         self.versions.append(
             {
                 'version': version,
                 'sha256': f'sha-{version}',
                 'state': state,
-                'metadata': {'manifest': manifest or {'name': 'Brandy', 'version': app_version}},
+                'metadata': metadata,
                 'publishedAt': 1000 + version,
                 'publishedBy': {'userId': publisher_id, 'display': 'Dev', 'email': 'dev@example.com'},
                 'comment': f'v{app_version}',
@@ -184,6 +195,14 @@ class _FakeRegistry:
                     return str(v.get('state') or '')
             return ''
 
+        def _art_build(version):
+            """The deployment's build status (from the rail), for publish rows."""
+            for v in self.versions:
+                if int(v.get('version', 0)) == int(version):
+                    metadata = v.get('metadata') or {}
+                    return str((metadata.get('build') or {}).get('status') or '')
+            return ''
+
         async def set_artifact_state(org_id, project_id, version, new_state, actor):
             # The REAL transition guard runs in the fake too — a handler
             # requesting an edge the backend forbids must fail HERE, not
@@ -213,8 +232,14 @@ class _FakeRegistry:
             return row
 
         def _with_state(row):
-            """Refresh the joined artifactState (the deployment may have moved)."""
-            return {**row, 'artifactState': _art_state(row.get('version'))}
+            """Refresh the joined artifactState/artifactBuild (the deployment
+            may have moved) — the same join both real backends perform.
+            """
+            return {
+                **row,
+                'artifactState': _art_state(row.get('version')),
+                'artifactBuild': _art_build(row.get('version')),
+            }
 
         async def publish_get(org_id, kind, app_id, audience):
             row = self.publishes.get((app_id, self._key(audience)))
@@ -408,9 +433,13 @@ async def test_add_unpacks_zip_and_returns_rail_entry(registry, content_store):
     assert call['metadata']['manifest']['id'] == 'acme.brandy'
     assert call['metadata']['projectId'] == 'wc-1'  # client working-copy provenance
 
-    # Content: retained transport zip + the unpacked SOURCE tree (app/ stays
-    # reserved for the server build's output) — the artifact's .deployments
-    # sibling directory, ONE convention with the platform seeder
+    # The build lifecycle is born WITH the row: queued, attempt 0 — the rail
+    # row IS the build job record (dist/ is written by the worker later).
+    assert call['metadata']['build']['status'] == 'queued'
+
+    # Content: retained transport zip + the unpacked SOURCE tree (dist/ is
+    # the build worker's to write) — the artifact's .deployments sibling
+    # directory, ONE convention with the platform seeder
     writes = _written(content_store)
     home = 'orgs/org1/files/.deployments/acme.brandy/v000001-shanew00'
     assert f'{home}/bundle/acme.brandy-v000001.zip' in writes
@@ -422,6 +451,8 @@ async def test_add_unpacks_zip_and_returns_rail_entry(registry, content_store):
     assert entry['registryVersion'] == 1
     assert entry['appVersion'] == '1.0.0'
     assert entry['message'] == 'first cut'
+    # The deploy response reports the queued build immediately
+    assert entry['buildStatus'] == 'queued'
     # Deploying published nothing anywhere
     assert registry.set_calls == []
 
@@ -929,11 +960,12 @@ async def test_entry_mints_for_visible_publishes(registry, mint):
     result = await handle_deploy_app(conn, _request('entry', version=1))
 
     body = result['body']
-    # Zip-mode artifacts derive the serving dir by convention — the app/
-    # subtree of the artifact's .deployments sibling directory
+    # Zip-mode artifacts derive the serving dir by convention — the dist/
+    # subtree of the artifact's .deployments sibling directory (written by
+    # the build worker; the seeder writes the same layout)
     assert (
         body['url']
-        == 'https://signed/orgs/org1/files/.deployments/acme.brandy/v000001-fakesha1/app/remoteEntry.js?sub=app-entry'
+        == 'https://signed/orgs/org1/files/.deployments/acme.brandy/v000001-fakesha1/dist/remoteEntry.js?sub=app-entry'
     )
     assert body['moduleId'] == 'acme_brandy'
     assert (body['appVersion'], body['registryVersion']) == ('1.0.0', 1)
@@ -973,6 +1005,76 @@ async def test_entry_rejects_non_app_artifacts(registry, mint):
     result = await handle_deploy_app(conn, _request('entry', version=1))
     assert result['success'] is False
     assert 'not an app artifact' in result['message']
+
+
+# =============================================================================
+# BUILT GATE — a version serves/submits/publishes only once its build is ok
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_entry_refuses_unbuilt_and_failed_builds(registry, mint):
+    """Minting an unbuilt version would sign a URL to an empty dist/ —
+    refused with the build reason (still building vs build failed).
+    """
+    registry.add_version(1, '1.0.0', publisher_id='u1', build='building')
+    registry.add_version(2, '1.0.1', publisher_id='u1', build='failed')
+    conn = _FakeConn(teams=_TEAMS)
+
+    building = await handle_deploy_app(conn, _request('entry', version=1))
+    assert building['success'] is False
+    assert 'still building' in building['message']
+
+    failed = await handle_deploy_app(conn, _request('entry', version=2))
+    assert failed['success'] is False
+    assert 'failed its server build' in failed['message']
+
+
+@pytest.mark.asyncio
+async def test_submit_requires_green_build(registry):
+    """Every review-queue entry must be a real, servable candidate — submit
+    refuses a version whose own build has not completed. Deploying NEW
+    versions is never gated; the gate is per-version and self-referential.
+    """
+    registry.add_version(1, '1.0.0', state='private', build='building')
+    conn = _FakeConn(teams=_TEAMS)
+    result = await handle_deploy_app(conn, _request('submit', version=1))
+    assert result['success'] is False
+    assert 'still building' in result['message']
+
+    # The build goes green -> the same submit succeeds.
+    registry.versions[0]['metadata']['build']['status'] = 'ok'
+    result = await handle_deploy_app(conn, _request('submit', version=1))
+    assert result['success'] is True
+    assert result['body']['artifact']['state'] == 'submit'
+
+
+@pytest.mark.asyncio
+async def test_publish_refuses_unbuilt_version(registry, quiet_push):
+    """A binding must never point at a version with no servable bytes."""
+    registry.add_version(1, '1.0.0', state='private', build='queued')
+    conn = _FakeConn(teams=_TEAMS)
+    result = await handle_deploy_app(conn, _request('publish', version=1, target='@team/Development'))
+    assert result['success'] is False
+    assert 'still building' in result['message']
+    assert registry.set_calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_app_pins_skips_unbuilt_versions(registry, mint):
+    """The scope walk serves a pin only once its version's build is ok —
+    an unbuilt pin is silently absent from the manifest until then.
+    """
+    registry.add_version(1, '1.0.0', state='ready', build='building')
+    registry.seed_publish(AUD_PUBLIC, 1)
+
+    from ai.account.app_deploy import resolve_app_pins as resolve
+
+    assert await resolve('org1', 'u1', ['t1']) == []
+
+    registry.versions[0]['metadata']['build']['status'] = 'ok'
+    resolved = await resolve('org1', 'u1', ['t1'])
+    assert [e['id'] for e in resolved] == ['acme.brandy']
 
 
 # =============================================================================

@@ -539,6 +539,14 @@ class AccountBase(ABC):
         """Transition one deployment's review state (submit/approve/reject)."""
         return await self._deployment_backend().set_artifact_state(org_id, project_id, version, new_state, actor)
 
+    async def deployments_set_build(self, org_id: str, project_id: str, version: int, build: dict) -> dict:
+        """Replace one registry version's metadata.build blob (build worker)."""
+        return await self._deployment_backend().set_build(org_id, project_id, version, build)
+
+    async def deployments_scan_builds(self, statuses: tuple) -> list:
+        """Every kind:'app' version whose build status matches (restart requeue)."""
+        return await self._deployment_backend().scan_builds(statuses)
+
     async def publish_get(self, org_id: str, kind: str, app_id: str, audience: dict) -> dict | None:
         """One audience's publish row of one app, or None."""
         return await self._deployment_backend().publish_get(org_id, kind, app_id, audience)

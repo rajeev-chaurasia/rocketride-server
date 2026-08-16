@@ -201,9 +201,9 @@ def artifact_content_dir(artifact_path: str) -> str:
     SIBLING directory of the registry JSON — the artifact path minus its
     ``.json`` extension (``.deployments/<project>/v<N>-<sha8>/``). Zip
     deploys keep ``bundle/`` (the retained transport zip), ``source/`` (what
-    the developer shipped) and ``app/`` (the server build's servable output,
-    entry minting points there) under it; platform seeds mirror the built
-    static tree at its root. Derived by convention — never stored in the
+    the developer shipped) and ``dist/`` (the server build's servable
+    output, entry minting points there) under it; platform seeds write the
+    SAME ``dist/`` layout. Derived by convention — never stored in the
     artifact JSON.
     """
     return artifact_path[:-5] if artifact_path.endswith('.json') else artifact_path
@@ -673,14 +673,17 @@ class FileDeploymentBackend:
         project_id: str,
         artifact_state: str = '',
         artifact_path: str = '',
+        artifact_build: str = '',
     ) -> Dict[str, Any]:
         """One stored binding -> the contract shape (audience decoded).
 
         ``row['state']`` is the BINDING lifecycle (enabled/disabled/removed);
-        ``artifactState`` is the bound DEPLOYMENT's review state and
+        ``artifactState`` is the bound DEPLOYMENT's review state,
         ``artifactPath`` its registry JSON path (the content home derives
-        from it), both joined from meta['versions'] so the scope walk can
-        gate serving and mint entry URLs without a second registry read.
+        from it), and ``artifactBuild`` its build status
+        (metadata.build.status — '' for pre-worker rows), all joined from
+        meta['versions'] so the scope walk can gate serving and mint entry
+        URLs without a second registry read.
         """
         if key == '~public':
             audience = {'type': 'public', 'id': ''}
@@ -694,8 +697,16 @@ class FileDeploymentBackend:
             'audience': audience,
             'artifactState': artifact_state,
             'artifactPath': artifact_path,
+            'artifactBuild': artifact_build,
             **row,
         }
+
+    @staticmethod
+    def _build_status_of(ver: Dict[str, Any]) -> str:
+        """One registry entry's build status ('' when never stamped)."""
+        metadata = ver.get('metadata') if isinstance(ver.get('metadata'), dict) else {}
+        build = metadata.get('build') if isinstance(metadata.get('build'), dict) else {}
+        return str(build.get('status') or '')
 
     @staticmethod
     def _artifact_entry_of(meta: Dict[str, Any], version: int) -> Dict[str, Any]:
@@ -764,7 +775,13 @@ class FileDeploymentBackend:
             )
             ver = self._artifact_entry_of(meta, version)
             return self._publish_row(
-                key, row, org_id, app_id, str(ver.get('state') or ''), str(ver.get('artifactPath') or '')
+                key,
+                row,
+                org_id,
+                app_id,
+                str(ver.get('state') or ''),
+                str(ver.get('artifactPath') or ''),
+                self._build_status_of(ver),
             )
 
         return await self._mutate_meta(org_id, app_id, mutate)
@@ -786,7 +803,13 @@ class FileDeploymentBackend:
             return None
         ver = self._artifact_entry_of(meta, row.get('version', 0))
         return self._publish_row(
-            key, row, org_id, app_id, str(ver.get('state') or ''), str(ver.get('artifactPath') or '')
+            key,
+            row,
+            org_id,
+            app_id,
+            str(ver.get('state') or ''),
+            str(ver.get('artifactPath') or ''),
+            self._build_status_of(ver),
         )
 
     async def publish_of_app(self, org_id: str, kind: str, app_id: str) -> List[Dict[str, Any]]:
@@ -805,7 +828,13 @@ class FileDeploymentBackend:
             ver = self._artifact_entry_of(meta, row.get('version', 0))
             out.append(
                 self._publish_row(
-                    key, row, org_id, app_id, str(ver.get('state') or ''), str(ver.get('artifactPath') or '')
+                    key,
+                    row,
+                    org_id,
+                    app_id,
+                    str(ver.get('state') or ''),
+                    str(ver.get('artifactPath') or ''),
+                    self._build_status_of(ver),
                 )
             )
         return out
@@ -837,6 +866,7 @@ class FileDeploymentBackend:
                             project_id,
                             str(ver.get('state') or ''),
                             str(ver.get('artifactPath') or ''),
+                            self._build_status_of(ver),
                         )
                     )
         return out
@@ -876,7 +906,13 @@ class FileDeploymentBackend:
             )
             ver = self._artifact_entry_of(meta, row.get('version', 0))
             return self._publish_row(
-                key, row, org_id, app_id, str(ver.get('state') or ''), str(ver.get('artifactPath') or '')
+                key,
+                row,
+                org_id,
+                app_id,
+                str(ver.get('state') or ''),
+                str(ver.get('artifactPath') or ''),
+                self._build_status_of(ver),
             )
 
         return await self._mutate_meta(org_id, app_id, mutate)
@@ -921,6 +957,75 @@ class FileDeploymentBackend:
             return dict(entry)
 
         return await self._mutate_meta(org_id, project_id, mutate)
+
+    async def set_build(
+        self,
+        org_id: str,
+        project_id: str,
+        version: int,
+        build: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Replace ONE registry version's ``metadata.build`` blob.
+
+        The build worker's job record: the rail row IS the job, and this is
+        its single mutation point (``metadata`` is explicitly mutable — the
+        processing lifecycle for app zips). The blob is replaced whole, never
+        merged, so a new attempt can never inherit stale fields; the review
+        ``state`` is deliberately NOT touched here — it belongs to
+        ``set_artifact_state``. No history row is appended: build
+        transitions are operational churn (queued/building/ok per deploy),
+        not audit events — the deploy event stream carries the signal.
+
+        Returns the refreshed rail entry.
+        """
+        _safe_id(org_id, 'org_id')
+        _safe_id(project_id, 'project_id')
+        if not isinstance(build, dict):
+            raise ValueError('build must be an object')
+
+        async def mutate(meta: Dict[str, Any]) -> Dict[str, Any]:
+            """Swap the build blob on the version's metadata."""
+            entry = next((v for v in meta['versions'] if int(v.get('version', 0)) == version), None)
+            if entry is None:
+                raise StorageError(f'{project_id} v{version}: not in the registry')
+            metadata = entry.get('metadata')
+            metadata = metadata if isinstance(metadata, dict) else {}
+            metadata['build'] = dict(build)
+            entry['metadata'] = metadata
+            return dict(entry)
+
+        return await self._mutate_meta(org_id, project_id, mutate)
+
+    async def scan_builds(self, statuses: 'tuple[str, ...]') -> List[Dict[str, Any]]:
+        """Every kind:'app' version whose ``metadata.build.status`` matches.
+
+        The restart-recovery feed: after a process restart the build worker
+        re-enqueues everything left 'queued'/'building'. A full walk of the
+        org trees is acceptable here — this runs once at startup, never on a
+        request path.
+
+        Returns:
+            ``[{'orgId', 'projectId', 'version'}]`` for each match.
+        """
+        out: List[Dict[str, Any]] = []
+        try:
+            orgs = await self._store.list_entries('orgs/', recursive=False, include_files=False)
+        except StorageError:
+            return out
+        for org_prefix in orgs:
+            org_id = org_prefix.rstrip('/').rsplit('/', 1)[-1]
+            for project_id in await self._project_ids(org_id):
+                meta = await self._read_meta(org_id, project_id)
+                if meta is None:
+                    continue
+                for entry in meta['versions']:
+                    if str(entry.get('kind') or 'pipe') != 'app':
+                        continue
+                    metadata = entry.get('metadata') if isinstance(entry.get('metadata'), dict) else {}
+                    build = metadata.get('build') if isinstance(metadata.get('build'), dict) else {}
+                    if str(build.get('status') or '') in statuses:
+                        out.append({'orgId': org_id, 'projectId': project_id, 'version': int(entry.get('version', 0))})
+        return out
 
     async def history_append(
         self,

@@ -29,10 +29,12 @@ registry), with two adaptations:
 
 - The ARTIFACT is a small ``kind:'app'`` JSON record — app id, moduleId,
   display name, semver, and ``metadata.manifest`` (the full appManifest). The
-  built bundle is uploaded as a zip and UNPACKED at receipt into
-  ``.deployments/<app_id>/v<N>-<sha8>/app/`` (servable, the artifact's
-  sibling directory); the registry pins the metadata,
-  exactly as it pins pipeline JSON.
+  app's SOURCE is uploaded as a zip, retained at
+  ``.deployments/<app_id>/v<N>-<sha8>/bundle/`` and unpacked into
+  ``.../source/``; the BUILD WORKER (app_build) compiles it into the
+  servable ``.../dist/`` tree, and ``metadata.build`` tracks that
+  lifecycle (queued -> building -> ok | failed). A version serves, submits,
+  or publishes only once its build is ok.
 - The REVIEW STATE lives on the DEPLOYMENT (``deployment_artifacts.state``:
   private → submit → ready | rejected). An app is born ``private`` (internally
   publishable); the developer submits it for review; admin approval to
@@ -60,6 +62,7 @@ org/user 'local') and SaaS alike — no marketplace dependency.
 """
 
 import hashlib
+import time
 from typing import Any, Dict, List, Optional
 
 from rocketlib import debug
@@ -70,24 +73,29 @@ from ai.account.deployment_backend import DEFAULT_REVIEW_STATE, artifact_content
 def _serving_dir(artifact: Optional[Dict[str, Any]], artifact_path: str) -> str:
     """The directory the version's servable bundle lives in.
 
-    Zip-mode artifacts derive it by convention — the ``app/`` subtree of the
-    registry artifact's content home (the artifact path minus ``.json``, a
-    sibling under ``.deployments``); legacy binary-mode artifacts stored an
+    Zip-mode artifacts derive it by convention — the ``dist/`` subtree of
+    the registry artifact's content home (the artifact path minus ``.json``,
+    a sibling under ``.deployments``), written by the server build worker
+    and by the platform seeder alike. The subtree is deliberately NOT the
+    content root: the entry token is DIRECTORY-scoped, so serving from the
+    root would also grant ``source/`` and ``bundle/`` (the developer's
+    source) to any URL holder. Legacy binary-mode artifacts stored an
     explicit bundleDir — honor it.
     """
     stored = (artifact or {}).get('bundleDir')
     if stored:
         return str(stored)
-    return f'{artifact_content_dir(artifact_path)}/app'
+    return f'{artifact_content_dir(artifact_path)}/dist'
 
 
 def _entry_url_of(artifact: Optional[Dict[str, Any]], artifact_path: str, sub: str) -> str:
     """The servable entry URL of one deployed version.
 
-    Seeded platform artifacts carry an explicit ``entry`` (the shell's
-    static ``/apps/<dir>/remoteEntry.js`` route — directly servable, no
-    signing); everything else mints a signed directory-capability URL over
-    the version's unpacked bundle tree beside the registry JSON.
+    LEGACY seeded artifacts carry an explicit ``entry`` (the shell's static
+    ``/apps/<dir>/remoteEntry.js`` route — grandfathered; new seeds write
+    the same ``dist/`` layout as server builds and mint like everything
+    else); everything else mints a signed directory-capability URL over the
+    version's built ``dist/`` tree beside the registry JSON.
 
     Raises:
         ValueError: When neither an explicit entry nor an artifact path is
@@ -102,6 +110,39 @@ def _entry_url_of(artifact: Optional[Dict[str, Any]], artifact_path: str, sub: s
     from ai.account.file_store import mint_directory_url
 
     return mint_directory_url(_serving_dir(artifact, artifact_path), 'remoteEntry.js', sub=sub)
+
+
+def build_of(entry: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """One registry entry's ``metadata.build`` blob ({} when never stamped)."""
+    metadata = (entry or {}).get('metadata')
+    metadata = metadata if isinstance(metadata, dict) else {}
+    build = metadata.get('build')
+    return build if isinstance(build, dict) else {}
+
+
+def _is_built(entry: Optional[Dict[str, Any]], artifact: Optional[Dict[str, Any]]) -> bool:
+    """Whether a version's servable bytes exist (THE built gate).
+
+    True for a server build that completed (``metadata.build.status ==
+    'ok'``, stamped by the build worker and by the seeder), a legacy seeded
+    artifact with an explicit static ``entry``, or a legacy binary-mode
+    ``bundleDir``. A zip-mode version with no ok build has an EMPTY ``dist/``
+    — minting it would hand out a URL to nothing, so serving, submit, and
+    publish all gate on this.
+    """
+    if (artifact or {}).get('entry') or (artifact or {}).get('bundleDir'):
+        return True
+    return build_of(entry).get('status') == 'ok'
+
+
+def _not_built_error(app_id: str, version: int, entry: Optional[Dict[str, Any]]) -> str:
+    """The reasoned message for a gate refusing an unbuilt version."""
+    status = str(build_of(entry).get('status') or '')
+    if status in ('queued', 'building'):
+        return f'Version {version} of {app_id} is still building — wait for the build to finish'
+    if status == 'failed':
+        return f'Version {version} of {app_id} failed its server build — fix the source and deploy a new version'
+    return f'Version {version} of {app_id} has no server build — it cannot serve'
 
 
 def _actor_of(conn: Any) -> Dict[str, str]:
@@ -285,9 +326,11 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
     the app's SOURCE (the server owns the build — client-produced binaries
     are never trusted): it is retained at ``<artifact sibling dir>/bundle/``
     for provenance and unpacked immediately into ``.../v<N>/source/``. The
-    ``.../v<N>/app/`` tree stays reserved for the SERVER build's output (the
-    build-worker phase) — entry minting points there, so a version serves
-    only once the server has built it.
+    BUILD WORKER (app_build) is enqueued on success and compiles the source
+    into ``.../v<N>/dist/`` — entry minting points there, so a version
+    serves only once the server has built it. The response returns
+    immediately with ``buildStatus: 'queued'``; progress rides the deploy
+    event stream and the versions rows.
 
     Two zip layouts, told apart by ``metadata.appRoot``:
 
@@ -379,15 +422,22 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
         'appVersion': app_version,
         'bundleSha256': hashlib.sha256(data).hexdigest(),
     }
-    metadata = {**caller_meta, 'manifest': manifest}
+    # The build lifecycle is born 'queued' WITH the registry row — the rail
+    # row IS the build job record, so a version can never exist without a
+    # build status and the restart sweep can always find in-flight work.
+    metadata = {
+        **caller_meta,
+        'manifest': manifest,
+        'build': {'status': 'queued', 'queuedAt': time.time(), 'attempt': 0},
+    }
     entry = await account.deployments_publish(
         org_id, app_id, artifact, _actor_of(conn), comment=comment, metadata=metadata
     )
     version = int(entry.get('version', 0))
 
     # ── Content: retained transport zip + the unpacked SOURCE tree ───────
-    # source/ holds what the developer shipped; app/ stays reserved for the
-    # server build's output so source and servable bytes never mix. The
+    # source/ holds what the developer shipped; dist/ receives the server
+    # build's output so source and servable bytes never mix. The
     # content home is the artifact's SIBLING directory — the registry JSON
     # path minus '.json', co-located under .deployments (the same ONE
     # convention the platform seeder uses for its bundle copies).
@@ -462,7 +512,20 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as exc:
             debug(f'[app_deploy] could not withdraw {app_id} v{row_version}: {exc}')
 
-    debug(f'[app_deploy] deployed {app_id} v{artifact["appVersion"]} as registry v{version} (private)')
+    # ── Hand the version to the build worker ─────────────────────────────
+    # Deploy is THE build trigger (there is no developer-side manual kick):
+    # the worker compiles source/ into dist/ asynchronously and stamps
+    # metadata.build as it goes. Best-effort — a worker that is not running
+    # (tests, minimal embeddings) leaves the row 'queued' for the restart
+    # sweep to pick up.
+    try:
+        from ai.account.app_build import enqueue_build
+
+        enqueue_build(getattr(conn, '_server', None), org_id, app_id, version)
+    except Exception as exc:
+        debug(f'[app_deploy] could not enqueue build for {app_id} v{version}: {exc}')
+
+    debug(f'[app_deploy] deployed {app_id} v{artifact["appVersion"]} as registry v{version} (private, build queued)')
     # One generic response shape for every kind: rrext_deploy add -> {artifact}
     return conn.build_response(request, body={'artifact': _rail_entry(entry, artifact)})
 
@@ -698,6 +761,11 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
                 )
         elif deploy_state == 'failed':
             return conn.build_error(request, f'Version {version} of {app_id} failed processing — not publishable')
+        # BUILT gate — a binding must never point at a version whose dist/
+        # does not exist yet (still building) or never will (build failed):
+        # the pointer would mint URLs to an empty directory.
+        if not _is_built(entry, artifact):
+            return conn.build_error(request, _not_built_error(app_id, version, entry))
 
         row = await account.publish_set(
             home, 'app', app_id, audience, version, manifest_snapshot(entry, artifact), _actor_of(conn)
@@ -751,6 +819,12 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
                 request,
                 f'v{version} is not the newest version of {app_id} (newest is v{newest}) — deploy that code again to submit it for review',
             )
+        # BUILT gate — every review-queue entry must be a real, servable
+        # candidate: nothing to review while the build runs, and approving
+        # a version that can never serve would strand a broken 'ready'.
+        submit_entry = await _registry_entry_of(account, home, app_id, version)
+        if not _is_built(submit_entry, artifact):
+            return conn.build_error(request, _not_built_error(app_id, version, submit_entry))
         try:
             updated = await account.set_artifact_state(home, app_id, version, 'submit', _actor_of(conn))
         except Exception as exc:
@@ -824,6 +898,10 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
         if not isinstance(artifact, dict) or artifact.get('kind') != 'app':
             return conn.build_error(request, f'Registry version {version} of {app_id} is not an app artifact')
         registry_entry = await _registry_entry_of(account, home, app_id, version)
+        # BUILT gate — minting an unbuilt version's dist/ would hand out a
+        # signed URL to an empty directory; refuse with the build reason.
+        if not _is_built(registry_entry, artifact):
+            return conn.build_error(request, _not_built_error(app_id, version, registry_entry))
         try:
             url = _entry_url_of(artifact, str((registry_entry or {}).get('artifactPath') or ''), sub='app-entry')
         except Exception as exc:
@@ -847,8 +925,9 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
 
 
 def _rail_entry(entry: Dict[str, Any], artifact: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """One version-rail row: registry facts + review state + the semver."""
+    """One version-rail row: registry facts + review state + build + semver."""
     who = entry.get('publishedBy') or {}
+    build = build_of(entry)
     return {
         'registryVersion': entry.get('version'),
         'appVersion': (artifact or {}).get('appVersion') or '',
@@ -858,6 +937,13 @@ def _rail_entry(entry: Dict[str, Any], artifact: Optional[Dict[str, Any]]) -> Di
         'author': who.get('display') or who.get('email') or who.get('userId') or '',
         'message': entry.get('comment', ''),
         'bundleDir': (artifact or {}).get('bundleDir') or '',
+        # The build lifecycle (metadata.build) — the DEPLOY view's chips.
+        # Legacy rows (static-entry seeds, bundleDir binaries) predate the
+        # worker: their buildStatus is '' and _is_built treats them as built.
+        'buildStatus': str(build.get('status') or ''),
+        'buildPhase': str(build.get('phase') or ''),
+        'buildErrors': build.get('errors') or [],
+        'buildEndedAt': build.get('endedAt'),
     }
 
 
@@ -1067,6 +1153,13 @@ async def resolve_app_pins(org_id: str, user_id: Optional[str], team_ids: List[s
         except Exception:
             continue
         if not isinstance(artifact, dict) or artifact.get('kind') != 'app':
+            continue
+        # BUILT gate — a pin serves only once the version's servable bytes
+        # exist: a completed server build (artifactBuild 'ok', joined onto
+        # the row by both backends), a legacy static-entry seed, or a legacy
+        # bundleDir binary. An unbuilt pin is silently skipped (the DEPLOY
+        # surfaces show the build status; the desktop just doesn't serve it).
+        if not (artifact.get('entry') or artifact.get('bundleDir') or row.get('artifactBuild') == 'ok'):
             continue
         # The file backend joins artifactPath onto the row; a backend that
         # does not yet (the DB edition until its pair sync) falls back to a

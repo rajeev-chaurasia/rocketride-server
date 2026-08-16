@@ -25,9 +25,10 @@
 #
 # apps.json is the SEED, not a runtime catalog. Each entry becomes ONE
 # ordinary artifact-rail row (kind 'app', state 'ready' — platform apps are
-# pre-approved — with the entry itself as metadata.manifest and the static
-# /apps/<dir> entry URL) plus ONE public publish binding (a pure pointer).
-# Once an app has rail rows, apps.json loses authority for it.
+# pre-approved — with the entry itself as metadata.manifest and the built
+# bundle mirrored into the version's dist/ tree, the SAME layout and minted
+# serving path server builds use) plus ONE public publish binding (a pure
+# pointer). Once an app has rail rows, apps.json loses authority for it.
 #
 # Everything here runs through the account's UPPER-LEVEL deploy/publish
 # functions (deployments_versions / deployments_publish / publish_get /
@@ -44,6 +45,7 @@
 import json
 import os
 import sys
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from rocketlib import debug
@@ -120,7 +122,16 @@ def load_manifest_entries() -> List[Dict[str, Any]]:
 
 
 def seed_artifact_of(entry: Dict[str, Any]) -> Dict[str, Any]:
-    """The kind='app' artifact record derived from one apps.json entry."""
+    """The kind='app' artifact record derived from one apps.json entry.
+
+    Deliberately NO explicit ``entry``: seeded versions serve from their own
+    ``dist/`` tree via minted URLs, exactly like server-built versions — one
+    layout, one serving path, and every seeded VERSION serves its own bytes
+    (the retired static-entry short-circuit always pointed at the CURRENT
+    static tree, so older seeded versions served the wrong bundle). Rows
+    seeded before the retirement still carry their static entry and are
+    grandfathered by the minting path.
+    """
     app_id = str(entry['id'])
     return {
         'kind': 'app',
@@ -128,28 +139,28 @@ def seed_artifact_of(entry: Dict[str, Any]) -> Dict[str, Any]:
         'moduleId': str(entry.get('moduleId') or app_id.replace('.', '_')),
         'name': str(entry.get('name') or app_id),
         'appVersion': SEED_VERSION,
-        # The explicit entry short-circuits minting: the bundle is served by
-        # the shell's static /apps/<dir> route, not from an unpacked org tree.
-        'entry': str(entry.get('entry') or ''),
     }
 
 
 async def copy_bundle_to_store(app_id: str, artifact_path: str) -> int:
     """Copy an app's built bundle from the local static tree INTO the file
-    store, CO-LOCATED with its rail record.
+    store, at the version's ``dist/`` serving tree.
 
     The registry JSON is ``.deployments/<app_id>/v<N>-<sha8>.json``; the
-    bundle mirrors it in the SIBLING directory
-    ``.deployments/<app_id>/v<N>-<sha8>/`` (the registry path, minus the
-    ``.json``). Without this the store holds only the registry stub — the
-    actual remoteEntry.js/chunks would live only on the local box.
+    bundle mirrors into ``.deployments/<app_id>/v<N>-<sha8>/dist/`` — the
+    SAME subtree the server build worker writes, and the one entry minting
+    serves. The subtree (never the content root) keeps the directory-scoped
+    entry token from ever granting a deployed version's ``source/`` or
+    ``bundle/``, and gives every seeded VERSION its own servable bytes.
 
     Source: ``<engine_dir>/static/apps/<app_id>/`` (what the app build
     emits). Best-effort per app: a missing local tree (apps not rebuilt) logs
-    and returns 0 rather than aborting the seed. Returns the file count
-    copied. Writes go through the raw store's ``write_bytes`` (a server-side
-    bulk copy, not a user operation).
+    and returns 0 rather than aborting the seed — but with the static-entry
+    short-circuit retired the caller treats 0 as "cannot serve". Returns the
+    file count copied. Writes go through the raw store's ``write_bytes`` (a
+    server-side bulk copy, not a user operation).
     """
+    from ai.account.deployment_backend import artifact_content_dir
     from ai.account.store import Store
 
     local_root = os.path.join(os.path.dirname(sys.executable), 'static', 'apps', app_id)
@@ -160,11 +171,11 @@ async def copy_bundle_to_store(app_id: str, artifact_path: str) -> int:
         debug(f'[seed_apps] no artifactPath for {app_id} — store copy skipped')
         return 0
 
-    # Sibling of the registry JSON: same store path, minus the .json extension.
-    dest_root = artifact_path[:-5] if artifact_path.endswith('.json') else artifact_path
+    # The version's dist/ tree under the content home (the one convention).
+    dest_root = f'{artifact_content_dir(artifact_path)}/dist'
     store = Store.instance()._store
     count = 0
-    # Walk the built tree and mirror every file into the sibling bundle dir.
+    # Walk the built tree and mirror every file into the dist/ serving tree.
     for dirpath, _dirs, files in os.walk(local_root):
         for filename in files:
             abs_path = os.path.join(dirpath, filename)
@@ -202,10 +213,17 @@ async def seed_app(account: Any, org_id: str, entry: Dict[str, Any], actor: Dict
         seed_artifact_of(entry),
         actor,
         comment=SEED_COMMENT,
-        metadata={'manifest': dict(entry)},
+        # build.status 'ok': the seed's dist/ is populated by the copy below
+        # from an already-built static tree, so seeded versions pass the SAME
+        # built gate server builds do (no special-casing anywhere downstream).
+        metadata={'manifest': dict(entry), 'build': {'status': 'ok', 'seeded': True, 'endedAt': time.time()}},
         state='ready',
     )
-    await copy_bundle_to_store(app_id, str(registered.get('artifactPath') or ''))
+    copied = await copy_bundle_to_store(app_id, str(registered.get('artifactPath') or ''))
+    if copied == 0:
+        # With the static-entry short-circuit retired, the dist/ copy IS the
+        # serving path — an empty copy means this seed cannot serve at all.
+        debug(f'[seed_apps] WARNING: {app_id} seeded with an EMPTY dist/ — the app cannot serve (rebuild the app)')
     return registered
 
 
