@@ -30,7 +30,8 @@ registry), with two adaptations:
 - The ARTIFACT is a small ``kind:'app'`` JSON record — app id, moduleId,
   display name, semver, and ``metadata.manifest`` (the full appManifest). The
   built bundle is uploaded as a zip and UNPACKED at receipt into
-  ``$org/.apps/<app_id>/v<N>/app/`` (servable); the registry pins the metadata,
+  ``.deployments/<app_id>/v<N>-<sha8>/app/`` (servable, the artifact's
+  sibling directory); the registry pins the metadata,
   exactly as it pins pipeline JSON.
 - The REVIEW STATE lives on the DEPLOYMENT (``deployment_artifacts.state``:
   private → submit → ready | rejected). An app is born ``private`` (internally
@@ -63,38 +64,44 @@ from typing import Any, Dict, List, Optional
 
 from rocketlib import debug
 
-from ai.account.deployment_backend import DEFAULT_REVIEW_STATE, app_bundle_dir
+from ai.account.deployment_backend import DEFAULT_REVIEW_STATE, artifact_content_dir
 
 
-def _serving_dir(org_id: str, app_id: str, version: int, artifact: Optional[Dict[str, Any]]) -> str:
+def _serving_dir(artifact: Optional[Dict[str, Any]], artifact_path: str) -> str:
     """The directory the version's servable bundle lives in.
 
-    Zip-mode artifacts derive it by convention ($org/.apps/<app>/vN/app);
-    legacy binary-mode artifacts stored an explicit bundleDir — honor it.
+    Zip-mode artifacts derive it by convention — the ``app/`` subtree of the
+    registry artifact's content home (the artifact path minus ``.json``, a
+    sibling under ``.deployments``); legacy binary-mode artifacts stored an
+    explicit bundleDir — honor it.
     """
     stored = (artifact or {}).get('bundleDir')
     if stored:
         return str(stored)
-    return f'{app_bundle_dir(org_id, app_id, version)}/app'
+    return f'{artifact_content_dir(artifact_path)}/app'
 
 
-def _entry_url_of(org_id: str, app_id: str, version: int, artifact: Optional[Dict[str, Any]], sub: str) -> str:
+def _entry_url_of(artifact: Optional[Dict[str, Any]], artifact_path: str, sub: str) -> str:
     """The servable entry URL of one deployed version.
 
     Seeded platform artifacts carry an explicit ``entry`` (the shell's
     static ``/apps/<dir>/remoteEntry.js`` route — directly servable, no
     signing); everything else mints a signed directory-capability URL over
-    the version's unpacked bundle tree.
+    the version's unpacked bundle tree beside the registry JSON.
 
     Raises:
-        Exception: When minting fails (unsigned static entries never fail).
+        ValueError: When neither an explicit entry nor an artifact path is
+            available (nothing to serve from).
+        Exception:  When minting fails (unsigned static entries never fail).
     """
     explicit = (artifact or {}).get('entry')
     if explicit:
         return str(explicit)
+    if not artifact_path and not (artifact or {}).get('bundleDir'):
+        raise ValueError('no artifact path — cannot derive the bundle directory')
     from ai.account.file_store import mint_directory_url
 
-    return mint_directory_url(_serving_dir(org_id, app_id, version, artifact), 'remoteEntry.js', sub=sub)
+    return mint_directory_url(_serving_dir(artifact, artifact_path), 'remoteEntry.js', sub=sub)
 
 
 def _actor_of(conn: Any) -> Dict[str, str]:
@@ -276,7 +283,7 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
 
     Receives ONE zip via the binary ``arguments.data`` frame. The zip carries
     the app's SOURCE (the server owns the build — client-produced binaries
-    are never trusted): it is retained at ``$org/.apps/<app_id>/v<N>/bundle/``
+    are never trusted): it is retained at ``<artifact sibling dir>/bundle/``
     for provenance and unpacked immediately into ``.../v<N>/source/``. The
     ``.../v<N>/app/`` tree stays reserved for the SERVER build's output (the
     build-worker phase) — entry minting points there, so a version serves
@@ -380,19 +387,28 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
 
     # ── Content: retained transport zip + the unpacked SOURCE tree ───────
     # source/ holds what the developer shipped; app/ stays reserved for the
-    # server build's output so source and servable bytes never mix.
+    # server build's output so source and servable bytes never mix. The
+    # content home is the artifact's SIBLING directory — the registry JSON
+    # path minus '.json', co-located under .deployments (the same ONE
+    # convention the platform seeder uses for its bundle copies).
     # EVERYTHING goes through the Store interface — authority is carried by
     # the IDENTITY, not by which method was called: the internal identity
     # passes resolve_scope's internal branch (id references, system trees
-    # included), the same pattern as the run-log writer. @/Org/=<id>/<rest>
-    # resolves to the org's .apps registry tree.
+    # included), the same pattern as the run-log writer.
     from ai.account.models import RequestContext
     from ai.account.store import Store
 
     fs = Store.file_store(RequestContext.internal('app-deploy'), client_id=info.userId)
-    home = f'@/Org/={org_id}/.apps/{app_id}/v{version:06d}'
     written: List[str] = []
     try:
+        # Derive the home INSIDE the compensation scope: a backend that
+        # returned no artifactPath must flip the row 'failed', not write to
+        # a garbage root.
+        content_root = artifact_content_dir(str(entry.get('artifactPath') or ''))
+        org_prefix = f'orgs/{org_id}/files/'
+        if not content_root.startswith(org_prefix):
+            raise ValueError(f'registry entry carries no usable artifactPath ({content_root!r})')
+        home = f'@/Org/={org_id}/{content_root[len(org_prefix) :]}'
         path = f'{home}/bundle/{app_id}-v{version:06d}.zip'
         await fs.write(path, bytes(data))
         written.append(path)
@@ -807,8 +823,9 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
         artifact = await _artifact_of(account, home, app_id, {'version': version})
         if not isinstance(artifact, dict) or artifact.get('kind') != 'app':
             return conn.build_error(request, f'Registry version {version} of {app_id} is not an app artifact')
+        registry_entry = await _registry_entry_of(account, home, app_id, version)
         try:
-            url = _entry_url_of(home, app_id, version, artifact, sub='app-entry')
+            url = _entry_url_of(artifact, str((registry_entry or {}).get('artifactPath') or ''), sub='app-entry')
         except Exception as exc:
             return conn.build_error(request, f'Failed to mint bundle URL: {exc}')
         return conn.build_response(
@@ -885,6 +902,11 @@ def manifest_snapshot(entry: Dict[str, Any], artifact: Dict[str, Any]) -> Dict[s
         if isinstance(manifest.get('contributes'), dict)
         else manifest.get('configuration'),
         'requiredPermissions': manifest.get('requiredPermissions'),
+        # Pre-auth listing visibility (apps.json 'public: false' built-ins
+        # stay off the unauthenticated probe). Stored verbatim by the file
+        # backend; the DB edition's fixed snapshot columns drop it — the
+        # filter is an OSS probe concern.
+        'public': manifest.get('public', True) is not False,
     }
 
 
@@ -1046,8 +1068,15 @@ async def resolve_app_pins(org_id: str, user_id: Optional[str], team_ids: List[s
             continue
         if not isinstance(artifact, dict) or artifact.get('kind') != 'app':
             continue
+        # The file backend joins artifactPath onto the row; a backend that
+        # does not yet (the DB edition until its pair sync) falls back to a
+        # registry read for the one row that needs it.
+        artifact_path = str(row.get('artifactPath') or '')
+        if not artifact_path:
+            reg = await _registry_entry_of(account, row_org, app_id, version)
+            artifact_path = str((reg or {}).get('artifactPath') or '')
         try:
-            entry_url = _entry_url_of(row_org, app_id, version, artifact, sub='app-publish')
+            entry_url = _entry_url_of(artifact, artifact_path, sub='app-publish')
         except Exception as exc:
             debug(f'[app_deploy] signed entry mint failed for {app_id}: {exc}')
             continue

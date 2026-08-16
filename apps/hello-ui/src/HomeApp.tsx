@@ -484,6 +484,13 @@ const styles = {
 		color: 'var(--rr-text-secondary)',
 	} as CSSProperties,
 
+	/** Failure row in the drop list — a version pick that could not launch. */
+	versionError: {
+		padding: '7px 14px 4px',
+		fontSize: 11,
+		color: 'var(--rr-color-error)',
+	} as CSSProperties,
+
 	/** Sign In / Sign Out button. */
 	authBtn: {
 		padding: '7px 20px',
@@ -641,6 +648,9 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 	// Version drop list — rows load lazily on first open
 	const [versionsOpen, setVersionsOpen] = React.useState(false);
 	const [versionRows, setVersionRows] = React.useState<VersionRow[] | null>(null);
+	// A failed version pick renders inline in the popover — a silent close
+	// reads as "the click did nothing".
+	const [versionError, setVersionError] = React.useState<string | null>(null);
 	// Bumped after select/reset so the chip re-reads the session override
 	const [overrideSeq, setOverrideSeq] = React.useState(0);
 	const popoverRef = React.useRef<HTMLDivElement>(null);
@@ -669,6 +679,7 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 	const toggleVersions = async (e: React.SyntheticEvent) => {
 		e.stopPropagation();
 		setVersionsOpen((v) => !v);
+		setVersionError(null);
 		if (versionRows !== null) return;
 		try {
 			const client = ConnectionManager.getInstance().getClient();
@@ -709,8 +720,11 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 			if (result === 'reload-required') { window.location.reload(); return; }
 			onLaunch(app);
 		} catch (err) {
-			console.log(`[hello] version select failed for ${app.id}: ${err instanceof Error ? err.message : String(err)}`);
-			setVersionsOpen(false);
+			const message = err instanceof Error ? err.message : String(err);
+			console.log(`[hello] version select failed for ${app.id}: ${message}`);
+			// Keep the popover open and say what happened — closing silently
+			// leaves the user with a click that visibly did nothing.
+			setVersionError(`Could not switch: ${message}`);
 		}
 	};
 
@@ -718,6 +732,7 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 	const resetVersion = (e: React.SyntheticEvent) => {
 		e.stopPropagation();
 		const result = applyAppVersionOverride(app.id, app.moduleId, null);
+		setVersionError(null);
 		setVersionsOpen(false);
 		setOverrideSeq((n) => n + 1);
 		if (result === 'reload-required') window.location.reload();
@@ -772,6 +787,7 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 			{/* Version drop list */}
 			{versionsOpen && (
 				<div ref={popoverRef} style={styles.versionPopover} role="listbox" onClick={(e) => e.stopPropagation()}>
+					{versionError && <div style={styles.versionError}>{versionError}</div>}
 					{versionRows === null && <div style={styles.versionHint}>Loading versions…</div>}
 					{versionRows !== null && versionRows.length === 0 && (
 						<div style={styles.versionHint}>No other versions available</div>

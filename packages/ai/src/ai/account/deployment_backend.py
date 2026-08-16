@@ -194,15 +194,19 @@ def artifact_sha256(data: str) -> str:
     return hashlib.sha256(data.encode('utf-8')).hexdigest()
 
 
-def app_bundle_dir(org_id: str, app_id: str, version: int) -> str:
-    """The org-tree home of one deployed app version's content.
+def artifact_content_dir(artifact_path: str) -> str:
+    """The store home of one registry version's CONTENT, from its artifact path.
 
-    Layout (Rod-specified): ``$org/.apps/<app_id>/v<NNNNNN>/bundle/`` holds
-    the retained transport zip, ``.../app/`` the unpacked servable tree
-    (entry minting points there). Derived from (org, app, version) by
-    convention — never stored in the artifact JSON.
+    ONE convention for seeded and deployed bytes alike: content lives in the
+    SIBLING directory of the registry JSON — the artifact path minus its
+    ``.json`` extension (``.deployments/<project>/v<N>-<sha8>/``). Zip
+    deploys keep ``bundle/`` (the retained transport zip), ``source/`` (what
+    the developer shipped) and ``app/`` (the server build's servable output,
+    entry minting points there) under it; platform seeds mirror the built
+    static tree at its root. Derived by convention — never stored in the
+    artifact JSON.
     """
-    return f'orgs/{org_id}/files/.apps/{app_id}/v{version:06d}'
+    return artifact_path[:-5] if artifact_path.endswith('.json') else artifact_path
 
 
 def artifact_metadata(artifact: Dict[str, Any], metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -663,13 +667,20 @@ class FileDeploymentBackend:
 
     @staticmethod
     def _publish_row(
-        key: str, row: Dict[str, Any], org_id: str, project_id: str, artifact_state: str = ''
+        key: str,
+        row: Dict[str, Any],
+        org_id: str,
+        project_id: str,
+        artifact_state: str = '',
+        artifact_path: str = '',
     ) -> Dict[str, Any]:
         """One stored binding -> the contract shape (audience decoded).
 
         ``row['state']`` is the BINDING lifecycle (enabled/disabled/removed);
-        ``artifactState`` is the bound DEPLOYMENT's review state, joined from
-        meta['versions'] so the scope walk can gate serving.
+        ``artifactState`` is the bound DEPLOYMENT's review state and
+        ``artifactPath`` its registry JSON path (the content home derives
+        from it), both joined from meta['versions'] so the scope walk can
+        gate serving and mint entry URLs without a second registry read.
         """
         if key == '~public':
             audience = {'type': 'public', 'id': ''}
@@ -677,15 +688,22 @@ class FileDeploymentBackend:
             audience = {'type': 'user', 'id': key[len('user~') :]}
         else:
             audience = {'type': 'team', 'id': key[len('team~') :]}
-        return {'orgId': org_id, 'appId': project_id, 'audience': audience, 'artifactState': artifact_state, **row}
+        return {
+            'orgId': org_id,
+            'appId': project_id,
+            'audience': audience,
+            'artifactState': artifact_state,
+            'artifactPath': artifact_path,
+            **row,
+        }
 
     @staticmethod
-    def _artifact_state_of(meta: Dict[str, Any], version: int) -> str:
-        """The review state of one registry version (from meta['versions'])."""
+    def _artifact_entry_of(meta: Dict[str, Any], version: int) -> Dict[str, Any]:
+        """The registry version row a binding points at (from meta['versions'])."""
         for v in meta.get('versions', []):
             if int(v.get('version', 0)) == int(version):
-                return str(v.get('state') or '')
-        return ''
+                return v
+        return {}
 
     def _publishes_of(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         """The meta's publishes dict (container-tolerant on old files)."""
@@ -744,7 +762,10 @@ class FileDeploymentBackend:
                     'data': {'audience': audience},
                 }
             )
-            return self._publish_row(key, row, org_id, app_id, self._artifact_state_of(meta, version))
+            ver = self._artifact_entry_of(meta, version)
+            return self._publish_row(
+                key, row, org_id, app_id, str(ver.get('state') or ''), str(ver.get('artifactPath') or '')
+            )
 
         return await self._mutate_meta(org_id, app_id, mutate)
 
@@ -763,7 +784,10 @@ class FileDeploymentBackend:
         row = self._publishes_of(meta).get(key)
         if not row or row.get('state') == 'removed':
             return None
-        return self._publish_row(key, row, org_id, app_id, self._artifact_state_of(meta, row.get('version', 0)))
+        ver = self._artifact_entry_of(meta, row.get('version', 0))
+        return self._publish_row(
+            key, row, org_id, app_id, str(ver.get('state') or ''), str(ver.get('artifactPath') or '')
+        )
 
     async def publish_of_app(self, org_id: str, kind: str, app_id: str) -> List[Dict[str, Any]]:
         """Every live publish row of one app (the where/reverse index feed)."""
@@ -774,11 +798,17 @@ class FileDeploymentBackend:
         meta = await self._read_meta(org_id, app_id)
         if meta is None:
             return []
-        return [
-            self._publish_row(key, row, org_id, app_id, self._artifact_state_of(meta, row.get('version', 0)))
-            for key, row in self._publishes_of(meta).items()
-            if row.get('state') != 'removed'
-        ]
+        out: List[Dict[str, Any]] = []
+        for key, row in self._publishes_of(meta).items():
+            if row.get('state') == 'removed':
+                continue
+            ver = self._artifact_entry_of(meta, row.get('version', 0))
+            out.append(
+                self._publish_row(
+                    key, row, org_id, app_id, str(ver.get('state') or ''), str(ver.get('artifactPath') or '')
+                )
+            )
+        return out
 
     async def publish_list(self, org_id: str, kind: str, audiences: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         """Every live publish row matching ANY of the audiences, across apps.
@@ -798,9 +828,15 @@ class FileDeploymentBackend:
                 continue
             for key, row in self._publishes_of(meta).items():
                 if key in keys and row.get('state') != 'removed':
+                    ver = self._artifact_entry_of(meta, row.get('version', 0))
                     out.append(
                         self._publish_row(
-                            key, row, org_id, project_id, self._artifact_state_of(meta, row.get('version', 0))
+                            key,
+                            row,
+                            org_id,
+                            project_id,
+                            str(ver.get('state') or ''),
+                            str(ver.get('artifactPath') or ''),
                         )
                     )
         return out
@@ -838,7 +874,10 @@ class FileDeploymentBackend:
                     'data': {'audience': audience},
                 }
             )
-            return self._publish_row(key, row, org_id, app_id, self._artifact_state_of(meta, row.get('version', 0)))
+            ver = self._artifact_entry_of(meta, row.get('version', 0))
+            return self._publish_row(
+                key, row, org_id, app_id, str(ver.get('state') or ''), str(ver.get('artifactPath') or '')
+            )
 
         return await self._mutate_meta(org_id, app_id, mutate)
 

@@ -557,6 +557,32 @@ class AccountBase(ABC):
         """Flip one publish row's serving state (approve/disable/remove)."""
         return await self._deployment_backend().publish_set_state(org_id, kind, app_id, audience, state, actor)
 
+    # ── Seeding — platform built-ins from apps.json (both editions) ──────────
+
+    async def seed_app(self, org_id: str, entry: dict, actor: dict) -> dict:
+        """Mint one apps.json entry as a pre-approved rail version + bundle copy.
+
+        The edition-neutral primitive: registers the seed artifact (born
+        'ready') and copies the built bundle into the store beside it.
+        Binding the version to an audience is the caller's job — each
+        edition records visibility its own way (SaaS: DB rows via the pod
+        deploy tool; OSS: the meta file via its init sequence).
+        """
+        from .seed_apps import seed_app
+
+        return await seed_app(self, org_id, entry, actor)
+
+    async def seed_apps_from_manifest(self, org_id: str, actor: dict, *, force: bool = False, seed_entry=None) -> dict:
+        """Walk apps.json and register every absent platform app (idempotent).
+
+        ``seed_entry`` lets an edition wrap the per-entry step (SaaS adds
+        billing/fleet-repoint); defaults to the shared seed_manifest_app.
+        Returns ``{total, seeded, skipped, failed}`` counts.
+        """
+        from .seed_apps import seed_apps_from_manifest
+
+        return await seed_apps_from_manifest(self, org_id, actor, force=force, seed_entry=seed_entry)
+
     async def deployments_history_append(
         self, org_id: str, project_id: str, action: str, actor: dict, version: int = None, data: dict = None
     ) -> None:

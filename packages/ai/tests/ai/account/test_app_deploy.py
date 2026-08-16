@@ -110,6 +110,9 @@ class _FakeRegistry:
                 'publishedAt': 1000 + version,
                 'publishedBy': {'userId': publisher_id, 'display': 'Dev', 'email': 'dev@example.com'},
                 'comment': f'v{app_version}',
+                # Same shape the real backend records — the content home (and
+                # therefore entry minting) derives from this path.
+                'artifactPath': f'orgs/org1/files/.deployments/acme.brandy/v{version:06d}-fakesha{version}.json',
             }
         )
         self.artifacts[version] = {
@@ -157,14 +160,18 @@ class _FakeRegistry:
 
         async def deployments_publish(org_id, project_id, artifact, actor, comment='', metadata=None, state=None):
             self.publish_calls.append({'artifact': artifact, 'actor': actor, 'comment': comment, 'metadata': metadata})
+            version = len(self.versions) + 1
             entry = {
-                'version': len(self.versions) + 1,
+                'version': version,
                 'sha256': 'sha-new',
                 'state': state or ('private' if artifact.get('kind') == 'app' else 'ready'),
                 'metadata': metadata or {},
                 'publishedAt': 3000,
                 'publishedBy': actor,
                 'comment': comment,
+                # Same shape the real backend records — handle_app_add derives
+                # the content home from this path's .json sibling.
+                'artifactPath': f'orgs/{org_id}/files/.deployments/{project_id}/v{version:06d}-shanew00.json',
             }
             self.versions.append(entry)
             self.artifacts[entry['version']] = artifact
@@ -402,9 +409,10 @@ async def test_add_unpacks_zip_and_returns_rail_entry(registry, content_store):
     assert call['metadata']['projectId'] == 'wc-1'  # client working-copy provenance
 
     # Content: retained transport zip + the unpacked SOURCE tree (app/ stays
-    # reserved for the server build's output)
+    # reserved for the server build's output) — the artifact's .deployments
+    # sibling directory, ONE convention with the platform seeder
     writes = _written(content_store)
-    home = 'orgs/org1/files/.apps/acme.brandy/v000001'
+    home = 'orgs/org1/files/.deployments/acme.brandy/v000001-shanew00'
     assert f'{home}/bundle/acme.brandy-v000001.zip' in writes
     assert writes[f'{home}/source/src/App.tsx'] == b'export default () => null'
     assert f'{home}/source/assets/logo.svg' in writes
@@ -603,7 +611,7 @@ async def test_add_workspace_layout_reads_manifest_at_app_root(registry, content
     # The workspace tree unpacked AS-IS — relative references between the app
     # and its include extras survive because nothing was re-rooted
     writes = _written(content_store)
-    home = 'orgs/org1/files/.apps/acme.brandy/v000001'
+    home = 'orgs/org1/files/.deployments/acme.brandy/v000001-shanew00'
     assert writes[f'{home}/source/apps/brandy-ui/src/App.tsx'] == b'export default () => null'
     assert writes[f'{home}/source/apps/shared/src/util.ts'] == b'export const u = 1'
 
@@ -921,8 +929,12 @@ async def test_entry_mints_for_visible_publishes(registry, mint):
     result = await handle_deploy_app(conn, _request('entry', version=1))
 
     body = result['body']
-    # Zip-mode artifacts derive the serving dir by convention
-    assert body['url'] == 'https://signed/orgs/org1/files/.apps/acme.brandy/v000001/app/remoteEntry.js?sub=app-entry'
+    # Zip-mode artifacts derive the serving dir by convention — the app/
+    # subtree of the artifact's .deployments sibling directory
+    assert (
+        body['url']
+        == 'https://signed/orgs/org1/files/.deployments/acme.brandy/v000001-fakesha1/app/remoteEntry.js?sub=app-entry'
+    )
     assert body['moduleId'] == 'acme_brandy'
     assert (body['appVersion'], body['registryVersion']) == ('1.0.0', 1)
 

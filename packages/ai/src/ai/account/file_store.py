@@ -90,8 +90,7 @@ def mint_directory_url(dir_path: str, entry_file: str, expires_in: int = 86400, 
         Absolute URL to ``entry_file`` inside the signed directory.
 
     Raises:
-        ValueError:   If ``expires_in`` is not positive or the signing key
-                      is not configured.
+        ValueError:   If ``expires_in`` is not positive.
         RuntimeError: If ``RR_BASE_URL`` is not configured.
     """
     import os
@@ -99,12 +98,14 @@ def mint_directory_url(dir_path: str, entry_file: str, expires_in: int = 86400, 
 
     import jwt
 
+    from ai.constants import CONST_DEFAULT_SIGNING_KEY
+
     if expires_in <= 0:
         raise ValueError('expires_in must be positive')
 
-    signing_key = os.environ.get('RR_SIGNING_KEY', '')
-    if not signing_key:
-        raise ValueError('RR_SIGNING_KEY not configured — cannot generate fetch URL')
+    # Unset falls back to the self-describing development default so a fresh
+    # install works out of the box; production replaces it via .env/.config.
+    signing_key = os.environ.get('RR_SIGNING_KEY', '') or CONST_DEFAULT_SIGNING_KEY
 
     # Directory claim: `dir` (not `path`) so the fetch handler knows the
     # capability covers a subtree, gated by the same claim generation.
@@ -1156,9 +1157,7 @@ class FileStore:
             A direct HTTP(S) URL to the file.
 
         Raises:
-            ValueError: If ``expires_in`` is not positive, or if
-                ``RR_SIGNING_KEY`` is not set and the backend requires a
-                locally-signed URL.
+            ValueError: If ``expires_in`` is not positive.
             RuntimeError: If ``RR_BASE_URL`` is not configured and the
                 backend requires a locally-signed URL.
         """
@@ -1184,9 +1183,12 @@ class FileStore:
         import time
         import jwt
 
-        signing_key = os.environ.get('RR_SIGNING_KEY', '')
-        if not signing_key:
-            raise ValueError('RR_SIGNING_KEY not configured — cannot generate fetch URL')
+        from ai.constants import CONST_DEFAULT_SIGNING_KEY
+
+        # Unset falls back to the self-describing development default so a
+        # fresh install works out of the box; production replaces it via
+        # .env/.config.
+        signing_key = os.environ.get('RR_SIGNING_KEY', '') or CONST_DEFAULT_SIGNING_KEY
 
         # The claim carries the RESOLVED physical store path, not the wire
         # spelling: authorization already ran above (_full_path under THIS

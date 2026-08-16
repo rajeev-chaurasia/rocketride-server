@@ -42,8 +42,8 @@ account package so the OSS engine supports local app development without
 SaaS. Consumers:
 
 - SaaS ``account_service.get_authentication_result`` and the OSS
-  ``_read_apps_json`` apply ``apply_overlay()`` to the app list they
-  assemble.
+  assembly paths (``_assemble_apps`` / ``get_public_apps``) apply
+  ``apply_overlay()`` to the app list they assemble.
 - ``TaskServer._dapbase_on_disconnected`` calls ``drop_connection()``.
 - ``cmd_app`` (OSS base) and the SaaS ``app_handler`` both route the
   ``register_dev`` subcommand to ``handle_register_dev()``.

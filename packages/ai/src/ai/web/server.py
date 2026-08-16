@@ -454,9 +454,10 @@ class WebServer:
             # RR_BASE_URL will be set lazily by get_port() once resolved.
 
         # RR_SIGNING_KEY (the FileStore URL-signing secret) is deliberately
-        # NOT self-provisioned: the operator sets it in .env/.config like
-        # every other deployment secret. Unset means signed fetch URLs are
-        # switched off and minting raises its documented configuration error.
+        # NOT provisioned here: the operator sets it in .env/.config like
+        # every other deployment secret, and when unset the readers fall
+        # back to CONST_DEFAULT_SIGNING_KEY (a self-describing development
+        # value) so a fresh install works out of the box.
 
         # Setup the Uvicorn configuration
         config = uvicorn.Config(
