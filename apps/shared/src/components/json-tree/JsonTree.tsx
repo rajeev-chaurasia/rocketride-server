@@ -1,10 +1,14 @@
 /**
- * @file JsonTree — recursive JSON viewer for the Trace detail panel
+ * @file JsonTree — the platform's shared recursive JSON viewer.
  * @license MIT
  *
- * Ported from apps/vscode TraceSection/JsonTree.tsx.
- * All styles are inline CSSProperties objects; no external CSS files.
- * Colour tokens use the --rr-* namespace.
+ * A general-purpose, --rr-*-themed JSON tree used wherever the product shows a
+ * raw JSON payload (trace detail, event bodies, tool I/O). A peer component, not
+ * owned by any one feature. All styling is inline CSSProperties on --rr-* tokens
+ * (no external CSS). DOM size is bounded per node, not globally: leaf strings
+ * are capped at 200 chars and each node renders at most MAX_CHILDREN child
+ * rows, while collapsed subtrees render nothing — so DOM growth is driven by
+ * explicit user expansion, not by payload size; there is no recursion-depth cap.
  */
 import React, { useState, CSSProperties } from 'react';
 import { commonStyles } from 'shell';
@@ -13,9 +17,10 @@ import { commonStyles } from 'shell';
 // TYPES
 // =============================================================================
 
-interface JsonTreeProps {
+export interface IJsonTreeProps {
+	/** The value to render — any JSON-serialisable data (object, array, or scalar). */
 	data: unknown;
-	/** Auto-expand to this depth (default 1) */
+	/** Auto-expand to this depth (default 1). */
 	defaultExpanded?: number;
 }
 
@@ -205,9 +210,8 @@ const JsonNode: React.FC<JsonNodeProps> = ({ label, value, depth, defaultExpandD
 		display = String(value);
 	} else if (typeof value === 'string') {
 		valStyle = styles.valStr;
-		// Cap leaf strings: an un-recognised media entry (base64 payload) must never
-		// dump megabytes into one DOM node and freeze the webview. Matches the events-ui
-		// JsonTree, which already truncates at 200 chars.
+		// Cap leaf strings at 200 chars: a large or base64 payload must never dump
+		// megabytes into one DOM node and freeze the panel.
 		display = JSON.stringify(value.length > 200 ? value.slice(0, 200) + '…' : value);
 	} else {
 		display = String(value);
@@ -227,7 +231,7 @@ const JsonNode: React.FC<JsonNodeProps> = ({ label, value, depth, defaultExpandD
 // MAIN COMPONENT
 // =============================================================================
 
-export const JsonTree: React.FC<JsonTreeProps> = ({ data, defaultExpanded = 1 }) => {
+export const JsonTree: React.FC<IJsonTreeProps> = ({ data, defaultExpanded = 1 }) => {
 	if (data === undefined || data === null) {
 		return <div style={styles.empty}>No data</div>;
 	}

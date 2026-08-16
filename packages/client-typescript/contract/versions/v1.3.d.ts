@@ -24,7 +24,7 @@
 // FROZEN rocketride SDK contract — floor v1.3 — never edit by hand
 // =============================================================================
 // Floor key:     1.3 (MAJOR.MINOR of packages/client-typescript/package.json)
-// Source commit: ffb7356ce719a1af367a66c65c24d553522f6299
+// Source commit: bf8253a01efd0aead2e2178dedcbe28f09e74f5a
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder client-typescript:freeze
 //
