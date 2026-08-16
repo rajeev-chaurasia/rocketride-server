@@ -41,8 +41,10 @@ import { installDevHooks } from './util/devMode';
  * 5. Renders the Shell React tree.
  */
 async function main() {
-	// Read the server URI from the build-time env define
-	const serverUri = process.env.ROCKETRIDE_URI || 'localhost:5565';
+	// The server is ALWAYS wherever this page was served from — no address
+	// is baked into the bundle (one artifact serves every environment). The
+	// dev split-host loop keeps this true via the dev server's proxy.
+	const serverUri = window.location.origin;
 
 	// Probe the server for capabilities and public apps (no auth required)
 	let capabilities: string[] = [];

@@ -16,11 +16,13 @@ const { getenv, requireKeys } = require('../../scripts/lib/getenv');
 export default defineConfig(({ command }) => {
 	const isDev = command === 'dev';
 	const fullEnv = getenv();
-	// Allowlist: only bundle public client-safe ROCKETRIDE_* vars
-	const clientEnvKeys = ['ROCKETRIDE_URI', ...(isDev ? ['ROCKETRIDE_APIKEY'] : [])];
+	// NO server address is ever baked — the app self-targets from
+	// window.location.origin (the dev server proxies the engine so that
+	// holds in dev too). Dev builds additionally carry the dev API key
+	// (auth bypass); production bundles carry nothing.
+	const clientEnvKeys = isDev ? ['ROCKETRIDE_APIKEY'] : [];
 	const parsed = Object.fromEntries(clientEnvKeys.flatMap((k) => (fullEnv[k] ? [[k, fullEnv[k]]] : [])));
 
-	requireKeys(parsed, ['ROCKETRIDE_URI'], 'chat-ui');
 	if (isDev) {
 		requireKeys(parsed, ['ROCKETRIDE_APIKEY'], 'chat-ui');
 	}
@@ -38,6 +40,13 @@ export default defineConfig(({ command }) => {
 		server: {
 			port: 3002,
 			base: '/chat/',
+			// Relay the engine's DAP WebSocket so window.location.origin is
+			// the server in dev exactly as it is when engine-served.
+			...(isDev && {
+				proxy: {
+					'/task': { target: 'http://localhost:5565', ws: true },
+				},
+			}),
 		},
 		plugins: [pluginReact(), pluginTypeCheck()],
 

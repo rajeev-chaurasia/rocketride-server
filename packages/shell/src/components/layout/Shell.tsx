@@ -182,7 +182,7 @@ export interface ShellProps {
  */
 const Shell: React.FC<ShellProps> = ({ config }) => {
 	const cm = ConnectionManager.getInstance();
-	const { ROCKETRIDE_URI, RR_APIKEY, RR_ZITADEL_URL, RR_ZITADEL_CLIENT_ID } = config.apiConfig;
+	const { RR_ZITADEL_URL, RR_ZITADEL_CLIENT_ID } = config.apiConfig;
 
 	// ── Session-locked app ────────────────────────────────────────────────
 	const [sessionAppId] = useState<string>(() => {
@@ -297,9 +297,10 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 				authProvider.initialize({ zitadelUrl: RR_ZITADEL_URL, clientId: RR_ZITADEL_CLIENT_ID });
 			}
 
-			// Initialise the client singleton (idempotent)
+			// Initialise the client singleton (idempotent). No uri: the
+			// connection self-targets window.location.origin — the page's
+			// own host IS the server in every environment.
 			cm.init({
-				uri: RR_APIKEY ? undefined : ROCKETRIDE_URI,
 				clientName: 'Cloud Shell-UI',
 				authProvider,
 				zitadelUrl: RR_ZITADEL_URL,

@@ -46,10 +46,10 @@ import { ConnectionManager } from './connection/connection';
  * between environments byte-for-byte.
  */
 const API_CONFIG: ShellApiConfig = {
-	// Base URI for the RocketRide WebSocket server
-	ROCKETRIDE_URI:             process.env.ROCKETRIDE_URI,
-	// Hard-coded API key for service accounts / dev; bypasses OAuth2 when present
-	RR_APIKEY:                 process.env.RR_APIKEY,
+	// The server address and API keys are DELIBERATELY absent: the shell
+	// self-targets from window.location.origin, and keys enter through the
+	// ApiKeyLogin prompt — never through the bundle. (The contract fields
+	// remain declared; they are simply never populated.)
 	// Zitadel OIDC issuer URL — required for the OAuth2 PKCE sign-in flow
 	RR_ZITADEL_URL:            process.env.RR_ZITADEL_URL,
 	// OAuth2 client ID registered with Zitadel for this SPA
