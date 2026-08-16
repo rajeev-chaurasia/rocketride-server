@@ -25,6 +25,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { ConnectionManager } from '../connection/connection';
 import { extractInstallCause, isTransientLockError } from './appTypes';
 import { getLogger } from '../shared/util/output';
+import { scanWorkspaceApps } from './appScan';
 import type { ScannedApp } from './appScan';
 import type { AppScreenProvider, AppWatchStatus } from '../providers/AppScreenProvider';
 
@@ -32,15 +33,15 @@ import type { AppScreenProvider, AppWatchStatus } from '../providers/AppScreenPr
 // TYPES
 // =============================================================================
 
-/** One running watch session. */
+/** One running watch session. Every session is OWNED — the manager spawned
+    its process tree and observes its exit; orphans from a previous extension
+    host are reaped at activation, never reused (see reapOrphans). */
 interface WatchSession {
 	app: ScannedApp;
-	/** The spawned dev-server tree; absent for an ADOPTED orphan (see
-	    adoptOrClearPort) — adopted sessions are stopped by adoptedPids. */
-	proc?: ChildProcess;
-	/** The discovered process ids of an ADOPTED orphan's tree — stop()
-	    tree-kills exactly these, never "whatever holds the port now". */
-	adoptedPids?: number[];
+	/** The spawned dev-server tree. */
+	proc: ChildProcess;
+	/** Millisecond stamp of the spawn (crash-loop guard input). */
+	startedAt: number;
 	/** Dev server origin once parsed from output (http://localhost:<port>). */
 	devOrigin?: string;
 	/** Rebuild-reload debounce timer. */
@@ -80,14 +81,13 @@ export class WatchManager {
 	 */
 	private chains = new Map<string, Promise<unknown>>();
 	/** Per-app readiness: resolves with the dev origin once the server is
-	    actually serving (spawned+parsed or adopted); replaced per start. */
+	    actually serving (spawned and parsed); replaced per start. */
 	private readiness = new Map<string, { promise: Promise<string>; resolve: (origin: string) => void; reject: (err: Error) => void }>();
-	/** Burst-shared discovery snapshot: rapid open-all fires many starts;
-	    one OS enumeration serves them all instead of N concurrent probes. */
-	private discoveryMemo: { at: number; promise: Promise<Map<string, Array<{ port: number; pids: number[] }>>> } | null = null;
-	/** First lookup accepts the lazy boot prewarm's older snapshot — before
-	    our first spawn, orphans cannot have changed underneath it. */
-	private firstDiscovery = true;
+	/** Settled when the boot orphan reap finishes; doStart awaits it so a
+	    spawn never races a dying orphan's port (see reapOrphansInBackground). */
+	private reaped: Promise<void> = Promise.resolve();
+	/** Consecutive quick-death respawns per app (crash-loop guard). */
+	private respawnStrikes = new Map<string, number>();
 	/**
 	 * Serialized single-flight memo for the WORKSPACE-GLOBAL install. Concurrent
 	 * watch starts for several apps await the SAME `pnpm install` at the
@@ -109,7 +109,22 @@ export class WatchManager {
 	private connectionManager = ConnectionManager.getInstance();
 	private logger = getLogger();
 
-	constructor(private readonly appScreen: AppScreenProvider) {}
+	constructor(private readonly appScreen: AppScreenProvider) {
+		// The dev overlay registration lives server-side and EXPIRES on
+		// disconnect. A reconnect (org switch, network blip) therefore leaves
+		// every running session unregistered until its next rebuild happens to
+		// re-register it — re-register eagerly so embedder-less shells (F5's
+		// external browser) regain the override without waiting on a save.
+		this.connectionManager.on('shell:statusChange', this.onStatusChange);
+	}
+
+	/** Bound reconnect listener (see constructor); removed in dispose(). */
+	private onStatusChange = (): void => {
+		if (!this.connectionManager.isConnected()) return;
+		for (const session of this.sessions.values()) {
+			if (session.devOrigin) void this.registerOverlay(session);
+		}
+	};
 
 	// =========================================================================
 	// PUBLIC
@@ -179,16 +194,18 @@ export class WatchManager {
 	 * starts share one `pnpm install`. Only then does `rsbuild dev` spawn.
 	 *
 	 * @param app - The scanned workspace app to watch.
+	 * @param opts - respawn: this start is crash recovery — it re-checks the
+	 *               panel gate when its turn on the chain arrives.
 	 */
-	public start(app: ScannedApp): Promise<void> {
-		return this.enqueue(app.id, () => this.doStart(app));
+	public start(app: ScannedApp, opts?: { respawn?: boolean }): Promise<void> {
+		return this.enqueue(app.id, () => this.doStart(app, opts?.respawn === true));
 	}
 
 	/**
 	 * Awaitable readiness for an app's dev server: resolves with the served
-	 * origin (http://localhost:<port>) once it is actually serving —
-	 * spawned-and-parsed or adopted. Rejects when the start fails or the
-	 * session is stopped first. Undefined when the app was never started.
+	 * origin (http://localhost:<port>) once it is actually serving (spawned
+	 * and its banner parsed). Rejects when the start fails or the session is
+	 * stopped first. Undefined when the app was never started.
 	 *
 	 * @param appId - The app to await.
 	 */
@@ -230,7 +247,12 @@ export class WatchManager {
 	}
 
 	/** The start transition — runs alone on the app's chain. */
-	private async doStart(app: ScannedApp): Promise<void> {
+	private async doStart(app: ScannedApp, respawn = false): Promise<void> {
+		// A crash respawn re-checks its gate ON the chain: the panel may have
+		// closed between the exit handler's check and this turn — spawning
+		// then would leave a server nothing ever stops (the dispose-time stop
+		// already ran and found no session).
+		if (respawn && !this.appScreen.hasPanel(app.id)) return;
 		const existing = this.sessions.get(app.id);
 		if (existing) {
 			// LINGER REVIVE: the panel closed and reopened inside the grace
@@ -263,18 +285,14 @@ export class WatchManager {
 			return;
 		}
 
-		// Port reconciliation BEFORE spawning: the extension host can die
-		// without cleanup (window reload, crash), orphaning the previous
-		// dev-server tree — Windows never cascades to grandchildren. A blind
-		// spawn then loses the port race, rsbuild silently bumps to the next
-		// free port, and the preview stays registered against the orphan's
-		// stale bundle (the unkillable reload loop). Reconcile by DISCOVERY
-		// (ports are dynamic — bumped servers drift, so a configured-port
-		// probe would shoot the wrong app): enumerate live rsbuild processes,
-		// identify each by its mf-manifest name, and adopt THIS app's orphan
-		// at whatever port it actually holds; duplicates of this app are
-		// tree-killed; other apps' servers are never touched.
-		if (await this.adoptOrClearPort(app)) return;
+		// Orphan safety BEFORE spawning: the extension host can die without
+		// cleanup (window reload, crash), orphaning the previous dev-server
+		// tree — Windows never cascades to grandchildren. A blind spawn then
+		// loses the port race, rsbuild silently bumps to the next free port,
+		// and the preview stays registered against the orphan's stale bundle.
+		// Activation reaps those orphans; awaiting the reap here guarantees
+		// the kill has LANDED before rsbuild binds.
+		await this.reaped;
 
 		// Resolve the app-local rsbuild binary; the scaffolder pins it as a
 		// devDependency. Falling back to `pnpm exec` covers hoisted setups.
@@ -293,7 +311,7 @@ export class WatchManager {
 			detached: process.platform !== 'win32',
 		});
 
-		const session: WatchSession = { app, proc, buildStart: Date.now() };
+		const session: WatchSession = { app, proc, startedAt: Date.now(), buildStart: Date.now() };
 		this.sessions.set(app.id, session);
 		this.notify(app.id, { state: 'building' });
 
@@ -326,22 +344,61 @@ export class WatchManager {
 
 		proc.on('exit', (code) => {
 			this.logger.output(`[appdev] watch exited (${code}): ${app.id}`);
-			if (this.sessions.get(app.id) === session) {
-				this.sessions.delete(app.id);
-				this.rejectReadiness(app.id, `dev server exited (${code})`);
-				this.notify(app.id, { state: 'idle' });
+			// Intentional stops (doStop, restart) delete the session BEFORE the
+			// kill, so an exit that still owns its entry is a CRASH.
+			if (this.sessions.get(app.id) !== session) return;
+			this.sessions.delete(app.id);
+			this.rejectReadiness(app.id, `dev server exited (${code})`);
+			this.disposeSessionResources(session);
+
+			// Crash recovery: while the app's panel is open, a dead dev server
+			// respawns itself — bounded, so a server that dies on every boot
+			// cannot loop forever. Surviving the window resets the streak.
+			if (this.appScreen.hasPanel(app.id)) {
+				const quickDeath = Date.now() - session.startedAt < WatchManager.RESPAWN_WINDOW_MS;
+				const strikes = quickDeath ? (this.respawnStrikes.get(app.id) ?? 0) + 1 : 1;
+				this.respawnStrikes.set(app.id, strikes);
+				if (strikes <= WatchManager.MAX_RESPAWNS) {
+					this.console(app.id, 'warn', `dev server exited (${code}) — respawning (attempt ${strikes}/${WatchManager.MAX_RESPAWNS})`);
+					void this.start(app, { respawn: true });
+					return;
+				}
+				this.console(app.id, 'error', `dev server exited ${strikes} times in a row — giving up. Reload retries with a fresh install.`);
+				this.notify(app.id, { state: 'error', target: 'dev server', reason: 'The dev server keeps exiting — the Console pane carries its last output. Reload retries.' });
+				return;
 			}
+			this.notify(app.id, { state: 'idle' });
 		});
 		proc.on('error', (err) => {
 			this.logger.output(`[appdev] watch failed to start: ${app.id}: ${err.message}`);
 			// Only tear down the entry this handler still owns — a restart may
 			// have replaced the session under the same app id (same guard as exit).
+			// No respawn: a spawn failure (missing binary, EPERM) is not going
+			// to succeed on a retry — the Reload button is the recovery.
 			if (this.sessions.get(app.id) === session) {
 				this.sessions.delete(app.id);
 				this.rejectReadiness(app.id, err.message);
+				this.disposeSessionResources(session);
 				this.notify(app.id, { state: 'error' });
 			}
 		});
+	}
+
+	/** A death inside this window after start counts toward the crash-loop guard. */
+	private static readonly RESPAWN_WINDOW_MS = 30_000;
+	/** Auto-respawns allowed per quick-death streak before giving up. */
+	private static readonly MAX_RESPAWNS = 3;
+
+	/**
+	 * Releases a dead session's timers and watchers. Without this, a crashed
+	 * session's package.json watcher outlives it and fires restarts for a
+	 * session that no longer exists — and double-fires once a respawned
+	 * session installs its own watcher on the same file.
+	 */
+	private disposeSessionResources(session: WatchSession): void {
+		if (session.reloadTimer) clearTimeout(session.reloadTimer);
+		if (session.pkgTimer) clearTimeout(session.pkgTimer);
+		session.pkgWatcher?.dispose();
 	}
 
 	/**
@@ -408,12 +465,7 @@ export class WatchManager {
 			// to the next free port, and the preview's registration keeps
 			// pointing at the ZOMBIE's stale bundle — an unkillable reload
 			// loop that survives every watch restart.
-			if (!session.proc) {
-				// Adopted orphan — no process handle; tree-kill the discovered
-				// pids (never by port: the port may have been re-assigned to a
-				// different app's server since adoption).
-				await this.killPids(session.adoptedPids ?? []);
-			} else if (process.platform === 'win32' && session.proc.pid) {
+			if (process.platform === 'win32' && session.proc.pid) {
 				const pid = session.proc.pid;
 				await new Promise<void>((resolve) => {
 					const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F']);
@@ -479,6 +531,9 @@ export class WatchManager {
 	 * @param app - The app whose session should restart.
 	 */
 	public async restart(app: ScannedApp): Promise<void> {
+		// A manual restart earns a fresh crash-loop allowance — the user is
+		// explicitly retrying, so a previous give-up must not veto the respawn.
+		this.respawnStrikes.delete(app.id);
 		// A restart's whole point is a FRESH server — never linger the old one.
 		await this.stop(app.id, { immediate: true });
 		await this.start(app);
@@ -486,68 +541,57 @@ export class WatchManager {
 
 	/** Stops every session (extension deactivation) — no linger on exit. */
 	public dispose(): void {
+		this.connectionManager.off('shell:statusChange', this.onStatusChange);
 		for (const appId of [...this.sessions.keys()]) void this.stop(appId, { immediate: true });
 	}
 
 	// =========================================================================
-	// PORT RECONCILIATION — adopt-or-kill before every spawn
+	// ORPHAN REAPING — boot-time cleanup; sessions are owned-only
 	// =========================================================================
 
 	/**
-	 * Reconciles orphaned dev servers for THIS app before spawning one.
+	 * Tree-kills every dev server a previous extension host left behind.
 	 *
-	 * Ports are DYNAMIC (a taken port makes rsbuild bump to the next free
-	 * one, so servers drift from their configured ports across restarts) —
-	 * a configured-port probe would misidentify a drifted neighbor and
-	 * shoot the wrong app. Discovery goes the other way around:
+	 * A window reload or crash never cascades to the spawned grandchildren,
+	 * so the old dev servers keep running as orphans. They used to be
+	 * ADOPTED (reused without a respawn) — but an adopted session carried no
+	 * process handle, so its death was undetectable: a stale discovery
+	 * snapshot could announce a dead server as live and the preview had no
+	 * way back short of restarting the host. Sessions are now OWNED-only:
+	 * activation reaps the leftovers and every server runs under a process
+	 * handle whose exit is observed (and auto-respawned while its panel is
+	 * open).
 	 *
-	 *   1. Enumerate live rsbuild processes and the ports each one is
-	 *      ACTUALLY listening on (OS truth, no assumptions).
-	 *   2. Identify every candidate by its ``mf-manifest.json`` name (the
-	 *      MF container name — a real identity check).
-	 *   3. Exactly one server identifying as THIS app → ADOPT it at its
-	 *      actual port: the orphan still watches the same source tree, so
-	 *      it is not stale, and adoption is instant where a respawn waits
-	 *      out a full build. Duplicates of this app → tree-kill them all
-	 *      and spawn fresh. Other apps' servers are NEVER touched — they
-	 *      are adopted (or cleaned) when their own watch starts.
-	 *
-	 * Adopted sessions carry no process handle: build telemetry (the DEV
-	 * badge's building/ok ticks) resumes on the next owned spawn — the
-	 * panel's Reload button routes through restart(), which tree-kills the
-	 * adopted pids and respawns an owned server.
-	 *
-	 * @param app - The app about to be watched.
-	 * @returns True when a running server was adopted (caller skips spawn).
+	 * Discovery identifies each candidate by its ``mf-manifest.json`` name
+	 * (ports are dynamic — a configured-port probe would shoot a drifted
+	 * neighbor), and the reap is scoped to THIS workspace's apps: another
+	 * window's live dev servers are never touched.
 	 */
-	private async adoptOrClearPort(app: ScannedApp): Promise<boolean> {
+	private async reapOrphans(): Promise<void> {
+		const apps = await scanWorkspaceApps();
+		if (apps.length === 0) return;
+		const mine = new Map(apps.map((a) => [a.moduleId, a.id]));
 		const inventory = await this.discoverDevServers();
-		const mine = inventory.get(app.moduleId);
-		if (!mine || mine.length === 0) return false;
-
-		if (mine.length > 1) {
-			// Two servers claiming one container = the zombie-duplicate state
-			// (each preview registration can only point at one) — clear them
-			// all and start owned.
-			const pids = mine.flatMap((c) => c.pids);
-			this.logger.output(`[appdev] ${app.id}: ${mine.length} duplicate dev servers found — clearing pids ${pids.join(', ')}`);
-			this.console(app.id, 'warn', `found ${mine.length} duplicate dev servers — killing and respawning`);
+		for (const [moduleId, servers] of inventory) {
+			const appId = mine.get(moduleId);
+			if (!appId) continue;
+			// Never shoot a server this manager owns (re-run safety).
+			if (this.sessions.has(appId)) continue;
+			const pids = servers.flatMap((s) => s.pids);
+			this.logger.output(`[appdev] reaping orphaned dev server for ${appId} (pids ${pids.join(', ')})`);
 			await this.killPids(pids);
-			return false;
 		}
+	}
 
-		// Identity confirmed and unique — adopt at its ACTUAL port.
-		const found = mine[0];
-		this.logger.output(`[appdev] adopted running dev server for ${app.id} at port ${found.port} (pids ${found.pids.join(', ')})`);
-		this.console(app.id, 'log', `adopted running dev server on port ${found.port} (no rebuild needed)`);
-		const session: WatchSession = { app, devOrigin: `http://localhost:${found.port}`, adoptedPids: found.pids };
-		this.sessions.set(app.id, session);
-		this.resolveReadiness(app.id, session.devOrigin!);
-		this.notify(app.id, { state: 'ok', target: `localhost:${found.port}` });
-		this.notifyDevEntry(session);
-		void this.registerOverlay(session);
-		this.scheduleReload(session);
-		return true;
+	/**
+	 * Fire-and-forget boot reap (activation must never wait on process
+	 * enumeration). doStart awaits the same promise before spawning, so a
+	 * fresh server can never lose its port race to a dying orphan tree.
+	 */
+	public reapOrphansInBackground(): void {
+		this.reaped = this.reapOrphans().catch((err) => {
+			this.logger.output(`[appdev] orphan reap failed (continuing): ${err}`);
+		});
 	}
 
 	/**
@@ -557,46 +601,15 @@ export class WatchManager {
 	 * Orphans exist on every OS — an abruptly killed extension host never
 	 * cascades to grandchildren on Windows OR POSIX. Only the enumeration
 	 * mechanism differs per platform; a failed enumeration degrades to an
-	 * empty inventory (start() then spawns exactly as before).
+	 * empty inventory (the reap then simply finds nothing).
+	 *
+	 * Runs exactly once per host, from the boot reap — no memoization or
+	 * staleness rules; a snapshot consumed the moment it is taken cannot
+	 * announce a server that has since died.
 	 *
 	 * @returns moduleId -> [{port, pids}] for every identified server.
 	 */
 	private async discoverDevServers(): Promise<Map<string, Array<{ port: number; pids: number[] }>>> {
-		// Burst sharing: an open-all fires many starts within seconds; each
-		// would otherwise run its own OS enumeration (concurrent PowerShell
-		// probes are what made rapid multi-open hang). One snapshot serves
-		// the whole burst — taken before any of the burst's spawns, so every
-		// adoption decision still sees only true orphans. Each app looks up
-		// ONLY its own moduleId, so burst siblings absent from the snapshot
-		// are irrelevant (their spawns are guarded per-app anyway).
-		const now = Date.now();
-		// The FIRST lookup accepts the lazy boot prewarm's older snapshot:
-		// before our first spawn nothing can have changed underneath it, so
-		// the first panel open skips the enumeration wait entirely.
-		const maxAge = this.firstDiscovery ? 30_000 : 3_000;
-		this.firstDiscovery = false;
-		if (this.discoveryMemo && now - this.discoveryMemo.at < maxAge) return this.discoveryMemo.promise;
-		const promise = this.discoverDevServersUncached();
-		this.discoveryMemo = { at: now, promise };
-		return promise;
-	}
-
-	/**
-	 * Lazy boot prewarm (fire-and-forget from activation): take the orphan
-	 * inventory once in the background so the first App Builder open adopts
-	 * instantly instead of paying the enumeration round trip.
-	 */
-	public prewarmDiscovery(): void {
-		const promise = this.discoverDevServersUncached();
-		this.discoveryMemo = { at: Date.now(), promise };
-		void promise.then((inv) => {
-			const count = [...inv.values()].reduce((n, list) => n + list.length, 0);
-			if (count > 0) this.logger.output(`[appdev] boot discovery: ${count} running dev server(s) found — will adopt on open`);
-		});
-	}
-
-	/** The uncached discovery body (see discoverDevServers for semantics). */
-	private async discoverDevServersUncached(): Promise<Map<string, Array<{ port: number; pids: number[] }>>> {
 		const inventory = new Map<string, Array<{ port: number; pids: number[] }>>();
 
 		// Enumerate "pid port" lines of rsbuild LISTEN sockets — OS truth,
@@ -615,8 +628,8 @@ export class WatchManager {
 		}
 
 		// Identify each port by its manifest; unidentifiable ports (HMR-only
-		// sockets, wedged servers) are simply not adoptable and are left to
-		// the duplicate/foreign rules of whoever owns them.
+		// sockets, wedged servers) cannot be attributed to an app and are
+		// left alone — the reap only ever kills a positively identified server.
 		await Promise.all(
 			[...byPort.entries()].map(async ([port, pids]) => {
 				const name = await this.identifyDevServer(port);
@@ -1024,7 +1037,15 @@ export class WatchManager {
 		this.appScreen.notifyDevServer(session.app.id, `${session.devOrigin}/remoteEntry.js?t=${Date.now()}`);
 	}
 
-	/** Points the caller's dev overlay at the served remoteEntry.js. */
+	/**
+	 * Points the caller's dev overlay at the served remoteEntry.js.
+	 *
+	 * The URL carries the same per-registration cache buster notifyDevEntry
+	 * uses: browser shells resolve the overlay to this URL verbatim, and a
+	 * constant URL let the browser serve its disk-cached container from a
+	 * previous (possibly dead) server until a hard refresh — the same
+	 * stale-bundle bug, on the overlay path.
+	 */
 	private async registerOverlay(session: WatchSession): Promise<void> {
 		if (!session.devOrigin) return;
 		try {
@@ -1033,7 +1054,7 @@ export class WatchManager {
 			await client.call('rrext_deploy_app', {
 				subcommand: 'register_dev',
 				moduleId: session.app.moduleId,
-				url: `${session.devOrigin}/remoteEntry.js`,
+				url: `${session.devOrigin}/remoteEntry.js?t=${Date.now()}`,
 				appId: session.app.id,
 			});
 		} catch (err) {
@@ -1090,11 +1111,10 @@ let instance: WatchManager | null = null;
 /** Installs the singleton WatchManager (called from extension activation). */
 export function initWatchManager(appScreen: AppScreenProvider): WatchManager {
 	instance = new WatchManager(appScreen);
-	// Lazy boot pass: discover already-running dev servers in the background
-	// so the first panel open adopts instantly. Deferred off the activation
-	// path — activation must never wait on process enumeration.
-	const created = instance;
-	setTimeout(() => { try { created.prewarmDiscovery(); } catch { /* best-effort */ } }, 1500);
+	// Boot reap: fire-and-forget (activation never waits on process
+	// enumeration) — doStart awaits the reap promise before spawning, so
+	// panels restored ahead of the reap still spawn on a clean port.
+	instance.reapOrphansInBackground();
 	return instance;
 }
 

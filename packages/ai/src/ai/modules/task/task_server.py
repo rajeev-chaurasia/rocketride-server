@@ -995,6 +995,46 @@ class TaskServer(DAPBase):
             except Exception as e:
                 self.debug_message(f'push_account_update failed for conn {conn.get_connection_id()}: {e}')
 
+    async def push_org_update(self, org_id: str) -> None:
+        """
+        Rebuild AccountInfo from the DB and push an apaext_account event to
+        every open connection whose primary org is ``org_id``.
+
+        The org-wide sibling of push_account_update: called after an operation
+        mutates an ORG-level property carried in the identity payload (plan,
+        subscriptions, developer id) so every member's client refreshes — not
+        just the caller's connections.
+        """
+        from ai.account import account
+
+        notified = 0
+        for conn in list(self._connections.values()):
+            info = getattr(conn, '_account_info', None)
+            if not info:
+                continue
+            # Match any connection whose primary org matches the mutated org
+            conn_org = ''
+            if hasattr(info, 'organization') and info.organization:
+                org = info.organization
+                conn_org = org.get('id', '') if isinstance(org, dict) else getattr(org, 'id', '')
+            if conn_org != org_id:
+                continue
+            # Skip task-scoped connections: a pk_/tk_ socket carries the launching
+            # user's id/org (so it matches this org fan-out) but must never be
+            # rebuilt as the full user or handed the user's rr_ session key.
+            if (getattr(info, 'auth', '') or '').startswith(('pk_', 'tk_')):
+                continue
+            try:
+                fresh = await account._service.get_authentication_result(info.userId, info.auth)
+                conn._account_info = fresh
+                await conn.send_event('apaext_account', body=fresh.to_push_result())
+                notified += 1
+            except Exception as e:
+                self.debug_message(f'push_org_update failed for conn {conn.get_connection_id()}: {e}')
+
+        if notified:
+            self.debug_message(f'push_org_update notified {notified} connection(s) for org={org_id}')
+
     async def push_org_changed(self, user_id: str, org_id: str) -> None:
         """
         Notify every full-user connection of ``user_id`` that their default

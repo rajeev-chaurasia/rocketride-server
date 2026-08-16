@@ -51,6 +51,7 @@ type IncomingMessage =
 	| { type: 'appdev:devServer'; entry: string }
 	| { type: 'appdev:auth'; token: string }
 	| { type: 'appdev:reload' }
+	| { type: 'appdev:accountChanged' }
 	| { type: 'appdev:result'; id: number; ok: boolean; value?: unknown; error?: string };
 
 // Wire shapes for the publish-ladder RPC (mirrors the SDK's return rows)
@@ -473,6 +474,12 @@ const AppWebview: React.FC = () => {
 	const pendingCalls = useRef<Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>>(new Map());
 	const nextCallId = useRef(1);
 
+	// Account identity generation — bumped when the host reports that the
+	// connection's account/org changed. Salts the host memo below, so every
+	// [host]-keyed data effect (developer namespace, publish rail, teams)
+	// re-fetches under the new identity without remounting the screen.
+	const [accountSeq, setAccountSeq] = useState(0);
+
 	// ── Messaging ───────────────────────────────────────────────────────
 	const onMessage = useCallback(
 		(msg: IncomingMessage) => {
@@ -532,6 +539,12 @@ const AppWebview: React.FC = () => {
 					// 404'd every hot-update. Non-HMR containers (hmr disabled in
 					// the app config, prod-flavor shell) refresh via the Reload
 					// button's full restart.
+					break;
+				case 'appdev:accountChanged':
+					// The connection's identity changed (org switch reconnect or a
+					// server account push) — re-mint the host so org-scoped data
+					// re-fetches.
+					setAccountSeq((n) => n + 1);
 					break;
 				case 'appdev:result': {
 					// Settle the matching RPC promise
@@ -616,33 +629,47 @@ const AppWebview: React.FC = () => {
 		[sendMessage]
 	);
 
+	// Feed subscriptions — STABLE identities, deliberately hoisted out of the
+	// host memo: the accountSeq re-mint must re-run org-scoped data effects,
+	// but a feed resubscription replays the retained backlog into panes that
+	// already rendered it (duplicate log rows). Stable functions keep the
+	// panes' [host.subscribeX]-keyed effects from re-firing. A new subscriber
+	// still receives the backlog first (rows emitted before it mounted), then
+	// the live stream — so a late-opened Console/Errors pane shows the full
+	// history instead of starting blank.
+	const subscribeEvents = useCallback((fn: (row: AppEventRow) => void) => {
+		for (const r of eventBuffer.current) fn(r);
+		eventListeners.current.add(fn);
+		return () => eventListeners.current.delete(fn);
+	}, []);
+	const subscribeConsole = useCallback((fn: (row: ConsoleRow) => void) => {
+		for (const r of consoleBuffer.current) fn(r);
+		consoleListeners.current.add(fn);
+		return () => consoleListeners.current.delete(fn);
+	}, []);
+	const subscribeErrors = useCallback((fn: (row: AppErrorRow) => void) => {
+		for (const r of errorBuffer.current) fn(r);
+		errorListeners.current.add(fn);
+		return () => errorListeners.current.delete(fn);
+	}, []);
+	const subscribeWatch = useCallback((fn: (status: WatchStatus) => void) => {
+		watchListeners.current.add(fn);
+		return () => watchListeners.current.delete(fn);
+	}, []);
+
 	// ── The BRIDGE adapter (IAppBuilderHost over useMessaging) ──────────
-	const host: IAppBuilderHost = useMemo(
-		() => ({
+	const host: IAppBuilderHost = useMemo(() => {
+		// accountSeq participates only as an identity salt: bumping it re-mints
+		// the host object so [host]-keyed effects re-fetch org-scoped data.
+		void accountSeq;
+		return {
 			capabilities,
-			// Feeds: registry-backed subscriptions (stable identities). A new
-			// subscriber first receives the retained backlog (rows emitted before
-			// it mounted), then the live stream — so a late-opened Console/Errors
-			// pane shows the full history instead of starting blank.
-			subscribeEvents: (fn) => {
-				for (const r of eventBuffer.current) fn(r);
-				eventListeners.current.add(fn);
-				return () => eventListeners.current.delete(fn);
-			},
-			subscribeConsole: (fn) => {
-				for (const r of consoleBuffer.current) fn(r);
-				consoleListeners.current.add(fn);
-				return () => consoleListeners.current.delete(fn);
-			},
-			subscribeErrors: (fn) => {
-				for (const r of errorBuffer.current) fn(r);
-				errorListeners.current.add(fn);
-				return () => errorListeners.current.delete(fn);
-			},
-			subscribeWatch: (fn) => {
-				watchListeners.current.add(fn);
-				return () => watchListeners.current.delete(fn);
-			},
+			// Feeds: the stable subscriptions hoisted above — see their comment
+			// for why they must not re-mint with the host.
+			subscribeEvents,
+			subscribeConsole,
+			subscribeErrors,
+			subscribeWatch,
 			// Preview chrome
 			getPreviewUrl: () => previewUrl,
 			// Reload = full inner-loop reset in the extension host (kill dev
@@ -737,9 +764,8 @@ const AppWebview: React.FC = () => {
 				await rpc<null>('saveListing', [draft]);
 			},
 			runPreflight: async () => await rpc<PreflightCheck[]>('preflight'),
-		}),
-		[capabilities, previewUrl, sendMessage, rpc]
-	);
+		};
+	}, [capabilities, previewUrl, sendMessage, rpc, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch]);
 
 	// ── Render ──────────────────────────────────────────────────────────
 	if (!app) {

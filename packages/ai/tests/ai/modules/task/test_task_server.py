@@ -991,6 +991,100 @@ async def test_push_account_update_skips_task_scoped_connections(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# push_org_update
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_push_org_update_skips_other_orgs(monkeypatch):
+    """Connections whose primary org differs are not notified."""
+    from ai.modules.task import task_server as ts_mod
+
+    service = MagicMock()
+    service.get_authentication_result = AsyncMock()
+    fake_account = SimpleNamespace(_service=service)
+    monkeypatch.setitem(sys.modules, 'ai.account.account', fake_account)
+    monkeypatch.setattr(ts_mod, 'account', fake_account, raising=False)
+
+    ts = _make_server()
+    other = MagicMock()
+    other._account_info = SimpleNamespace(userId='u1', auth='rr_o', organization={'id': 'org-other'})
+    other.send_event = AsyncMock()
+    other.get_connection_id = MagicMock(return_value=99)
+    ts._connections = {99: other}
+
+    await TaskServer.push_org_update(ts, 'org-1')
+    other.send_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_push_org_update_swallows_send_errors(monkeypatch):
+    """If account refresh raises, the loop logs and moves on (no propagation)."""
+    from ai.account import account as real_account
+
+    service = MagicMock()
+    service.get_authentication_result = AsyncMock(side_effect=RuntimeError('refresh fail'))
+    monkeypatch.setattr(real_account, '_service', service, raising=False)
+
+    ts = _make_server()
+    target = MagicMock()
+    target._account_info = SimpleNamespace(userId='u1', auth='rr_a', organization={'id': 'org-1'})
+    target.send_event = AsyncMock()
+    target.get_connection_id = MagicMock(return_value=1)
+    ts._connections = {1: target}
+
+    await TaskServer.push_org_update(ts, 'org-1')
+    target.send_event.assert_not_awaited()
+    ts.debug_message.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_push_org_update_notifies_org_and_skips_task_scoped(monkeypatch):
+    """Every full-user connection on the org is rebuilt and notified with the
+    token-stripped body; pk_/tk_ sockets on the same org are skipped for the
+    same reason as push_account_update (no escalation, no rr_ key leak).
+    Organization may be a dict or an object — both shapes must match.
+    """
+    from ai.account import account as real_account
+
+    fresh = MagicMock()
+    fresh.to_push_result = MagicMock(return_value={'userId': 'u1', 'userToken': ''})
+    service = MagicMock()
+    service.get_authentication_result = AsyncMock(return_value=fresh)
+    # raising=False: the default (OSS) facade in this test env has no _service;
+    # the SaaS facade that actually runs push_org_update does.
+    monkeypatch.setattr(real_account, '_service', service, raising=False)
+
+    ts = _make_server()
+
+    def _conn(cid, auth, org):
+        c = MagicMock()
+        c._account_info = SimpleNamespace(userId='u1', auth=auth, organization=org)
+        c.send_event = AsyncMock()
+        c.get_connection_id = MagicMock(return_value=cid)
+        return c
+
+    pk = _conn(1, 'pk_abc', {'id': 'org-1'})
+    full_dict = _conn(2, 'rr_abc', {'id': 'org-1'})
+    full_obj = _conn(3, 'rr_def', SimpleNamespace(id='org-1'))
+    ts._connections = {1: pk, 2: full_dict, 3: full_obj}
+
+    await TaskServer.push_org_update(ts, 'org-1')
+
+    # Task-scoped sockets are neither rebuilt nor notified.
+    pk.send_event.assert_not_awaited()
+    assert pk._account_info.auth == 'pk_abc'  # identity untouched
+
+    # Both full-user connections (dict- and object-shaped org) are notified.
+    for full in (full_dict, full_obj):
+        full.send_event.assert_awaited_once()
+        args, kwargs = full.send_event.call_args
+        assert args[0] == 'apaext_account'
+        assert kwargs['body'] == {'userId': 'u1', 'userToken': ''}
+        assert full._account_info is fresh
+
+
+# ---------------------------------------------------------------------------
 # _build_task_account_info — pk_/tk_ permission resolution
 # ---------------------------------------------------------------------------
 

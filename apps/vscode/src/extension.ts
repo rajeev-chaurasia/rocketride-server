@@ -309,6 +309,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					appScreen,
 					{ dispose: () => watchManager.dispose() },
 				);
+				// Tabs that predate this host ("Developer: Restart Extension
+				// Host" keeps them open but never re-resolves them) still need
+				// their dev servers — reconcile against the surviving tab list.
+				void appScreen.reconcileOpenTabs();
 				// File-less per-team deployment tabs (teams-as-environments)
 				welcome = new WelcomeProvider(context, context.extensionUri);
 				const account = new AccountProvider(context);

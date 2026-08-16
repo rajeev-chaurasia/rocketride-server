@@ -463,12 +463,13 @@ export class AccountProvider {
 		// Step 1: send the set_default_org request.
 		await client.account.setDefaultOrg(orgId);
 
-		// Step 2: the server pushes a refreshed ConnectResult to all connections.
-		// Re-fetch profile and authUser so the UI reflects the new active org.
-		const profile = await client.account.getProfile().catch(() => null);
-		const authUser = client.getAccountInfo();
-		await panel.webview.postMessage({ type: 'account:profile', profile: profile || authUser || null });
-		await panel.webview.postMessage({ type: 'account:authUser', authUser });
+		// Step 2: nothing to post here. The server answers with a pure
+		// apaext_org_changed notification — the live connection's identity is
+		// NOT swapped in place — and the connection manager reacts by
+		// reconnecting under the new org. The CONNECTED state change then
+		// re-inits this panel with fresh data (handleConnectionStateChange
+		// -> sendInitialData); posting getAccountInfo() now would show the
+		// OLD org's identity.
 	}
 
 	// =========================================================================

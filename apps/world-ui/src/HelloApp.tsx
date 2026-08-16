@@ -83,12 +83,12 @@ const HelloApp: React.FC<ShellAppProps> = ({ identity }) => {
 	return (
 		<AppLayout sidebar={SIDEBAR_FRAME_ONLY} showStatus>
 			<div style={styles.container}>
+				<div style={styles.title}>Hello World!</div>
 				<img
 					src={heroSrc}
 					alt="An astronaut waving by a campfire on the moon, with Earth rising in the sky"
 					style={styles.hero}
 				/>
-				<div style={styles.title}>Hello World!</div>
 				<div style={styles.subtitle}>
 					{identity
 						? `Welcome, ${identity.displayName ?? 'user'}!`

@@ -116,6 +116,42 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	}
 
 	/**
+	 * Starts watches for App Builder tabs that were already open when THIS
+	 * extension host came up. "Developer: Restart Extension Host" kills the
+	 * dev servers via deactivation but keeps the tabs and their persisted
+	 * webview contexts — VSCode never re-resolves the custom editor, so
+	 * view:ready never re-fires and the open-path ensureWatch belongs to a
+	 * resolve that never ran. The tab list is the one surface that survives
+	 * every restart mode; activation reconciles against it directly.
+	 *
+	 * Safe against a concurrent re-resolve: ensureWatch rides the per-app
+	 * serialized chain and doStart's existing-session guard no-ops the loser.
+	 */
+	public async reconcileOpenTabs(): Promise<void> {
+		// Collect the open App Builder tabs (synchronous, cheap).
+		const uris: vscode.Uri[] = [];
+		for (const group of vscode.window.tabGroups.all) {
+			for (const tab of group.tabs) {
+				if (tab.input instanceof vscode.TabInputCustom && tab.input.viewType === 'rocketride.appBuilder') {
+					uris.push(tab.input.uri);
+				}
+			}
+		}
+		if (uris.length === 0) return;
+		for (const uri of uris) {
+			try {
+				const appId = await this.appIdOf(uri);
+				const apps = await scanWorkspaceApps();
+				const app = apps.find((a) => a.id === appId);
+				if (app && !getWatchManager()?.isRunning(app.id)) void ensureWatch(app);
+			} catch {
+				// Unresolvable tab (marker unreadable / app unbound) — VSCode's
+				// eventual re-resolve reports that failure in a visible panel.
+			}
+		}
+	}
+
+	/**
 	 * Resolves the App Builder editor for an .rrapp document — called by
 	 * VSCode on open AND on window-reload restore.
 	 */
@@ -393,6 +429,17 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	}
 
 	/**
+	 * Whether an App Builder panel is currently open for this app — the
+	 * watchManager's crash-recovery gate (respawn only while someone is
+	 * looking at the preview).
+	 *
+	 * @param appId - The app to check.
+	 */
+	public hasPanel(appId: string): boolean {
+		return this.panels.has(appId);
+	}
+
+	/**
 	 * Push a watch/build status update into an app's panel (DEV badge).
 	 *
 	 * @param appId - The app whose watch state changed.
@@ -566,6 +613,12 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 			// now that a server is reachable — center-screen error to running
 			// preview without closing and reopening the app.
 			if (this.connectionManager.isConnected()) {
+				// A reconnect may carry a NEW identity (an org switch re-logs-in
+				// under the new default org): tell every open panel to re-fetch
+				// its org-scoped data (developer namespace, publish rail, teams).
+				for (const panel of this.panels.values()) {
+					panel.webview.postMessage({ type: 'appdev:accountChanged' });
+				}
 				for (const [appId, status] of this.lastWatch) {
 					if (status.state !== 'error' || status.target !== 'platform package') continue;
 					void (async () => {
@@ -585,6 +638,17 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		};
 		this.connectionManager.on('shell:statusChange', onStatus);
 		this.disposables.push({ dispose: () => this.connectionManager.off('shell:statusChange', onStatus) });
+
+		// The server pushed a refreshed account (developer registration, org
+		// property change, subscription move) WITHOUT a reconnect — the same
+		// org-scoped data in open panels is stale; have them re-fetch.
+		const onAccountUpdate = (): void => {
+			for (const panel of this.panels.values()) {
+				panel.webview.postMessage({ type: 'appdev:accountChanged' });
+			}
+		};
+		this.connectionManager.on('shell:accountUpdate', onAccountUpdate);
+		this.disposables.push({ dispose: () => this.connectionManager.off('shell:accountUpdate', onAccountUpdate) });
 	}
 
 	// =========================================================================

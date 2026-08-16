@@ -554,6 +554,23 @@ export class ConnectionManager extends EventEmitter {
 					return;
 				}
 
+				// The user's default org changed — a pure notification: the
+				// server never swaps a live connection's identity in place, so
+				// adopting the new org requires a fresh login handshake.
+				// Reconnect; the new session resolves the new default org and
+				// the CONNECTED status fan-out re-syncs every provider.
+				if (message.event === 'apaext_org_changed') {
+					this.logger.output(`${icons.info} Default org changed — reconnecting to adopt the new org`);
+					// Deferred: disconnect() tears down the client that is
+					// dispatching this very callback.
+					setTimeout(() => {
+						this.reconnectForOrgChange().catch((err) => {
+							this.logger.error(`Reconnect after org change failed: ${err}`);
+						});
+					}, 0);
+					return;
+				}
+
 				this.emit('shell:event', message);
 			},
 			onConnected: async () => {
@@ -666,6 +683,18 @@ export class ConnectionManager extends EventEmitter {
 	public async disconnect(): Promise<void> {
 		const generation = this.invalidateConnectionAttempts();
 		await this.disconnectForGeneration(generation);
+	}
+
+	/**
+	 * Full re-auth cycle after an org switch. `apaext_org_changed` is a pure
+	 * notification — the server deliberately leaves the live connection's
+	 * identity on the old org — so the client re-logs-in to receive a session
+	 * stamped to the new default org.
+	 */
+	private async reconnectForOrgChange(): Promise<void> {
+		if (this.isDisposing) return;
+		await this.disconnect();
+		await this.connect();
 	}
 
 	/**
