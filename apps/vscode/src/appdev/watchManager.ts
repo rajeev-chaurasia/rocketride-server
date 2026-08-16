@@ -843,6 +843,13 @@ export class WatchManager {
 				cwd: workspaceRoot,
 				shell: process.platform === 'win32',
 				env: { ...process.env, NO_COLOR: '1' },
+				// POSIX: own process group so a timeout can fell the WHOLE tree.
+				// pnpm forks its real work into children; a bare kill of this
+				// shim leaves them alive on the shared store, and the chained
+				// next-generation install then starts a SECOND pnpm on the same
+				// root — the store-corrupting overlap this module forbids.
+				// Matches doStart/doStop; Windows uses taskkill /T instead.
+				detached: process.platform !== 'win32',
 			});
 			// Mirror installer output into every open panel's Console, and
 			// accumulate it so a failure can NAME its cause.
@@ -883,7 +890,13 @@ export class WatchManager {
 							setTimeout(res, 3000);
 						});
 					} else {
-						try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+						// POSIX: the spawn is detached, so signal the whole GROUP
+						// (negative pid). A bare proc.kill() would fell only the
+						// pnpm shim and orphan its store-writing children.
+						try {
+							if (proc.pid) process.kill(-proc.pid, 'SIGKILL');
+							else proc.kill('SIGKILL');
+						} catch { /* group already gone */ }
 					}
 					resolve({ ok: false, output, code: null, failureReason: 'pnpm install timed out after 10 minutes' });
 				})();

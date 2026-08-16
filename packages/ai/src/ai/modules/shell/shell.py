@@ -265,16 +265,24 @@ async def apps_session(request: Request):
     # authenticate() returns an (int, str) error tuple on failure.
     if info is None or not hasattr(info, 'userId'):
         raise HTTPException(status_code=401, detail='Invalid token')
-    # Behind TLS termination request.url.scheme is http — honor the proxy's
-    # X-Forwarded-Proto so the cookie is Secure in production deployments.
-    scheme = request.headers.get('x-forwarded-proto', request.url.scheme)
+    # This cookie carries a bearer token, so it must be Secure on any HTTPS
+    # path. request.url.scheme is the TRUSTED scheme of the direct connection
+    # (https only on a genuine TLS socket); X-Forwarded-Proto is client-settable
+    # and may therefore only UPGRADE the cookie to Secure — a real request
+    # behind a TLS-terminating proxy arrives as http with X-Forwarded-Proto:
+    # https. It must NEVER downgrade: an attacker sending `X-Forwarded-Proto:
+    # http` on a genuine https request cannot strip Secure and coax the browser
+    # into replaying the token over plaintext. Take the first hop of a possibly
+    # comma-joined header (client, proxy1, proxy2).
+    forwarded = request.headers.get('x-forwarded-proto', '').split(',')[0].strip().lower()
+    secure = request.url.scheme == 'https' or forwarded == 'https'
     resp = JSONResponse({'ok': True})
     resp.set_cookie(
         key=_APP_COOKIE,
         value=token,
         path='/apps',
         httponly=True,
-        secure=(scheme == 'https'),
+        secure=secure,
         samesite='lax',
     )
     return resp

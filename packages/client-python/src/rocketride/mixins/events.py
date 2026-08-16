@@ -530,23 +530,35 @@ class EventMixin(DAPClient):
         """
         if 'token' in key:
             return f't:{key["token"]}'
-        # 'dev' and '' are the SAME continuum: dev is the default run kind, and
-        # _sync_monitor sends runKind only for 'deploy', so a 'dev' key and a
-        # default (missing) key produce an IDENTICAL server subscription. They
-        # MUST collapse to one registry string — otherwise the two ref-count as
-        # separate entries for one subscription and the second _sync_monitor
-        # clobbers the first caller's merged type set. Only 'deploy' stays
-        # distinct in slot 5.
-        run_kind = key.get('run_kind') or ''
-        if run_kind == 'dev':
+        # Canonicalize run_kind to its WIRE semantics before it enters the
+        # registry string, so keys that produce an identical server
+        # subscription collapse to one entry (otherwise they ref-count
+        # separately and the second _sync_monitor clobbers the first caller's
+        # merged type set).
+        team_id = key.get('team_id') or ''
+        if team_id:
+            # A team scope is ALWAYS the deploy continuum server-side (teamId
+            # wins); run_kind is ignored there, so a team key WITH
+            # run_kind='deploy' and one WITHOUT must collapse. Clear it.
             run_kind = ''
+        else:
+            # Teamless: 'dev' is the default continuum and _sync_monitor sends
+            # runKind only for 'deploy', so a 'dev' key and a default (missing)
+            # key produce an IDENTICAL subscription and MUST collapse. Only
+            # 'deploy' stays distinct in slot 5. Anything else would key a dead
+            # slot no run ever matches — reject rather than silently fork it.
+            run_kind = key.get('run_kind') or ''
+            if run_kind == 'dev':
+                run_kind = ''
+            if run_kind not in ('', 'deploy'):
+                raise ValueError(f"invalid run_kind {run_kind!r} — expected 'dev' or 'deploy'")
         # run_kind rides LAST so a registry string written before the field
         # existed still parses (missing element -> '' -> dev).
         payload = [
             key['project_id'],
             key['source'],
             key.get('pipe_id'),
-            key.get('team_id') or '',
+            team_id,
             run_kind,
         ]
         return f'p:{json.dumps(payload)}'

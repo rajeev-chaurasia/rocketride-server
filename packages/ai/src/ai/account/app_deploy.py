@@ -400,8 +400,11 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
             if item.is_dir():
                 continue
             path = f'{home}/source/{item.filename}'
-            await fs.write(path, archive.read(item))
+            # Record BEFORE the write: a write that fails PARTWAY (file created,
+            # call then raised) still leaves bytes on disk, so cleanup must know
+            # about a path that never returned success.
             written.append(path)
+            await fs.write(path, archive.read(item))
     except Exception as exc:
         # Compensation: the registry row was allocated BEFORE the content
         # writes (version allocation names these paths), so a write failure
@@ -719,6 +722,14 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
         # not just hidden in the UI, so the rule cannot drift.
         rail = await account.deployments_versions(home, app_id)
         newest = max((int(r.get('version', 0)) for r in rail if str(r.get('state') or '') != 'failed'), default=0)
+        if newest == 0:
+            # No non-failed version exists (empty rail or every row failed).
+            # "newest is v0" would name a version that cannot exist — versions
+            # are 1-based — so state the real condition instead.
+            return conn.build_error(
+                request,
+                f'{app_id} has no deployable version to submit — deploy the app before submitting it for review',
+            )
         if version != newest:
             return conn.build_error(
                 request,

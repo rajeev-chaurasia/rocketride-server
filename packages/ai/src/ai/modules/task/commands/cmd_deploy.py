@@ -411,8 +411,16 @@ class DeployCommands(_DeployBase):
         if not isinstance(version, int):
             raise ValueError('version is required and must be an integer')
 
-        # Org membership only — same rule as the versions listing this
-        # artifact came from.
+        # The artifact BODY is the full pipeline JSON — prompts and node
+        # configuration that can carry literal sensitive values. The registry
+        # is org+project scoped (one immutable version shared across teams via
+        # per-team pointers), so there is no single owning team on the artifact
+        # row. This gate requires task.monitor on SOME team (matches develop),
+        # which blocks a teamless org member but does NOT stop a monitor on one
+        # team from reading a project only ever deployed to another. Tightening
+        # to owning-team visibility needs a meta.json deployments lookup.
+        if not self._teams_with('task.monitor'):
+            raise PermissionError("Permission 'task.monitor' denied")
         body = await account.deployments_artifact(self._org_id(), project_id, version)
         return self.build_response(request, body=body)
 

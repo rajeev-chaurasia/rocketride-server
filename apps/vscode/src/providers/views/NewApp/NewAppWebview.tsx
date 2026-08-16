@@ -26,8 +26,9 @@ import type { NewAppHostToWebview, NewAppIdentity, NewAppWebviewToHost } from '.
 // =============================================================================
 
 /** One-segment slug shape for the user-typed app-name half: starts with a
- * lowercase letter, then any mix of letters, underscores, and hyphens. */
-const APP_NAME_RE = /^[a-z][a-zA-Z_-]*$/;
+ * lowercase letter, then any mix of letters, digits, underscores, and hyphens
+ * (the server accepts digits — e.g. `acme.s3-explorer`, `acme.app2`). */
+const APP_NAME_RE = /^[a-z][a-zA-Z0-9_-]*$/;
 
 /** Wireframe geometry — the 320x200 preview canvas and its chrome regions. */
 const WF = {
@@ -378,12 +379,12 @@ const NewAppWebview: React.FC = () => {
 						id="appName"
 						type="text"
 						spellCheck={false}
-						placeholder="starts lowercase; letters, underscores, hyphens"
+						placeholder="starts lowercase; letters, digits, underscores, hyphens"
 						value={appName}
 						onChange={(e) => onAppNameChange(e.target.value.trim())}
 						style={{ ...styles.input, ...(appName !== '' && !nameValid ? styles.inputInvalid : {}) }}
 					/>
-					{appName !== '' && !nameValid && <div style={styles.fieldError}>Must start with a lowercase letter; letters, underscores, and hyphens only.</div>}
+					{appName !== '' && !nameValid && <div style={styles.fieldError}>Must start with a lowercase letter; letters, digits, underscores, and hyphens only.</div>}
 					{collision && <div style={styles.fieldError}>Folder "apps/{folderName}" already exists in the workspace.</div>}
 				</div>
 				<div style={styles.field}>

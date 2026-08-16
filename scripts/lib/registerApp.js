@@ -144,16 +144,19 @@ function toModuleId(appId) {
  * URL (entry/icon/readme) key on the app id, so an id containing a path
  * separator or a ".." segment could write copies outside build/apps/ and emit a
  * broken public URL. App ids are dotted slugs (e.g. 'rocketride.hello'): letters,
- * digits, dot, hyphen and underscore are allowed; any ".." sequence is rejected.
+ * digits, dot, hyphen and underscore are allowed; any ".." sequence is rejected,
+ * as is an id that is ENTIRELY dots ('.', '...') — a bare '.' passes the
+ * character class and the '..' check yet joins to the apps root itself, writing
+ * copies beside every other app and emitting a '/apps/./…' entry URL.
  *
  * @param {string} appId - The app identifier to validate.
  * @throws {Error} When appId is not a safe slug.
  */
 function assertSafeAppId(appId) {
-	if (typeof appId !== 'string' || !/^[a-zA-Z0-9._-]+$/.test(appId) || appId.includes('..')) {
+	if (typeof appId !== 'string' || !/^[a-zA-Z0-9._-]+$/.test(appId) || appId.includes('..') || /^\.+$/.test(appId)) {
 		throw new Error(
 			`App id "${appId}" is not a valid slug. `
-			+ 'Must contain only letters, digits, ".", "-" and "_" (no path separators or ".." segments).'
+			+ 'Must contain only letters, digits, ".", "-" and "_" (no path separators, no ".." segments, not all dots).'
 		);
 	}
 }

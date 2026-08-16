@@ -609,7 +609,7 @@ async def test_add_workspace_layout_reads_manifest_at_app_root(registry, content
 
 
 @pytest.mark.asyncio
-async def test_add_workspace_layout_missing_manifest_names_the_path(registry):
+async def test_add_workspace_layout_missing_manifest_names_the_path(registry, content_store):
     """A wrong appRoot names the exact package.json path it looked for."""
     conn = _FakeConn()
     result = await handle_app_add(
@@ -626,7 +626,7 @@ async def test_add_workspace_layout_missing_manifest_names_the_path(registry):
     'app_root',
     ['/apps/brandy-ui', 'apps/brandy-ui/', 'apps/../secrets', 'apps/./brandy-ui', 'apps\\brandy-ui', 'C:/apps'],
 )
-async def test_add_rejects_unsafe_app_root(registry, app_root):
+async def test_add_rejects_unsafe_app_root(registry, content_store, app_root):
     """The appRoot value is guarded like a zip entry — absolute paths,
     traversal, dot segments, backslashes, and drive letters are refused
     before any read.

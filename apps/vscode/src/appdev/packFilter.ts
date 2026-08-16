@@ -308,6 +308,19 @@ export function collectPackedFiles(workspaceRoot: string, packRoots: string[]): 
 			// set keeps filtering the root's contents
 			const candidates = [baseline, ...ancestorMatchersOf(workspaceRoot, rootRel)];
 			const active = rootRel === '' ? candidates : candidates.filter((m) => !isIgnored(rootRel, true, [m]));
+
+			// step: re-anchor the hard baseline AT the named root. The filter
+			// above drops the workspace-anchored baseline whenever it ignores
+			// the root itself (so a user can deliberately name `dist`, or a
+			// path under a `node_modules` directory). But that also removed the
+			// hard floor for the root's ENTIRE SUBTREE — without re-anchoring, a
+			// nested `node_modules`/`.git`/`dist` inside the named root would
+			// pack. A baseline scoped to the root excludes those descendants
+			// (paths are tested relative to the root) while never re-excluding
+			// the root itself (`scopeInto` renders no verdict on the base dir).
+			if (rootRel !== '' && !active.some((m) => m.hard)) {
+				active.push({ baseRel: rootRel, matcher: ignore().add(BASELINE_PATTERNS), hard: true });
+			}
 			// PER-ROOT cycle guard: `visited` breaks symlink LOOPS within one
 			// walk. Sharing it across roots would wrongly drop a real directory
 			// reached under two different zip paths (e.g. `shared` packed both

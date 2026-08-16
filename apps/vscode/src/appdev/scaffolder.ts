@@ -38,8 +38,9 @@ import { getWatchManager } from './watchManager';
 
 /** App id shape: `<publisher>.<name>` — publisher is letters+underscore
  * (matches the server developerId rule); name starts with a lowercase
- * letter, then any mix of letters, underscores, and hyphens. */
-export const APP_ID_RE = /^[a-z][a-z_]*\.[a-z][a-zA-Z_-]*$/;
+ * letter, then any mix of letters, digits, underscores, and hyphens (the
+ * server accepts digits in the name — e.g. `acme.s3-explorer`, `acme.app2`). */
+export const APP_ID_RE = /^[a-z][a-z_]*\.[a-z][a-zA-Z0-9_-]*$/;
 
 // =============================================================================
 // TYPES
@@ -232,7 +233,7 @@ export async function scaffoldApp(params: ScaffoldParams): Promise<string> {
 
 	// ── 1. Validate identity (submit-time — the form state may be stale) ─
 	if (!APP_ID_RE.test(appId)) {
-		throw new Error(`Invalid app id "${appId}" — use <publisher>.<name>; the name starts with a lowercase letter, then letters, underscores, and hyphens.`);
+		throw new Error(`Invalid app id "${appId}" — use <publisher>.<name>; the name starts with a lowercase letter, then letters, digits, underscores, and hyphens.`);
 	}
 	if (!appName.trim()) {
 		throw new Error('Display name is required.');

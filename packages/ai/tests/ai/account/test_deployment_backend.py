@@ -275,9 +275,18 @@ class TestDeploy:
         await backend.publish('org-1', 'proj-1', PIPE, ACTOR)
         dep = await backend.deploy('org-1', 'user~u1', 'proj-1', 1, ACTOR, 'team-dev')
         assert dep['billingTeamId'] == 'team-dev'
+        # deploy() returns the joined record from the mutation path, which does
+        # not prove the write landed — read it back from storage to assert both
+        # the version pointer AND the billing stamp actually persisted.
+        stored = await backend.get('org-1', 'user~u1', 'proj-1')
+        assert stored['version'] == 1
+        assert stored['billingTeamId'] == 'team-dev'
         # A pointer move re-decides the stamp.
         dep = await backend.deploy('org-1', 'user~u1', 'proj-1', 2, ACTOR, 'team-prod')
         assert dep['billingTeamId'] == 'team-prod'
+        stored = await backend.get('org-1', 'user~u1', 'proj-1')
+        assert stored['version'] == 2
+        assert stored['billingTeamId'] == 'team-prod'
 
     @pytest.mark.asyncio
     async def test_unpublished_version_refused(self, backend):

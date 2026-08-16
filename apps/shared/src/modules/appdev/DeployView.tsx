@@ -716,7 +716,14 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app, readOnly }) 
 								</div>
 								{v.message ? <div style={styles.cardMsg}>&ldquo;{v.message}&rdquo;</div> : null}
 								<div style={styles.chips}>
-									{v.state ? <StatusBadge variant={STATE_BADGE[v.state].variant}>{STATE_BADGE[v.state].label}</StatusBadge> : null}
+									{v.state && v.state in STATE_BADGE ? (
+										<StatusBadge variant={STATE_BADGE[v.state].variant}>{STATE_BADGE[v.state].label}</StatusBadge>
+									) : v.state ? (
+										// STATE_BADGE is total over the typed union, but a state the
+										// server adds later would be absent at runtime — render its raw
+										// name as a muted chip rather than crash the row on undefined.
+										<StatusBadge variant="muted">{v.state}</StatusBadge>
+									) : null}
 									{/* Audience chips NAME who serves this version (the pipe
 									    card's pattern) — derived from the where-live pins. */}
 									{(pins ?? [])

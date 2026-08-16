@@ -503,12 +503,15 @@ class MonitorCommands(DAPConn):
             if team_id and 'task.monitor' not in resolve_task_permissions(self._account_info, team_id):
                 raise PermissionError('Access denied: no permissions for this team')
 
-            # run_kind, when supplied, must name a real continuum. A teamless
-            # subscription otherwise keys under a bogus 'p.<garbage>.' slot no
-            # run will ever match, and invalid casing ('Deploy', 'DEV')
-            # silently forks a dead subscription instead of aliasing the
-            # intended one. Absent = the caller's dev continuum.
-            if run_kind and run_kind not in ('dev', 'deploy'):
+            # run_kind, when supplied, must name a real continuum — but ONLY on
+            # the teamless path. A team scope is always the deploy continuum
+            # (teamId wins below), so run_kind is ignored there and must not
+            # reject an otherwise valid team subscription. On the teamless path
+            # a bogus run_kind would key under a 'p.<garbage>.' slot no run ever
+            # matches, and invalid casing ('Deploy', 'DEV') silently forks a
+            # dead subscription instead of aliasing the intended one. Absent =
+            # the caller's dev continuum.
+            if not team_id and run_kind and run_kind not in ('dev', 'deploy'):
                 raise ValueError(f"invalid runKind {run_kind!r} — expected 'dev' or 'deploy'")
 
             # Resolve the requested scope's owner: the named team's deploy

@@ -2184,9 +2184,33 @@ export class RocketRideClient extends DAPClient {
 		if ('token' in key) {
 			return `t:${key.token}`;
 		}
+		// Canonicalize runKind to its WIRE semantics before it enters the
+		// registry string, so keys that produce an identical server
+		// subscription collapse to one entry (otherwise they ref-count
+		// separately and the second sync clobbers the first caller's merged
+		// type set).
+		const teamId = key.teamId ?? '';
+		let runKind: string;
+		if (teamId) {
+			// A team scope is ALWAYS the deploy continuum server-side (teamId
+			// wins); runKind is ignored there, so a team key WITH
+			// runKind='deploy' and one WITHOUT must collapse. Clear it.
+			runKind = '';
+		} else {
+			// Teamless: 'dev' is the default continuum and the subscribe path
+			// sends runKind only for 'deploy', so a 'dev' key and a default
+			// (missing) key produce an IDENTICAL subscription and MUST collapse.
+			// Only 'deploy' stays distinct in slot 5; anything else would key a
+			// dead slot no run ever matches — reject rather than silently fork.
+			runKind = key.runKind ?? '';
+			if (runKind === 'dev') runKind = '';
+			if (runKind !== '' && runKind !== 'deploy') {
+				throw new Error(`invalid runKind ${JSON.stringify(runKind)} — expected 'dev' or 'deploy'`);
+			}
+		}
 		// runKind rides LAST so a registry string written before the field
-		// existed still parses (missing element -> undefined -> dev).
-		return `p:${JSON.stringify([key.projectId, key.source, key.pipeId ?? null, key.teamId ?? '', key.runKind ?? ''])}`;
+		// existed still parses (missing element -> '' -> dev).
+		return `p:${JSON.stringify([key.projectId, key.source, key.pipeId ?? null, teamId, runKind])}`;
 	}
 
 	/**

@@ -437,10 +437,16 @@ class TestReads:
         assert account_stub.deployments_artifact.await_args.args == ('org-1', 'proj-1', 3)
 
     @pytest.mark.asyncio
-    async def test_artifact_needs_org_membership_and_integer_version(self, account_stub):
-        # Same rule as the versions listing the artifact came from: no
-        # team-permission gate, org membership only.
-        conn = _make_conn(_account_info(teams=[{'id': 'team-1', 'name': 'D', 'permissions': []}]))
+    async def test_artifact_needs_task_monitor_and_integer_version(self, account_stub):
+        # The artifact BODY is the full pipeline JSON, so reading it requires
+        # task.monitor on a team (the gate develop shipped), not bare org
+        # membership — a member with no team grant is refused.
+        denied = _make_conn(_account_info(teams=[{'id': 'team-1', 'name': 'D', 'permissions': []}]))
+        with pytest.raises(PermissionError):
+            await denied._deploy_artifact({}, {'projectId': 'proj-1', 'version': 1})
+        # With the grant it reads; a non-int version is still refused, and the
+        # shape check precedes the gate (so it raises ValueError, not Permission).
+        conn = _make_conn(_account_info(teams=[{'id': 'team-1', 'name': 'D', 'permissions': ['task.monitor']}]))
         result = await conn._deploy_artifact({}, {'projectId': 'proj-1', 'version': 1})
         assert result['body']['project_id'] == 'proj-1'
         with pytest.raises(ValueError):
