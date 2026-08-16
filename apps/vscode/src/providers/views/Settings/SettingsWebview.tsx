@@ -941,7 +941,10 @@ export const Settings: React.FC = () => {
 							engineVersionsLoading={engineVersionsLoading}
 							cloudSignedIn={cloudSignedIn}
 							cloudUserName={cloudUserName}
-							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn' } as any)}
+							// Sign-in targets the form's CURRENT effective server — the
+							// saved config lags until Save, and exchanging the OAuth code
+							// against the wrong server mints the wrong session.
+							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.development.useCustomServer && settings.development.cloudUrl) || settings.development.defaultCloudUrl } as any)}
 							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' } as any)}
 							onProbeCloudServer={handleProbeCloudServer}
 							isSaas={isSaasProbed}
@@ -999,7 +1002,10 @@ export const Settings: React.FC = () => {
 							testMessage={testMessage}
 							cloudSignedIn={cloudSignedIn}
 							cloudUserName={cloudUserName}
-							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn' } as any)}
+							// Sign-in targets the form's CURRENT effective server — the
+							// saved config lags until Save, and exchanging the OAuth code
+							// against the wrong server mints the wrong session.
+							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.deployment.useCustomServer && settings.deployment.cloudUrl) || settings.deployment.defaultCloudUrl } as any)}
 							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' } as any)}
 							onProbeCloudServer={handleProbeCloudServer}
 							isSaas={isSaasProbed}

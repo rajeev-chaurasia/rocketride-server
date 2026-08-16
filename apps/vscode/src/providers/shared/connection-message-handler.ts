@@ -114,10 +114,13 @@ export class ConnectionMessageHandler {
 		switch (message.type) {
 			case 'cloud:signIn': {
 				const cloudAuth = CloudAuthProvider.getInstance();
+				// Prefer the webview's IN-FORM effective server (checkbox + URL
+				// may not be saved yet); fall back to the saved config for
+				// senders without a form (sidebar, welcome).
 				await cloudAuth.signIn(
 					process.env.RR_ZITADEL_URL || '',
 					process.env.RR_ZITADEL_VSCODE_CLIENT_ID || '',
-					ConfigManager.getInstance().getEffectiveCloudUrl()
+					(message.cloudUrl as string) || ConfigManager.getInstance().getEffectiveCloudUrl()
 				);
 				return true;
 			}
