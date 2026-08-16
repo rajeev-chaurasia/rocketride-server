@@ -63,6 +63,96 @@ function makePipeline(projectId: string) {
 }
 
 /**
+ * CRC-32 (IEEE 802.3, reflected) of a byte array — the checksum a zip's
+ * local + central directory headers must carry so the server's zip reader
+ * accepts the entry.
+ *
+ * @param bytes - The bytes to checksum.
+ * @returns The unsigned 32-bit CRC.
+ */
+function crc32(bytes: Uint8Array): number {
+	let crc = 0xffffffff;
+	for (let i = 0; i < bytes.length; i++) {
+		crc ^= bytes[i];
+		// Process each bit with the reflected CRC-32 polynomial.
+		for (let bit = 0; bit < 8; bit++) {
+			crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+		}
+	}
+	return (crc ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * A minimal in-memory app SOURCE zip carrying one STORED (uncompressed)
+ * package.json — enough for the server to read the appManifest and route
+ * the deploy down its app branch. Mirrors a real app's package.json: the
+ * semver at the top level, the appManifest projection alongside.
+ *
+ * @param appId - The app id declared in appManifest (`<developerId>.<name>`).
+ * @returns The zip bytes, ready for `deploy.add({ kind: 'app', data })`.
+ */
+function makeAppZip(appId: string): Uint8Array {
+	const name = new TextEncoder().encode('package.json');
+	const file = new TextEncoder().encode(
+		JSON.stringify({ name: 'sdk-app', version: '1.0.0', appManifest: { id: appId, name: 'SDK App' } })
+	);
+	const crc = crc32(file);
+	const out: number[] = [];
+	const u16 = (n: number): void => void out.push(n & 0xff, (n >>> 8) & 0xff);
+	const u32 = (n: number): void => void out.push(n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff);
+	const raw = (b: Uint8Array): void => b.forEach((x) => out.push(x));
+
+	// Local file header (STORED — compression 0, compressed size == length).
+	u32(0x04034b50);
+	u16(20); // version needed to extract
+	u16(0); // general-purpose flags
+	u16(0); // compression method: stored
+	u16(0); // mod time
+	u16(0); // mod date
+	u32(crc);
+	u32(file.length); // compressed size
+	u32(file.length); // uncompressed size
+	u16(name.length);
+	u16(0); // extra length
+	raw(name);
+	raw(file);
+
+	// Central directory header for the single entry.
+	const cdOffset = out.length;
+	u32(0x02014b50);
+	u16(20); // version made by
+	u16(20); // version needed to extract
+	u16(0); // general-purpose flags
+	u16(0); // compression method
+	u16(0); // mod time
+	u16(0); // mod date
+	u32(crc);
+	u32(file.length); // compressed size
+	u32(file.length); // uncompressed size
+	u16(name.length);
+	u16(0); // extra length
+	u16(0); // comment length
+	u16(0); // disk number start
+	u16(0); // internal attributes
+	u32(0); // external attributes
+	u32(0); // local header offset
+	raw(name);
+
+	// End of central directory record.
+	const cdSize = out.length - cdOffset;
+	u32(0x06054b50);
+	u16(0); // this disk number
+	u16(0); // disk with central directory
+	u16(1); // entries on this disk
+	u16(1); // total entries
+	u32(cdSize);
+	u32(cdOffset);
+	u16(0); // comment length
+
+	return new Uint8Array(out);
+}
+
+/**
  * Integration tests for the deploy client API (teams-as-environments).
  *
  * These tests connect to a live server and exercise the published contract:
@@ -133,6 +223,25 @@ describe('Deploy API Integration Tests', () => {
 			} finally {
 				await cleanup(project);
 			}
+		},
+		TEST_CONFIG.timeout
+	);
+
+	it(
+		'add routes kind:"app" through the app branch',
+		async () => {
+			// Guards kind routing: kind:'app' must reach the server's app
+			// handler (zip transport), NOT the pipe path. The OSS test org owns
+			// no developer namespace, so an app deploy can never mint an
+			// artifact here — but the namespace rejection fires only AFTER the
+			// server has parsed the zip and read its appManifest, which proves
+			// the call landed on the app branch. A routing regression (kind:'app'
+			// mis-sent as a pipe, or `data` dropped) errors elsewhere and never
+			// mentions the developer namespace, so this assertion fails on it.
+			const data = makeAppZip('sdk.app');
+			await expect(
+				client.deploy.add({ kind: 'app', data, metadata: { projectId: freshProject() } })
+			).rejects.toThrow(/developer/i);
 		},
 		TEST_CONFIG.timeout
 	);

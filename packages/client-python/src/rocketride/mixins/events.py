@@ -530,6 +530,16 @@ class EventMixin(DAPClient):
         """
         if 'token' in key:
             return f't:{key["token"]}'
+        # 'dev' and '' are the SAME continuum: dev is the default run kind, and
+        # _sync_monitor sends runKind only for 'deploy', so a 'dev' key and a
+        # default (missing) key produce an IDENTICAL server subscription. They
+        # MUST collapse to one registry string — otherwise the two ref-count as
+        # separate entries for one subscription and the second _sync_monitor
+        # clobbers the first caller's merged type set. Only 'deploy' stays
+        # distinct in slot 5.
+        run_kind = key.get('run_kind') or ''
+        if run_kind == 'dev':
+            run_kind = ''
         # run_kind rides LAST so a registry string written before the field
         # existed still parses (missing element -> '' -> dev).
         payload = [
@@ -537,7 +547,7 @@ class EventMixin(DAPClient):
             key['source'],
             key.get('pipe_id'),
             key.get('team_id') or '',
-            key.get('run_kind') or '',
+            run_kind,
         ]
         return f'p:{json.dumps(payload)}'
 

@@ -102,16 +102,25 @@ export function isRemoteLoaded(moduleId: string): boolean {
 /**
  * Force re-register an MF container at a new entry URL (version override
  * apply/boot). Refuses dev-owned containers — the live dev build always
- * wins. Callers must only repoint containers that have not loaded yet
- * (see isRemoteLoaded); loaded containers require a page reload.
+ * wins — AND containers that have already LOADED this document: repointing a
+ * loaded container corrupts its consume-shared getters (identity is the name;
+ * MF commits a container to its version once its remote resolves). The
+ * precondition is ENFORCED here rather than trusted to callers — a refusal
+ * returns false so the caller can fall back to a full page reload.
  *
  * @param moduleId - The MF container name.
  * @param entry - The new remoteEntry.js URL.
+ * @returns True when the container was repointed; false when refused
+ *          (dev-owned, or already loaded — reload the page instead).
  */
-export function repointRemote(moduleId: string, entry: string): void {
-	if (devRemoteModules.has(moduleId)) return;
+export function repointRemote(moduleId: string, entry: string): boolean {
+	if (devRemoteModules.has(moduleId)) return false;
+	// A loaded container is committed to its version for the document's
+	// lifetime — force-repointing it corrupts its shared getters.
+	if (loadedModules.has(moduleId)) return false;
 	registerRemotes([{ name: moduleId, entry }], { force: true });
 	registeredEntries.set(moduleId, entry);
+	return true;
 }
 
 // =============================================================================

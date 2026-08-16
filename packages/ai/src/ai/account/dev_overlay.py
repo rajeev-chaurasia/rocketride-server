@@ -25,7 +25,8 @@ Per-user dev overlay — the live-manifest mechanism for app development.
 
 A developer's inner loop points THEIR shell at a locally built (or cloud
 dev-built) app bundle by registering a ``moduleId -> entry URL`` override
-via ``rrext_app.register_dev``. The overlay is:
+via ``rrext_deploy_app.register_dev`` (the OSS dispatch routes register_dev
+only under the ``rrext_deploy_app`` command). The overlay is:
 
 - **Per user.** Entries registered by one user are applied only to that
   user's app manifest and pushed only to that user's connections —
@@ -318,7 +319,7 @@ async def push_refresh(server: Any, user_id: str, source: str) -> None:
 
 
 # =============================================================================
-# DAP HANDLER — rrext_app.register_dev
+# DAP HANDLER — rrext_deploy_app.register_dev
 # =============================================================================
 
 

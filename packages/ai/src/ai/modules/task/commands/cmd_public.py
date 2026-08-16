@@ -44,7 +44,7 @@ import os
 import sys
 from typing import TYPE_CHECKING, Dict, Any
 
-from rocketlib import getVersion
+from rocketlib import debug, getVersion
 from ai.common.dap import DAPConn, TransportBase
 from ai.account import account
 
@@ -104,10 +104,15 @@ class PublicCommands(DAPConn):
             'apps': await acct.get_public_apps(),
         }
         # Publishable key only — the secret key (sk_*) must never leave the
-        # server. Omitted entirely when unset (OSS / no billing).
-        stripe_pk = os.environ.get('RR_STRIPE_PUBLISHABLE_KEY', '')
-        if stripe_pk:
+        # server. Omitted entirely when unset (OSS / no billing). Enforce the
+        # pk_ prefix before returning: if a secret key (sk_*) or a restricted
+        # key (rk_*) is misconfigured into this env var, publishing it to every
+        # client would leak a server credential — refuse to emit it and warn.
+        stripe_pk = os.environ.get('RR_STRIPE_PUBLISHABLE_KEY', '').strip()
+        if stripe_pk.startswith('pk_'):
             info['stripePublishableKey'] = stripe_pk
+        elif stripe_pk:
+            debug('[public] RR_STRIPE_PUBLISHABLE_KEY is not a pk_ publishable key — omitting it from the public probe')
         return self.build_response(request, body=info)
 
     # ── rrext_public_catalog ────────────────────────────────────────────────

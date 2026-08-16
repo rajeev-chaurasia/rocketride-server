@@ -547,6 +547,10 @@ async def task_Process(
     request: Request,
     token: Optional[str] = Query(None, description='Token returned from task execute'),
     teamId: Optional[str] = Query(None, description="Address the team's DEPLOY run of the path's project/source"),
+    runKind: Optional[str] = Query(
+        None,
+        description="Teamless continuum selector: absent/'dev' = the caller's dev run, 'deploy' = the caller's personal @me deploy run",
+    ),
     authorization: str = Header(..., description='Bearer API key in the Authorization header'),
 ) -> DataResult:
     r"""
@@ -554,4 +558,6 @@ async def task_Process(
 
     DEPRECATED - Use /task/data.
     """
-    return await task_Data(request=request, token=token, teamId=teamId, authorization=authorization)
+    # Forward runKind too: without it a caller on this deprecated endpoint who
+    # means their @me deploy run resolves the dev run instead (or 404s).
+    return await task_Data(request=request, token=token, teamId=teamId, runKind=runKind, authorization=authorization)

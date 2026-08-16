@@ -63,7 +63,7 @@ from typing import Any, Dict, List, Optional
 
 from rocketlib import debug
 
-from ai.account.deployment_backend import app_bundle_dir
+from ai.account.deployment_backend import DEFAULT_REVIEW_STATE, app_bundle_dir
 
 
 def _serving_dir(org_id: str, app_id: str, version: int, artifact: Optional[Dict[str, Any]]) -> str:
@@ -316,6 +316,13 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
     data = args.get('data')
     if not data:
         return conn.build_error(request, 'data (the app source zip) is required')
+    # data MUST be a binary frame — a str (or anything non-bytes-like) makes
+    # io.BytesIO / bytes() raise TypeError, which escapes as an unhandled 500
+    # instead of a clean DAP error. Normalise bytes-like inputs, reject the rest.
+    if isinstance(data, (bytearray, memoryview)):
+        data = bytes(data)
+    elif not isinstance(data, bytes):
+        return conn.build_error(request, 'data must be a binary zip frame (bytes), not text')
 
     # ── Parse the zip in memory: manifest first, files after allocation ───
     import io
@@ -463,8 +470,20 @@ def _manifest_of_zip(archive: Any, app_root: str = '') -> 'tuple[Dict[str, Any],
     pkg_path = f'{app_root}/package.json' if app_root else 'package.json'
     if pkg_path not in archive.namelist():
         raise ValueError(f'zip must contain {pkg_path} (the appManifest carrier)')
+    # Bounded read: this runs BEFORE _zip_guard (manifest is needed for the
+    # fail-fast namespace check), so a single highly-compressible package.json
+    # would otherwise decompress fully into memory here — a small upload that
+    # exhausts server RAM. package.json is legitimately a few KB; cap the read
+    # and reject anything absurd. read(N+1) lets us detect overflow exactly.
     try:
-        package = _json.loads(archive.read(pkg_path))
+        with archive.open(pkg_path) as handle:
+            raw = handle.read(_ZIP_MAX_MANIFEST + 1)
+    except Exception:
+        raise ValueError(f'{pkg_path} could not be read')
+    if len(raw) > _ZIP_MAX_MANIFEST:
+        raise ValueError(f'{pkg_path} exceeds the {_ZIP_MAX_MANIFEST}-byte manifest cap')
+    try:
+        package = _json.loads(raw)
     except Exception:
         raise ValueError(f'{pkg_path} is not valid JSON')
     manifest = package.get('appManifest')
@@ -476,6 +495,7 @@ def _manifest_of_zip(archive: Any, app_root: str = '') -> 'tuple[Dict[str, Any],
 # Zip guards: transport caps that stop hostile archives before extraction.
 _ZIP_MAX_FILES = 2000
 _ZIP_MAX_UNPACKED = 100 * 1024 * 1024  # 100 MB unpacked
+_ZIP_MAX_MANIFEST = 1 * 1024 * 1024  # 1 MB — package.json read before the guard runs
 
 
 def _zip_guard(archive: Any) -> str:
@@ -565,9 +585,18 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
             # browse — only versions serving on caller-visible rows appear
             # (exactly what the desktop version selector needs).
             rows = [r for r in await _visible_rows_of(conn, account, org_id, app_id) if r.get('orgId') == home]
+            # Read the version list ONCE and index it — _registry_entry_of
+            # re-reads the whole list per call, so looking each version up
+            # through it was an O(N) full-metadata read per visible version.
+            try:
+                entries_by_version = {
+                    int(e.get('version', 0)): e for e in await account.deployments_versions(home, app_id)
+                }
+            except Exception:
+                entries_by_version = {}
             rail = []
             for version in sorted({int(r.get('version', 0)) for r in rows}, reverse=True):
-                entry = await _registry_entry_of(account, home, app_id, version)
+                entry = entries_by_version.get(version)
                 if entry is None:
                     continue
                 artifact = await _artifact_of(account, home, app_id, entry)
@@ -640,7 +669,7 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
         # bindings accept any internal-eligible version (anything but 'failed';
         # 'submit' is still in review but the developer can already run it on
         # their own team). The binding created here is a pure pointer.
-        deploy_state = str(entry.get('state') or 'ready')
+        deploy_state = str(entry.get('state') or DEFAULT_REVIEW_STATE)
         if audience['type'] == 'public':
             if deploy_state != 'ready':
                 return conn.build_error(

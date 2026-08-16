@@ -138,6 +138,26 @@ function toModuleId(appId) {
 	return appId.replace(/[^a-zA-Z0-9_$]/g, '_');
 }
 
+/**
+ * Validates that an app id is a filesystem-safe slug before it is joined into a
+ * build path or embedded in a public URL. The served directory and every public
+ * URL (entry/icon/readme) key on the app id, so an id containing a path
+ * separator or a ".." segment could write copies outside build/apps/ and emit a
+ * broken public URL. App ids are dotted slugs (e.g. 'rocketride.hello'): letters,
+ * digits, dot, hyphen and underscore are allowed; any ".." sequence is rejected.
+ *
+ * @param {string} appId - The app identifier to validate.
+ * @throws {Error} When appId is not a safe slug.
+ */
+function assertSafeAppId(appId) {
+	if (typeof appId !== 'string' || !/^[a-zA-Z0-9._-]+$/.test(appId) || appId.includes('..')) {
+		throw new Error(
+			`App id "${appId}" is not a valid slug. `
+			+ 'Must contain only letters, digits, ".", "-" and "_" (no path separators or ".." segments).'
+		);
+	}
+}
+
 // =============================================================================
 // REGISTER APP
 // =============================================================================
@@ -166,6 +186,12 @@ function registerApp(appRoot) {
 				task.skip('No appManifest field — skipping registration');
 				return;
 			}
+
+			// The app id is joined into the build path and embedded in every
+			// public URL (entry/icon/readme) below, so it MUST be a
+			// filesystem-safe slug — an id with a path separator or a ".."
+			// segment could write copies outside build/apps/.
+			assertSafeAppId(appManifest.id);
 
 			// The SERVED name is the app id, not the source folder: rsbuild
 			// bundles to build/apps/<appId>, appModule's copy step lands it at
@@ -345,4 +371,4 @@ function registerApp(appRoot) {
 	};
 }
 
-module.exports = { registerApp };
+module.exports = { registerApp, assertSafeAppId };

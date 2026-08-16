@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV0 — never edit by hand
 // =============================================================================
-// Generated:     2026-08-15T06:03:19.276Z
-// Source commit: 6595b641ed441edc224eb2979fa195d0bd4aa632
+// Generated:     2026-08-15T23:08:35.502Z
+// Source commit: ffb7356ce719a1af367a66c65c24d553522f6299
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -5213,7 +5213,7 @@ export declare class RocketRideClient extends DAPClient {
      * List an app's deployed versions, newest first (the version rail).
      *
      * @param appId - App id
-     * @returns Rail entries; each carries `rungs` naming the audiences serving it
+     * @returns Rail entries; each carries its deployment `state` and the `rungs` naming the audiences serving it
      */
     listDeployments(appId: string): Promise<Array<{
         registryVersion: number;
@@ -5222,6 +5222,7 @@ export declare class RocketRideClient extends DAPClient {
         publishedAt: number;
         author: string;
         message: string;
+        state: string;
         rungs: string[];
     }>>;
     /**
@@ -5238,14 +5239,27 @@ export declare class RocketRideClient extends DAPClient {
         artifact: Record<string, unknown>;
     }>;
     /**
-     * Bind a deployment to an audience — first publish, update, promote, and
-     * rollback are all this one verb ("repoint, never rebuild"). The binding
-     * is a pure pointer; '@public' requires the deployment be 'ready'
-     * (approved), '@user'/'@team' accept any non-'failed' deployment.
+     * Withdraw a pending review — the developer's own cancel: flips the
+     * DEPLOYMENT 'submit' -> 'private' (leaves the admin queue, back to
+     * draft; history records 'withdrawn'). Only a version in 'submit'
+     * withdraws. Developer-org and developer-namespace gated, like submit.
      *
      * @param appId - App id
      * @param registryVersion - Registry version number from the rail
-     * @param target - '@user', '@team/<name-or-id>', or '@public'
+     * @returns The refreshed rail entry ({registryVersion, state, ...})
+     */
+    withdrawApp(appId: string, registryVersion: number): Promise<{
+        artifact: Record<string, unknown>;
+    }>;
+    /**
+     * Bind a deployment to an audience — first publish, update, promote, and
+     * rollback are all this one verb ("repoint, never rebuild"). The binding
+     * is a pure pointer; '@public' requires the deployment be 'ready'
+     * (approved), '@me'/'@team' accept any non-'failed' deployment.
+     *
+     * @param appId - App id
+     * @param registryVersion - Registry version number from the rail
+     * @param target - '@me', '@team/<name-or-id>', or '@public' ('@user' = legacy alias)
      * @returns The binding row ({audience, version, state, artifactState, ...})
      */
     publishApp(appId: string, registryVersion: number, target: string): Promise<{
@@ -5257,7 +5271,7 @@ export declare class RocketRideClient extends DAPClient {
      * to the audience again revives it.
      *
      * @param appId - App id
-     * @param target - '@user', '@team/<name-or-id>', or '@public'
+     * @param target - '@me', '@team/<name-or-id>', or '@public' ('@user' = legacy alias)
      * @returns The final binding row (state 'removed')
      */
     removeAppPublish(appId: string, target: string): Promise<{

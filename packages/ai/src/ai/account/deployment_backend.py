@@ -132,6 +132,16 @@ def _actor_record(actor: Dict[str, Any]) -> Dict[str, Any]:
 # 'rejected' is terminal; a developer may also withdraw a submission back to
 # 'private'. This is the ONE source of an app's review state — the publish
 # binding is a pure pointer.
+#
+# The default for a missing/empty state is 'private' — the SAFE, internal-
+# eligible state — and EVERY reader must apply the same default (import this
+# constant). A legacy entry written before the state field existed is then
+# consistently: internally bindable, blocked from @public until reviewed, and
+# still submittable. Defaulting a missing state to 'ready' anywhere would let
+# an unreviewed legacy version reach the public store; defaulting it to '' in
+# the transition asserter would trap it (no legal edge out of '').
+DEFAULT_REVIEW_STATE = 'private'
+
 _REVIEW_TRANSITIONS = {
     ('private', 'submit'),
     ('submit', 'ready'),
@@ -858,7 +868,7 @@ class FileDeploymentBackend:
             entry = next((v for v in meta['versions'] if int(v.get('version', 0)) == version), None)
             if entry is None:
                 raise StorageError(f'{project_id} v{version}: not in the registry')
-            _assert_review_transition(str(entry.get('state') or ''), new_state)
+            _assert_review_transition(str(entry.get('state') or DEFAULT_REVIEW_STATE), new_state)
             entry['state'] = new_state
             meta['history'].append(
                 {

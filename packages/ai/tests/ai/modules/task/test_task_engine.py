@@ -805,14 +805,21 @@ async def test_subprocess_env_scrubs_broker_credentials(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_subprocess_env_injects_resolved_dsn(monkeypatch):
+    # Capture the tenant OUTSIDE the stub and assert after: _build_subprocess_env
+    # converts resolver exceptions into ROCKETRIDE_DB_RESOLVE_ERROR, so an
+    # AssertionError raised inside fake_resolve would be swallowed and surface
+    # as a missing DSN key here instead of the real tenant mismatch.
+    seen = {}
+
     async def fake_resolve(tenant_id):
         # The tenant is the ORG (B6) — the user is only the OSS fallback.
-        assert tenant_id == 'org-1'
+        seen['tenant'] = tenant_id
         return 'postgresql://tenant@pooler/db?sslmode=require'
 
     _patch_resolve(monkeypatch, fake_resolve)
     env = await Task._build_subprocess_env(_env_task(pipeline=_DB_PIPELINE))
     assert env['ROCKETRIDE_DB_DSN'] == 'postgresql://tenant@pooler/db?sslmode=require'
+    assert seen['tenant'] == 'org-1'
 
 
 @pytest.mark.asyncio

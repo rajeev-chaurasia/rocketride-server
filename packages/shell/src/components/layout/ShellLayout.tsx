@@ -308,9 +308,19 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 		if (!failedAppId) return;
 		if (!isStalePlatformError(appLoadErrors[failedAppId] ?? '')) return;
 		try {
-			const guard = JSON.parse(sessionStorage.getItem('rr.staleReload') ?? 'null') as { appId: string; at: number } | null;
-			if (guard && guard.appId === failedAppId && Date.now() - guard.at < 60_000) return;
-			sessionStorage.setItem('rr.staleReload', JSON.stringify({ appId: failedAppId, at: Date.now() }));
+			// Guard keyed PER APP (appId → last-reload epoch ms): a single
+			// {appId, at} record let alternating failures defeat the guard —
+			// after reloading for app A, a stale failure of app B overwrote the
+			// record, and A's next failure no longer matched, looping inside the
+			// 60s window. A per-app map gives every app its own cooldown, so a
+			// SAME-app failure right after its reload (a REAL contract mismatch)
+			// still surfaces the dialog while distinct apps can't reset each
+			// other's guard.
+			const guard = JSON.parse(sessionStorage.getItem('rr.staleReload') ?? '{}') as Record<string, number>;
+			const lastReload = guard[failedAppId];
+			if (typeof lastReload === 'number' && Date.now() - lastReload < 60_000) return;
+			guard[failedAppId] = Date.now();
+			sessionStorage.setItem('rr.staleReload', JSON.stringify(guard));
 		} catch {
 			return;
 		}
@@ -486,7 +496,7 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 	useEffect(() => {
 		if (firstContentRef.current || bootStalled) return;
 		const timer = setTimeout(() => {
-			if (!firstContentRef.current) { console.log('[SL] watchdog: latching bootStalled after', BOOT_STALL_MS, 'ms'); setBootStalled(true); }
+			if (!firstContentRef.current) setBootStalled(true);
 		}, BOOT_STALL_MS);
 		return () => clearTimeout(timer);
 	}, [loaded, seeded, activeAppId, hasAppUi, bootStalled]);
@@ -496,18 +506,6 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 	// boot LoadingScreen — returning null here put a blank frame between two
 	// otherwise-continuous loading screens. Once the watchdog latches, stop
 	// holding here so the render can reach the diagnostic surface below.
-	console.log('[SL] pre-guard', {
-		loaded, seeded, bootStalled,
-		activeAppId, defaultAppId,
-		appManifestLen: appManifest.length,
-		appManifestIds: appManifest.map((m) => m.id),
-		activeManifest: activeManifest?.id ?? null,
-		hasAppUi, appLoading,
-		hasActiveApp: !!activeApp,
-		appLoadErrorKeys: Object.keys(appLoadErrors),
-		firstContent: firstContentRef.current,
-		willHoldLoadingGuard: (!loaded && !seeded && !bootStalled),
-	});
 	if (!loaded && !seeded && !bootStalled) return <LoadingScreen />;
 
 	// First boot: stay full-screen on the rocket until the first activation
@@ -532,11 +530,6 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 		(!devPending && !!appLoadErrors[activeAppId]) ||
 		activeAppUnresolvable;
 	if (hasFirstContent) firstContentRef.current = true;
-	console.log('[SL] post-firstContent', {
-		devPending, activeAppUnresolvable, hasFirstContent,
-		firstContent: firstContentRef.current,
-		willHoldFirstContentGuard: !firstContentRef.current,
-	});
 	if (!firstContentRef.current) {
 		// A latched failure (server unreachable, session expired) can strand the
 		// boot on this rocket forever — no app content will ever arrive to flip
@@ -564,14 +557,6 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 	const considerStatusBar = hasAppUi;
 
 	// --- Render --------------------------------------------------------------
-	const clientBranch =
-		(hasAppUi && activeApp) ? 'app'
-		: devPending ? 'devPreview-loading'
-		: appLoadErrors[activeAppId] ? 'appLoadError'
-		: activeAppUnresolvable ? 'unresolvable-panel'
-		: (appLoading || !activeApp) ? 'loading-rocket'
-		: 'null';
-	console.log('[SL] client-area branch =', clientBranch, { hasAppUi, hasActiveApp: !!activeApp, devPending, activeAppUnresolvable, appLoading });
 	return (
 		<PrefsProvider value={prefsApi}>
 		<ShellApiConfigProvider config={mergedApiConfig}>
@@ -653,9 +638,12 @@ export const ShellLayout: React.FC<ShellLayoutProps> = ({
 								</div>
 								<div style={styles.appLoadErrorActions}>
 									{activeAppId === defaultAppId ? (
-										// "Go to Home" would loop straight back here — offer a
-										// reload/retry of the missing home app instead.
-										<button type="button" style={styles.appLoadErrorButton} onClick={() => retryApp(activeAppId)}>
+										// "Go to Home" would loop straight back here. retryApp
+										// can't help either: this branch requires NO manifest
+										// entry, so loadDescriptor returns false immediately and
+										// nothing changes. Reload the page instead so a refreshed
+										// manifest (with the home app) can arrive.
+										<button type="button" style={styles.appLoadErrorButton} onClick={() => window.location.reload()}>
 											Try Again
 										</button>
 									) : (
