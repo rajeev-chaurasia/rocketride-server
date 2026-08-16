@@ -16,8 +16,11 @@ import type { AppPrice } from 'rocketride';
 
 /** Why a `checkout:stripeKey` reply carries no key — lets the webview explain
  *  the empty state (and the hook decide whether a retry can help) instead of a
- *  silently dead Subscribe click. Absent whenever `key` is non-empty. */
-export type StripeKeyUnavailableReason = 'no-connection' | 'probe-failed';
+ *  silently dead Subscribe click. Absent whenever `key` is non-empty.
+ *  `no-billing` means the probe SUCCEEDED and the server simply has no
+ *  billing configured (the OSS/standalone case) — terminal, never retried —
+ *  while `no-connection`/`probe-failed` are transient and retryable. */
+export type StripeKeyUnavailableReason = 'no-connection' | 'probe-failed' | 'no-billing';
 
 /** Checkout replies from the host. */
 export type CheckoutResultHostToWebview =

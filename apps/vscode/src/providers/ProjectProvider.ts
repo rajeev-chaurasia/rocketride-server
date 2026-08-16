@@ -818,11 +818,12 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				case 'checkout:getStripeKey': {
 					// Server-supplied publishable key (cached per URI) so the
 					// CheckoutModal mounts Stripe for THIS server's account. An
-					// empty key carries a reason (no connection vs a failed probe)
-					// so the webview can explain the gap.
+					// empty key carries a reason (no connection, failed probe,
+					// or a server without billing) so the webview can explain
+					// the gap.
 					const client = this.connectionManager.getClient();
-					const key = await getStripePublishableKey(client);
-					const reason: StripeKeyUnavailableReason | undefined = key ? undefined : client ? 'probe-failed' : 'no-connection';
+					const { key, probed } = await getStripePublishableKey(client);
+					const reason: StripeKeyUnavailableReason | undefined = key ? undefined : !client ? 'no-connection' : probed ? 'no-billing' : 'probe-failed';
 					webview.postMessage({ type: 'checkout:stripeKey', key, requestId: data.requestId, ...(reason ? { reason } : {}) });
 					break;
 				}

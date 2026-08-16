@@ -120,6 +120,13 @@ class Account(AccountBase):
             organization={
                 'id': 'local',
                 'name': 'Local',
+                # Standalone publishes under the shared platform namespace:
+                # anyone running the OSS server can deploy modified
+                # rocketride.* apps to their own server's rungs (@me/@team) —
+                # upstreaming a change to the common apps happens via PR, and
+                # the @public rung stays unreachable without the SaaS review
+                # ladder, so the namespace grant never leaves this install.
+                'developerId': 'rocketride',
                 'permissions': ['org.admin'],
                 'teams': [
                     {

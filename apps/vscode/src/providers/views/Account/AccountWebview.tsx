@@ -23,6 +23,7 @@ import type { CheckoutPlan, PromoRedemption, PromoValidation } from 'shell';
 import type { ConnectResult } from 'shell';
 import { useMessaging } from '../hooks/useMessaging';
 import { useStripeKey } from '../hooks/useStripeKey';
+import { CheckoutUnavailableNotice } from '../components';
 import type { AccountHostToWebview, AccountWebviewToHost } from '../../types/accountTypes';
 
 // =============================================================================
@@ -42,8 +43,9 @@ const AccountWebview: React.FC = () => {
 	const [ready, setReady] = useState(false);
 	const [isConnected, setIsConnected] = useState(false);
 	// Server-supplied Stripe publishable key — matches the connected server's
-	// Stripe account instead of a build-time value.
-	const stripeKey = useStripeKey();
+	// Stripe account instead of a build-time value. The reason explains an
+	// empty key so a Subscribe click can say why checkout will not open.
+	const { key: stripeKey, reason: stripeKeyReason } = useStripeKey();
 	const [profile, setProfile] = useState<ConnectResult | null>(null);
 	const [authUser, setAuthUser] = useState<ConnectResult | null>(null);
 	const [keys, setKeys] = useState<ApiKeyRecord[]>([]);
@@ -519,6 +521,7 @@ const AccountWebview: React.FC = () => {
 					onClose={() => setShowCheckout(false)}
 				/>
 			)}
+			{showCheckout && !stripeKey && <CheckoutUnavailableNotice reason={stripeKeyReason} onClose={() => setShowCheckout(false)} />}
 		</>
 	);
 };

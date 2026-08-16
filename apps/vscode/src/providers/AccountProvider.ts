@@ -254,11 +254,12 @@ export class AccountProvider {
 			case 'checkout:getStripeKey': {
 				// Server-supplied publishable key (cached per URI) so the
 				// CheckoutModal mounts Stripe for THIS server's account. When it
-				// resolves empty, say WHY (no connection vs a failed probe) so
-				// the webview can explain the gap instead of a dead Subscribe.
+				// resolves empty, say WHY (no connection, failed probe, or a
+				// server without billing) so the webview can explain the gap
+				// instead of a dead Subscribe.
 				const client = this.resolveClient().client;
-				const key = await getStripePublishableKey(client);
-				const reason: StripeKeyUnavailableReason | undefined = key ? undefined : client ? 'probe-failed' : 'no-connection';
+				const { key, probed } = await getStripePublishableKey(client);
+				const reason: StripeKeyUnavailableReason | undefined = key ? undefined : !client ? 'no-connection' : probed ? 'no-billing' : 'probe-failed';
 				await panel.webview.postMessage({ type: 'checkout:stripeKey', key, requestId: message.requestId ?? 0, ...(reason ? { reason } : {}) });
 				break;
 			}

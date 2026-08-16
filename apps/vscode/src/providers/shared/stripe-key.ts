@@ -18,6 +18,22 @@
 import { RocketRideClient } from 'rocketride';
 
 // =============================================================================
+// TYPES
+// =============================================================================
+
+/** Outcome of a publishable-key resolution. `probed` distinguishes "the
+ *  server answered and has no billing" (terminal — stop asking) from "the
+ *  probe never landed" (transient — a retry may help): both leave `key`
+ *  empty, but only one of them is worth retrying or blaming on the network. */
+export interface StripeKeyResolution {
+	/** The server's publishable key, or '' when unavailable. */
+	key: string;
+	/** True when the probe answered (even with no key); false when there was
+	 *  no client or the probe failed. */
+	probed: boolean;
+}
+
+// =============================================================================
 // CACHE
 // =============================================================================
 
@@ -36,16 +52,18 @@ const keyCache = new Map<string, string>();
  * check) cost nothing after the first.
  *
  * @param client - A connected RocketRideClient whose server should be probed.
- * @returns The server's publishable key, or '' when the client is undefined,
- *          the server has no billing configured, or the probe fails —
- *          callers already gate checkout UI on a non-empty key.
+ * @returns The resolution: `key` is '' when the client is undefined, the
+ *          server has no billing configured, or the probe fails; `probed`
+ *          tells those apart — callers gate checkout UI on a non-empty key
+ *          and derive the user-facing reason from `probed`.
  */
-export async function getStripePublishableKey(client: RocketRideClient | undefined): Promise<string> {
-	if (!client) return '';
+export async function getStripePublishableKey(client: RocketRideClient | undefined): Promise<StripeKeyResolution> {
+	if (!client) return { key: '', probed: false };
 
-	// Step 1: serve from cache when this server was already probed.
+	// Step 1: serve from cache when this server was already probed. A cached
+	// '' is a real answer (billing-less server), so it counts as probed.
 	const uri = client.getConnectionInfo().uri;
-	if (keyCache.has(uri)) return keyCache.get(uri) as string;
+	if (keyCache.has(uri)) return { key: keyCache.get(uri) as string, probed: true };
 
 	// Step 2: probe the server; cache '' on servers without billing so the
 	// probe is not repeated for them either.
@@ -53,11 +71,11 @@ export async function getStripePublishableKey(client: RocketRideClient | undefin
 		const info = await RocketRideClient.getServerInfo(uri, 5000);
 		const key = info.stripePublishableKey ?? '';
 		keyCache.set(uri, key);
-		return key;
+		return { key, probed: true };
 	} catch (error) {
 		// Probe failure (server down / no probe support) — do not cache, a
 		// later attempt may succeed once the server is reachable again.
 		console.log(`[stripe-key] probe failed for ${uri}: ${error}`);
-		return '';
+		return { key: '', probed: false };
 	}
 }

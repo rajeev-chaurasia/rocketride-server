@@ -26,6 +26,7 @@
 
 import { useEffect, useState } from 'react';
 import { getVsCodeApi } from './useMessaging';
+import type { StripeKeyUnavailableReason } from '../../types/checkoutTypes';
 
 // =============================================================================
 // CONSTANTS
@@ -41,16 +42,27 @@ const BASE_RETRY_MS = 1000;
 // HOOK
 // =============================================================================
 
+/** What useStripeKey resolves to: the key plus, while it is empty, the host's
+ *  reason — so the consuming UI can explain the gap instead of rendering a
+ *  silently dead Subscribe. */
+export interface StripeKeyState {
+	/** The server's publishable key, or '' while loading / unavailable. */
+	key: string;
+	/** Why `key` is empty — mirrors the host's last reply. Undefined while
+	 *  loading, once a key resolves, or when the hook is disabled. */
+	reason?: StripeKeyUnavailableReason;
+}
+
 /**
  * Fetch the connected server's Stripe publishable key from the extension host.
  *
  * @param enabled - Skip the request entirely when false (e.g. a CloudPanel
  *                  rendered without checkout callbacks never mounts a modal).
- * @returns The server's publishable key, or '' while loading / when the
- *          server has no billing configured / when disabled.
+ * @returns The key state: `key` is '' while loading / when the server has no
+ *          billing configured / when disabled, with `reason` saying why.
  */
-export function useStripeKey(enabled = true): string {
-	const [key, setKey] = useState('');
+export function useStripeKey(enabled = true): StripeKeyState {
+	const [state, setState] = useState<StripeKeyState>({ key: '' });
 
 	useEffect(() => {
 		if (!enabled) return;
@@ -75,7 +87,7 @@ export function useStripeKey(enabled = true): string {
 
 		// Listen before asking so a fast host reply cannot be missed.
 		const onHostMessage = (event: MessageEvent): void => {
-			const message = event.data as { type?: string; key?: string; reason?: string; isConnected?: boolean; requestId?: number } | undefined;
+			const message = event.data as { type?: string; key?: string; reason?: StripeKeyUnavailableReason; isConnected?: boolean; requestId?: number } | undefined;
 			if (!message) return;
 
 			if (message.type === 'checkout:stripeKey') {
@@ -86,11 +98,22 @@ export function useStripeKey(enabled = true): string {
 				if (message.key) {
 					settled = true;
 					if (retryTimer) clearTimeout(retryTimer);
-					setKey(message.key);
+					setState({ key: message.key });
 					return;
 				}
-				// Empty key (no connection / probe failed) — retry with backoff
-				// until the budget runs out; a connection change refills it.
+				// The server answered and has no billing — terminal, retrying
+				// cannot change it (the OSS/standalone case). Settle empty so
+				// the panel stops asking, and keep the reason for the UI.
+				if (message.reason === 'no-billing') {
+					settled = true;
+					if (retryTimer) clearTimeout(retryTimer);
+				}
+				// Surface the reason (skip the render when nothing changed —
+				// each retry answers with the same empty state).
+				setState((prev) => (prev.key === '' && prev.reason === message.reason ? prev : { key: '', reason: message.reason }));
+				// Transient empty (no connection / probe failed) — retry with
+				// backoff until the budget runs out; a connection change
+				// refills it.
 				if (!settled && attempt < MAX_EMPTY_RETRIES) {
 					const delay = BASE_RETRY_MS * 2 ** attempt;
 					attempt += 1;
@@ -109,7 +132,9 @@ export function useStripeKey(enabled = true): string {
 				settled = false;
 				attempt = 0;
 				if (retryTimer) clearTimeout(retryTimer);
-				setKey('');
+				// A new server means both the key AND the reason are unknown
+				// again — clear them together and re-ask.
+				setState({ key: '' });
 				request();
 			}
 		};
@@ -121,5 +146,5 @@ export function useStripeKey(enabled = true): string {
 		};
 	}, [enabled]);
 
-	return key;
+	return state;
 }

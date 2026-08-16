@@ -32,6 +32,7 @@ import { DeploymentRecordPanel, TeamDeploymentRecordPanel } from 'shared/compone
 import type { DeploySnapshot } from 'shared/components/deploy-panel';
 import { useMessaging } from '../hooks/useMessaging';
 import { useStripeKey } from '../hooks/useStripeKey';
+import { CheckoutUnavailableNotice } from '../components';
 import type { ProjectHostToWebview, ProjectWebviewToHost } from '../../types/projectTypes';
 import type { DeployTeamRefDTO, TeamDeploymentRowDTO, DeploymentLoadPayload, SchedulePreviewResultDTO } from '../../types/deployTypes';
 
@@ -83,7 +84,7 @@ const ProjectWebview: React.FC = () => {
 	const [showCheckout, setShowCheckout] = useState(false);
 	// Server-supplied Stripe publishable key — matches the connected server's
 	// Stripe account instead of a build-time value.
-	const stripeKey = useStripeKey();
+	const { key: stripeKey, reason: stripeKeyReason } = useStripeKey();
 	const [envKeys, setEnvKeys] = useState<string[]>([]);
 
 	// Deploy lifecycle: LIVE rows pushed by deploy:data (badges/where-live);
@@ -965,6 +966,7 @@ const ProjectWebview: React.FC = () => {
 				/>
 			)}
 			{showCheckout && stripeKey && <CheckoutModal appName="RocketRide" appDescription="Visual AI pipeline editor — run and deploy pipelines on RocketRide Cloud." stripePublishableKey={stripeKey} onFetchPlans={handleFetchPlans} onCreateCheckout={handleCreateCheckout} onConfirmPending={handleConfirmPending} onSuccess={handleCheckoutSuccess} onClose={() => setShowCheckout(false)} onActionClick={(_plan: CheckoutPlan, action: PlanAction) => sendMessageRef.current({ type: 'project:openLink', url: action.type === 'mailto' ? `mailto:${action.url}${action.subject ? `?subject=${encodeURIComponent(action.subject)}` : ''}` : action.url, browser: true })} />}
+			{showCheckout && !stripeKey && <CheckoutUnavailableNotice reason={stripeKeyReason} onClose={() => setShowCheckout(false)} />}
 		</>
 	);
 };

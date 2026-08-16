@@ -18,6 +18,7 @@ import cloudLogoLight from '../../../../../rocketride-light-icon.png';
 import { settingsStyles as S } from '../../Settings/SettingsWebview';
 import { useTheme } from '../../hooks/useTheme';
 import { useStripeKey } from '../../hooks/useStripeKey';
+import { CheckoutUnavailableNotice } from '../CheckoutUnavailableNotice';
 import { CheckoutModal } from 'shell';
 import type { CheckoutPlan } from 'shell';
 
@@ -63,7 +64,7 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 
 	// Server-supplied Stripe publishable key — only fetched when this panel
 	// can actually render a checkout (simplified/Welcome panels never do).
-	const stripeKey = useStripeKey(Boolean(onFetchPlans));
+	const { key: stripeKey, reason: stripeKeyReason } = useStripeKey(Boolean(onFetchPlans));
 
 	const handleCheckoutSuccess = useCallback(() => {
 		setShowCheckout(false);
@@ -150,6 +151,7 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 					onClose={() => setShowCheckout(false)}
 				/>
 			)}
+			{showCheckout && !stripeKey && <CheckoutUnavailableNotice reason={stripeKeyReason} onClose={() => setShowCheckout(false)} />}
 
 		</>
 	);

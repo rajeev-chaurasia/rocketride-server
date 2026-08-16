@@ -654,7 +654,7 @@ class AccountBase(ABC):
         return self._deployment_backend().iter_enabled()
 
     # =========================================================================
-    # DAP COMMAND DISPATCH — SaaS overrides all three
+    # DAP COMMAND DISPATCH — SaaS overrides all of these
     # =========================================================================
 
     async def handle_account(self, conn, request):
@@ -671,6 +671,33 @@ class AccountBase(ABC):
         """
         raise NotImplementedError('Account management requires SaaS mode')
 
+    async def handle_saas(self, conn, request):
+        """
+        Dispatch an ``rrext_saas`` platform-admin DAP command.
+
+        OSS raises NotImplementedError — the uniform edition signal, not the
+        bare AttributeError a missing method would leak. The SaaS
+        implementation delegates to ``saas_handler.handle()``.
+
+        Args:
+            conn:    ``TaskConn`` instance.
+            request: Raw DAP request dict.
+        """
+        raise NotImplementedError('SaaS administration requires SaaS mode')
+
+    async def handle_billing_rates(self, conn, request):
+        """
+        Dispatch an ``rrext_billing_rates`` DAP command (deprecated surface).
+
+        OSS raises NotImplementedError — there is no billing backend
+        standalone. The SaaS implementation overrides this method.
+
+        Args:
+            conn:    ``TaskConn`` instance.
+            request: Raw DAP request dict.
+        """
+        raise NotImplementedError('Billing rates require SaaS mode')
+
     async def handle_app(self, conn, request):
         """
         Dispatch an app-family DAP command to the app/marketplace handler.
@@ -678,10 +705,12 @@ class AccountBase(ABC):
         The ``rrext_app`` marketplace surface (browse/install/admin/pricing)
         requires SaaS — OSS raises NotImplementedError. ``rrext_deploy_app`` is
         app deploy control on the shared deployments registry and works on both
-        editions, with two subcommands special on OSS: ``register_dev`` (the
+        editions, with three subcommands special on OSS: ``register_dev`` (the
         per-user dev overlay — platform infrastructure so local app development
-        works without SaaS) and the ``developer_*`` verbs (developer-account /
-        Stripe registration — SaaS only). The SaaS implementation overrides this
+        works without SaaS), ``developer_status`` (answered from the session's
+        org — OSS carries the fixed ``rocketride`` namespace), and the
+        remaining ``developer_*`` verbs (developer-account / Stripe
+        registration — SaaS only). The SaaS implementation overrides this
         method entirely and delegates to ``app_handler.handle()``.
 
         Args:
@@ -696,6 +725,21 @@ class AccountBase(ABC):
                 from ai.account.dev_overlay import handle_register_dev
 
                 return await handle_register_dev(conn, request)
+            # Namespace status is readable on both editions — the session
+            # already carries the org's developerId ('rocketride' on OSS), so
+            # the App Builder's DEPLOY page can render without a SaaS lookup.
+            # Same body shape as the SaaS handler; OSS has no Stripe Connect.
+            if sub == 'developer_status':
+                org = getattr(conn._account_info, 'organization', None)
+                dev = org.get('developerId') if isinstance(org, dict) else getattr(org, 'developerId', None)
+                return conn.build_response(
+                    request,
+                    body={
+                        'developerId': dev,
+                        'stripeAccountId': None,
+                        'stripeAccountStatus': 'none',
+                    },
+                )
             # Developer-account / Stripe registration is SaaS-only.
             if sub.startswith('developer_'):
                 raise NotImplementedError('Developer registration requires SaaS mode')

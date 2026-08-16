@@ -26,12 +26,15 @@ import { useAuthUser } from '../hooks/useAuthUser';
  * Cloud-UI EnvironmentView wrapper.
  *
  * Fetches env data via the RocketRide client and delegates all rendering
- * to the shared EnvironmentView. Shell-UI always has a single SaaS
- * connection, so a single slot is passed.
+ * to the shared EnvironmentView. Shell-UI always has a single connection,
+ * so a single slot is passed; the slot's `isSaas` comes from the server's
+ * capabilities so an OSS server gets the flat single-card layout instead
+ * of org/team scope cards its account backend would reject.
  */
 const EnvironmentProvider: React.FC = () => {
 	const { client, isConnected } = useShellConnection();
 	const authUser = useAuthUser();
+	const isSaas = (authUser?.capabilities ?? []).includes('saas');
 
 	// ── Error state ─────────────────────────────────────────────────────
 	const [error, setError] = useState<string | null>(null);
@@ -61,7 +64,7 @@ const EnvironmentProvider: React.FC = () => {
 			id: 'default',
 			label: 'Environment',
 			isConnected,
-			isSaas: true,
+			isSaas,
 			isOrgAdmin,
 			isTeamAdmin,
 			orgId,
