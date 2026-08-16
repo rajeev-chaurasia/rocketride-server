@@ -204,3 +204,26 @@ test('a symlink to an in-workspace dir is still packed (containment allows it)',
 	// file packs at the link's path.
 	assert.deepEqual(zipPaths(root, ['apps/foo-ui']), ['apps/foo-ui/linked-shared/lib.ts', 'apps/foo-ui/package.json']);
 });
+
+test('a symlink target that is also a separate pack root packs under both paths', (t) => {
+	const root = workspace({
+		'apps/foo-ui/package.json': '{}',
+		'shared/lib.ts': 'x',
+	});
+	const link = path.join(root, 'apps', 'foo-ui', 'linked-shared');
+	try {
+		fs.symlinkSync(path.join(root, 'shared'), link, 'dir');
+	} catch (err) {
+		t.skip(`symlinks unavailable: ${err instanceof Error ? err.message : String(err)}`);
+		return;
+	}
+	// `shared` is reached through the link (as apps/foo-ui/linked-shared/…) AND
+	// named as its own root. A shared realpath cycle-guard would drop the
+	// second walk and lose shared/lib.ts; the per-root guard keeps both zip
+	// paths (cross-root dedup is by zip path, not real path).
+	assert.deepEqual(zipPaths(root, ['apps/foo-ui', 'shared']), [
+		'apps/foo-ui/linked-shared/lib.ts',
+		'apps/foo-ui/package.json',
+		'shared/lib.ts',
+	]);
+});

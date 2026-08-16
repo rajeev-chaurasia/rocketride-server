@@ -279,7 +279,6 @@ function walkDir(absDir: string, relDir: string, containRoot: string, matchers: 
  */
 export function collectPackedFiles(workspaceRoot: string, packRoots: string[]): PackedFile[] {
 	const out = new Map<string, PackedFile>();
-	const visited = new Set<string>();
 	const baseline: ScopedMatcher = { baseRel: '', matcher: ignore().add(BASELINE_PATTERNS), hard: true };
 
 	// Canonicalize the workspace root once so symlink containment compares
@@ -309,6 +308,13 @@ export function collectPackedFiles(workspaceRoot: string, packRoots: string[]): 
 			// set keeps filtering the root's contents
 			const candidates = [baseline, ...ancestorMatchersOf(workspaceRoot, rootRel)];
 			const active = rootRel === '' ? candidates : candidates.filter((m) => !isIgnored(rootRel, true, [m]));
+			// PER-ROOT cycle guard: `visited` breaks symlink LOOPS within one
+			// walk. Sharing it across roots would wrongly drop a real directory
+			// reached under two different zip paths (e.g. `shared` packed both
+			// through an in-workspace symlink from one root AND as its own
+			// explicit root). Cross-root dedup is by zip path via `out`, not by
+			// real path — so each top-level root gets a fresh visited set.
+			const visited = new Set<string>();
 			walkDir(abs, rootRel, containRoot, active, visited, out);
 		} else if (stat.isFile()) {
 			if (!out.has(rootRel)) out.set(rootRel, { zipPath: rootRel, absPath: abs });

@@ -43,13 +43,13 @@ double-spawned.
 
 The webview drives all app lifecycle actions through one correlated message:
 
-```
+```text
 { type: 'appdev:call', id, appId, method, args?: unknown[] }
 ```
 
 The host replies on the same `id`:
 
-```
+```text
 { type: 'appdev:result', id, ok: true,  value }   // success
 { type: 'appdev:result', id, ok: false, error }   // failure (error is a string)
 ```
