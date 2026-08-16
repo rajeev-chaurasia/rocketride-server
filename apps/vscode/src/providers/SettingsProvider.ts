@@ -40,6 +40,7 @@ import { AgentManager } from '../agents/agent-manager';
 import { DeployManager } from '../connection/deploy-manager';
 import { ConnectionMessageHandler } from './shared/connection-message-handler';
 import { getStripePublishableKey } from './shared/stripe-key';
+import type { StripeKeyUnavailableReason } from './types/checkoutTypes';
 import { isSubscribed } from '../shared/util/subscriptionGate';
 import { PIPE_BUILDER_APP_ID } from '../shared/types';
 
@@ -216,9 +217,13 @@ export class SettingsProvider {
 
 					case 'checkout:getStripeKey': {
 						// Server-supplied publishable key (cached per URI) so the
-						// CheckoutModal mounts Stripe for THIS server's account.
-						const key = await getStripePublishableKey(getConnectionManager()?.getClient());
-						panel.webview.postMessage({ type: 'checkout:stripeKey', key });
+						// CheckoutModal mounts Stripe for THIS server's account. An
+						// empty key carries a reason (no connection vs a failed
+						// probe) so the webview can explain the gap.
+						const client = getConnectionManager()?.getClient();
+						const key = await getStripePublishableKey(client);
+						const reason: StripeKeyUnavailableReason | undefined = key ? undefined : client ? 'probe-failed' : 'no-connection';
+						panel.webview.postMessage({ type: 'checkout:stripeKey', key, ...(reason ? { reason } : {}) });
 						break;
 					}
 

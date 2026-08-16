@@ -196,8 +196,12 @@ const DeploymentProvider: React.FC<IDeploymentProviderProps> = ({ teamId: rawTea
 		client.addMonitor({ token: '*' }, ['deploy']).catch((err) => console.error('[DeploymentProvider] deploy monitor failed:', err));
 
 		const unsub = ConnectionManager.getInstance().on('shell:event', ({ event }: { event: any }) => {
+			// Event bodies carry the RAW owner key: the server resolves '@me' to
+			// 'user~{uid}' and stamps that on every downstream record and event,
+			// so match on rawTeamId, not the '@me' alias used to ADDRESS the
+			// server (a personal record's runs/feed would never match otherwise).
 			if (event?.event === 'apaevt_task' && event.body) {
-				const folded = foldDeployRunState(event.body, runningSourcesRef.current, teamId, projectId);
+				const folded = foldDeployRunState(event.body, runningSourcesRef.current, rawTeamId, projectId);
 				if (folded) {
 					runningSourcesRef.current = folded;
 					setRunningSources(folded);
@@ -206,11 +210,11 @@ const DeploymentProvider: React.FC<IDeploymentProviderProps> = ({ teamId: rawTea
 				const b = event.body as { projectId?: string; teamId?: string; action?: string };
 				// Publishes are org-wide (version picker); everything else is
 				// this team's record.
-				if (b.projectId === projectId && (b.teamId === teamId || b.action === 'publish')) void fetchAll();
+				if (b.projectId === projectId && (b.teamId === rawTeamId || b.action === 'publish')) void fetchAll();
 			}
 
 			// The record's live feed: this team's stamped deploy-run events.
-			if (isTeamLiveEvent(event, projectId, teamId)) {
+			if (isTeamLiveEvent(event, projectId, rawTeamId)) {
 				setLiveEvents((prev) => {
 					const next = [...prev, event as TaskEventMessage];
 					return next.length > LIVE_EVENTS_MAX ? next.slice(next.length - LIVE_EVENTS_KEEP) : next;
@@ -223,7 +227,7 @@ const DeploymentProvider: React.FC<IDeploymentProviderProps> = ({ teamId: rawTea
 			client.removeMonitor({ projectId, source: '*', teamId }, ['task']).catch(() => {});
 			client.removeMonitor({ token: '*' }, ['deploy']).catch(() => {});
 		};
-	}, [client, isConnected, projectId, teamId, fetchAll]);
+	}, [client, isConnected, projectId, teamId, rawTeamId, fetchAll]);
 
 	// Clear stale live state on reconnect (the resubscribe re-seeds it).
 	useEffect(() => {

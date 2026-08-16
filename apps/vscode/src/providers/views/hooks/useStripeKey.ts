@@ -13,16 +13,29 @@
  * unauthenticated server probe (ServerInfoResult.stripePublishableKey) and
  * caches it per URI (see providers/shared/stripe-key.ts).
  *
- * Call it from the component that renders a CheckoutModal. It posts one
- * `checkout:getStripeKey` request and returns the `checkout:stripeKey` reply,
- * '' until it arrives (consumers already gate checkout UI on a non-empty
- * key). Uses the auxiliary-bridge pattern (own window listener +
+ * Call it from the component that renders a CheckoutModal. It requests
+ * `checkout:getStripeKey` and returns the `checkout:stripeKey` reply, ''
+ * until it arrives (consumers already gate checkout UI on a non-empty key).
+ * A panel can mount before the server connection lands, so an empty reply is
+ * retried with bounded backoff and re-requested the moment a connection
+ * arrives — otherwise key==='' would strand checkout for the panel's whole
+ * lifetime. Uses the auxiliary-bridge pattern (own window listener +
  * getVsCodeApi) so it composes with the webview's main useMessaging without
  * re-running the view:ready handshake.
  */
 
 import { useEffect, useState } from 'react';
 import { getVsCodeApi } from './useMessaging';
+
+// =============================================================================
+// CONSTANTS
+// =============================================================================
+
+/** Bounded backoff for an empty reply — a transient probe failure (the server
+ *  not reachable yet) must not strand checkout, but the retries must not spin
+ *  forever either. A landed connection refills this budget. */
+const MAX_EMPTY_RETRIES = 5;
+const BASE_RETRY_MS = 1000;
 
 // =============================================================================
 // HOOK
@@ -42,16 +55,56 @@ export function useStripeKey(enabled = true): string {
 	useEffect(() => {
 		if (!enabled) return;
 
+		// Once a non-empty key resolves it never changes for a server — settle
+		// and stop asking. Until then an empty reply schedules a bounded backoff
+		// retry, and a landed connection re-asks immediately (the first request
+		// commonly races ahead of the server connection).
+		let settled = false;
+		let attempt = 0;
+		let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+		const request = (): void => {
+			getVsCodeApi()?.postMessage({ type: 'checkout:getStripeKey' });
+		};
+
 		// Listen before asking so a fast host reply cannot be missed.
 		const onHostMessage = (event: MessageEvent): void => {
-			const message = event.data as { type?: string; key?: string } | undefined;
-			if (message?.type === 'checkout:stripeKey') {
-				setKey(message.key ?? '');
+			const message = event.data as { type?: string; key?: string; reason?: string; isConnected?: boolean } | undefined;
+			if (!message) return;
+
+			if (message.type === 'checkout:stripeKey') {
+				// A real key settles the hook for good.
+				if (message.key) {
+					settled = true;
+					if (retryTimer) clearTimeout(retryTimer);
+					setKey(message.key);
+					return;
+				}
+				// Empty key (no connection / probe failed) — retry with backoff
+				// until the budget runs out; a connection change refills it.
+				if (!settled && attempt < MAX_EMPTY_RETRIES) {
+					const delay = BASE_RETRY_MS * 2 ** attempt;
+					attempt += 1;
+					retryTimer = setTimeout(request, delay);
+				}
+				return;
+			}
+
+			// A connection landing is the strongest re-request signal: a panel
+			// that mounted before the server connection would otherwise keep
+			// key==='' for its whole lifetime.
+			if (message.type === 'shell:connectionChange' && message.isConnected && !settled) {
+				attempt = 0;
+				if (retryTimer) clearTimeout(retryTimer);
+				request();
 			}
 		};
 		window.addEventListener('message', onHostMessage);
-		getVsCodeApi()?.postMessage({ type: 'checkout:getStripeKey' });
-		return () => window.removeEventListener('message', onHostMessage);
+		request();
+		return () => {
+			window.removeEventListener('message', onHostMessage);
+			if (retryTimer) clearTimeout(retryTimer);
+		};
 	}, [enabled]);
 
 	return key;

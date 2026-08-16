@@ -32,6 +32,19 @@ import { collectPackedFiles } from './packFilter';
 import { getLogger } from '../shared/util/output';
 
 // =============================================================================
+// LIMITS
+// =============================================================================
+
+/**
+ * Ceiling on the UNCOMPRESSED source the deploy zip may carry. The archive is
+ * built entirely in the extension host's memory (AdmZip buffers + toBuffer +
+ * a Uint8Array copy), so an unbounded tree OOMs the host and kills every
+ * RocketRide surface. A deploy packs source only — a few hundred MB is far
+ * beyond any legitimate app plus its declared includes.
+ */
+const MAX_PACK_BYTES = 512 * 1024 * 1024;
+
+// =============================================================================
 // INCLUDE VALIDATION
 // =============================================================================
 
@@ -50,6 +63,7 @@ import { getLogger } from '../shared/util/output';
  * @throws Error on a malformed or missing entry.
  */
 function readIncludeEntries(appFolder: string, workspaceRoot: string): string[] {
+	const logger = getLogger();
 	// step: read the CURRENT package.json — the include list must reflect
 	// what is on disk at deploy time, not a cached scan
 	let pkg: { appManifest?: { include?: unknown } };
@@ -69,21 +83,21 @@ function readIncludeEntries(appFolder: string, workspaceRoot: string): string[] 
 		// step: normalize separators, strip a trailing slash
 		const entry = item.replace(/\\/g, '/').replace(/\/+$/, '');
 		if (!entry) {
-			console.log('[appdev:pack]   check include "" — FAILED: empty entry');
+			logger.output('[appdev:pack]   check include "" — FAILED: empty entry');
 			throw new Error('appManifest.include contains an empty entry.');
 		}
 		// step: workspace-relative means RELATIVE — no absolute paths, no
 		// drive letters, and no `..` escapes
 		if (entry.startsWith('/') || entry.includes(':') || entry.split('/').includes('..') || entry.split('/').includes('.')) {
-			console.log(`[appdev:pack]   check include "${item}" — FAILED: not a plain workspace-relative path`);
+			logger.output(`[appdev:pack]   check include "${item}" — FAILED: not a plain workspace-relative path`);
 			throw new Error(`appManifest.include entry "${item}" must be a plain workspace-relative path (no absolute paths, drive letters, "." or "..").`);
 		}
 		const abs = path.join(workspaceRoot, entry);
 		if (!fs.existsSync(abs)) {
-			console.log(`[appdev:pack]   check include "${entry}" — FAILED: does not exist in the workspace`);
+			logger.output(`[appdev:pack]   check include "${entry}" — FAILED: does not exist in the workspace`);
 			throw new Error(`appManifest.include entry "${entry}" does not exist in the workspace.`);
 		}
-		console.log(`[appdev:pack]   check include "${entry}" — OK (${fs.statSync(abs).isDirectory() ? 'directory' : 'file'})`);
+		logger.output(`[appdev:pack]   check include "${entry}" — OK (${fs.statSync(abs).isDirectory() ? 'directory' : 'file'})`);
 		entries.push(entry);
 	}
 	return entries;
@@ -103,37 +117,37 @@ function readIncludeEntries(appFolder: string, workspaceRoot: string): string[] 
  */
 export async function deployApp(appId: string, message: string): Promise<Record<string, unknown>> {
 	const logger = getLogger();
-	console.log(`[appdev:pack] deploy ${appId} — pre-pack checks:`);
+	logger.output(`[appdev:pack] deploy ${appId} — pre-pack checks:`);
 	const apps = await scanWorkspaceApps();
 	const app = apps.find((a) => a.id === appId);
 	if (!app) {
-		console.log(`[appdev:pack]   check bound folder — FAILED: no bound folder for ${appId}`);
+		logger.output(`[appdev:pack]   check bound folder — FAILED: no bound folder for ${appId}`);
 		throw new Error(`App "${appId}" has no bound folder in this workspace.`);
 	}
-	console.log(`[appdev:pack]   check bound folder — OK (${app.folder})`);
+	logger.output(`[appdev:pack]   check bound folder — OK (${app.folder})`);
 
 	const client = ConnectionManager.getInstance().getClient();
 	if (!client || !ConnectionManager.getInstance().isConnected()) {
-		console.log('[appdev:pack]   check server connection — FAILED: not connected');
+		logger.output('[appdev:pack]   check server connection — FAILED: not connected');
 		throw new Error('Not connected — publishing needs a live server connection.');
 	}
-	console.log('[appdev:pack]   check server connection — OK');
+	logger.output('[appdev:pack]   check server connection — OK');
 
 	// ── Workspace anchoring: the zip is rooted at the app's workspace ────
 	// folder, so include entries and the app pack at their real positions.
 	const wsFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(app.folder));
 	if (!wsFolder) {
-		console.log('[appdev:pack]   check workspace anchoring — FAILED: app folder outside every workspace folder');
+		logger.output('[appdev:pack]   check workspace anchoring — FAILED: app folder outside every workspace folder');
 		throw new Error(`App folder "${app.folder}" is not inside an open workspace folder.`);
 	}
 	const workspaceRoot = wsFolder.uri.fsPath;
 	const appRoot = path.relative(workspaceRoot, app.folder).replace(/\\/g, '/');
 	if (appRoot.startsWith('..')) {
-		console.log(`[appdev:pack]   check appRoot — FAILED: "${appRoot}" escapes the workspace`);
+		logger.output(`[appdev:pack]   check appRoot — FAILED: "${appRoot}" escapes the workspace`);
 		throw new Error(`App folder "${app.folder}" escapes its workspace folder.`);
 	}
-	console.log(`[appdev:pack]   check workspace anchoring — OK (root ${workspaceRoot})`);
-	console.log(`[appdev:pack]   check appRoot — OK (${appRoot || '(workspace root — legacy layout)'})`);
+	logger.output(`[appdev:pack]   check workspace anchoring — OK (root ${workspaceRoot})`);
+	logger.output(`[appdev:pack]   check appRoot — OK (${appRoot || '(workspace root — legacy layout)'})`);
 
 	// ── Include entries: extra workspace paths the server build needs ────
 	// appRoot === '' is the app-folder-as-workspace case: there is no
@@ -141,7 +155,7 @@ export async function deployApp(appId: string, message: string): Promise<Record<
 	// app-at-root layout (no appRoot metadata).
 	const include = readIncludeEntries(app.folder, workspaceRoot);
 	if (appRoot === '' && include.length > 0) {
-		console.log('[appdev:pack]   check include layout — FAILED: include declared but the workspace folder IS the app folder');
+		logger.output('[appdev:pack]   check include layout — FAILED: include declared but the workspace folder IS the app folder');
 		throw new Error('appManifest.include needs the app inside a larger workspace — the workspace folder IS the app folder here.');
 	}
 
@@ -149,7 +163,7 @@ export async function deployApp(appId: string, message: string): Promise<Record<
 	// Ensured BEFORE packing so a first-time deploy's freshly stamped
 	// package.json is inside the zip, not just on disk.
 	const projectId = await ensureProjectId(app.folder);
-	console.log(`[appdev:pack]   check projectId — OK (${projectId})`);
+	logger.output(`[appdev:pack]   check projectId — OK (${projectId})`);
 
 	// ── Pack the workspace-relative tree ─────────────────────────────────
 	// The app folder (package.json carrying the FULL appManifest — the
@@ -160,17 +174,27 @@ export async function deployApp(appId: string, message: string): Promise<Record<
 	// for its own build; client output is never uploaded).
 	logger.output(`[appdev] packing source: ${appId} (appRoot=${appRoot || '.'}${include.length ? `, include=${include.join(',')}` : ''})`);
 	const files = collectPackedFiles(workspaceRoot, [appRoot, ...include]);
-	console.log(`[appdev:pack] files to pack (${files.length}):`);
+	logger.output(`[appdev:pack] files to pack (${files.length}):`);
 	const zip = new AdmZip();
 	let totalBytes = 0;
 	for (const file of files) {
 		const bytes = fs.readFileSync(file.absPath);
-		zip.addFile(file.zipPath, bytes);
 		totalBytes += bytes.length;
-		console.log(`[appdev:pack]   + ${file.zipPath} (${bytes.length} bytes)`);
+		// Bound the pack BEFORE building the archive: AdmZip retains every
+		// buffer, zip.toBuffer() materializes the archive, and Uint8Array
+		// copies it again (~2-3x peak RSS). An over-broad appManifest.include
+		// (a shared source root, a stray build tree) would OOM the extension
+		// host and take down every RocketRide surface with no actionable
+		// error, so fail loudly on the source total instead.
+		if (totalBytes > MAX_PACK_BYTES) {
+			logger.output(`[appdev:pack] pack ABORTED — source exceeds ${Math.round(MAX_PACK_BYTES / (1024 * 1024))} MB`);
+			throw new Error(`Deploy package source exceeds ${Math.round(MAX_PACK_BYTES / (1024 * 1024))} MB — check appManifest.include for an over-broad entry (a shared source root, a build output, or a dependency tree) and narrow it.`);
+		}
+		zip.addFile(file.zipPath, bytes);
+		logger.output(`[appdev:pack]   + ${file.zipPath} (${bytes.length} bytes)`);
 	}
 	const data = new Uint8Array(zip.toBuffer());
-	console.log(`[appdev:pack] pack complete — all checks passed; ${files.length} files, ${totalBytes} bytes source, ${data.byteLength} bytes zipped`);
+	logger.output(`[appdev:pack] pack complete — all checks passed; ${files.length} files, ${totalBytes} bytes source, ${data.byteLength} bytes zipped`);
 	logger.output(`[appdev] packed ${files.length} files (${data.byteLength} bytes)`);
 
 	// ── The ONE rail door (deploy = copy code to the server) ─────────────

@@ -256,19 +256,19 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									// DEPLOYMENT private -> submit (review state lives on the
 									// deployment; admin approval to 'ready' gates @public).
 									if (!client) throw new Error('Not connected');
-									value = await client.submitApp(appId, Number(callArgs?.[0]));
+									value = await client.submitApp(appId, this.requireRegistryVersion(callArgs?.[0]));
 									break;
 								}
 								case 'publish': {
 									// PUBLISH = bind a version to an audience (@me/@team/@public).
 									if (!client) throw new Error('Not connected');
-									value = await client.publishApp(appId, Number(callArgs?.[0]), String(callArgs?.[1] ?? ''));
+									value = await client.publishApp(appId, this.requireRegistryVersion(callArgs?.[0]), String(callArgs?.[1] ?? ''));
 									break;
 								}
 								case 'withdraw': {
 									// Cancel a pending review (submit -> private).
 									if (!client) throw new Error('Not connected');
-									value = await client.withdrawApp(appId, Number(callArgs?.[0]));
+									value = await client.withdrawApp(appId, this.requireRegistryVersion(callArgs?.[0]));
 									break;
 								}
 								case 'unpublish': {
@@ -324,14 +324,11 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									checks.push(scanned.name ? { id: 'name', state: 'pass', label: 'Display name', note: scanned.name } : { id: 'name', state: 'fail', label: 'Display name', note: 'appManifest.name is required.' });
 									checks.push(scanned.description ? { id: 'desc', state: 'pass', label: 'Description' } : { id: 'desc', state: 'warn', label: 'Description', note: 'No description — recommended for the store listing.' });
 									checks.push(scanned.icon ? { id: 'icon', state: 'pass', label: 'Icon' } : { id: 'icon', state: 'warn', label: 'Icon', note: 'No icon declared — the store shows a generic glyph.' });
-									let built = false;
-									try {
-										await vscode.workspace.fs.stat(vscode.Uri.file(`${scanned.folder}/dist`));
-										built = true;
-									} catch {
-										built = false;
-									}
-									checks.push(built ? { id: 'build', state: 'pass', label: 'Built bundle', note: 'dist/ present' } : { id: 'build', state: 'fail', label: 'Built bundle', note: 'Build the app first — dist/ not found.' });
+									// No dist/ check: deployment packs SOURCE (packFilter's
+									// BASELINE_PATTERNS excludes dist/ unconditionally) and the
+									// server builds the client bundle itself, so a local build
+									// is never read or uploaded — failing on a missing dist/
+									// would block a submission the deploy would have accepted.
 									value = checks;
 									break;
 								}
@@ -466,6 +463,27 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 */
 	public notifyConsoleAll(level: 'log' | 'warn' | 'error', text: string): void {
 		for (const appId of this.panels.keys()) this.notifyConsole(appId, level, text);
+	}
+
+	// =========================================================================
+	// BRIDGE HELPERS
+	// =========================================================================
+
+	/**
+	 * Parses a registry version argument from a bridge call, rejecting anything
+	 * that is not a finite integer. A missing / non-numeric arg would otherwise
+	 * become NaN and serialize to null over JSON — silently changing deployment
+	 * state against an unspecified version.
+	 *
+	 * @param arg - The raw bridge argument (callArgs[0]).
+	 * @returns The validated integer registry version.
+	 */
+	private requireRegistryVersion(arg: unknown): number {
+		const version = Number(arg);
+		if (!Number.isInteger(version)) {
+			throw new Error(`Invalid registry version: ${JSON.stringify(arg)}`);
+		}
+		return version;
 	}
 
 	// =========================================================================

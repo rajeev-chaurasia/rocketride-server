@@ -230,15 +230,18 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		// package.json churn is enormous and never a binding).
 		const watcherMarker = vscode.workspace.createFileSystemWatcher('**/*.rrapp');
 		const watcherPkg = vscode.workspace.createFileSystemWatcher('**/package.json');
-		const onBindingEvent = (uri: vscode.Uri): void => {
-			if (uri.fsPath.includes('node_modules')) return;
-			// Debounced: installs and branch switches touch many binding
-			// files at once — one rescan after the burst settles.
+		// Debounced: installs and branch switches touch many binding files at
+		// once — one rescan after the burst settles.
+		const scheduleRescan = (): void => {
 			if (this.rescanTimer) clearTimeout(this.rescanTimer);
 			this.rescanTimer = setTimeout(() => {
 				this.rescanTimer = undefined;
 				void this.rescanApps();
 			}, 500);
+		};
+		const onBindingEvent = (uri: vscode.Uri): void => {
+			if (uri.fsPath.includes('node_modules')) return;
+			scheduleRescan();
 		};
 		this.disposables.push(
 			watcherMarker,
@@ -249,6 +252,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 			watcherPkg.onDidCreate(onBindingEvent),
 			watcherPkg.onDidDelete(onBindingEvent),
 			watcherPkg.onDidChange(onBindingEvent),
+			// Adding/removing a workspace folder fires no binding-file event, but
+			// scanWorkspaceApps only searches the CURRENT folder set — rescan so
+			// MY APPS never goes stale against a changed workspace.
+			vscode.workspace.onDidChangeWorkspaceFolders(() => scheduleRescan()),
 			{
 				dispose: () => { if (this.rescanTimer) clearTimeout(this.rescanTimer); },
 			}

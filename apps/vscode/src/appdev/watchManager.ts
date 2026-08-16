@@ -56,6 +56,12 @@ interface WatchSession {
 	/** Deferred-teardown timer while the session LINGERS after its panel
 	    closed; a reopen inside the window cancels it and revives. */
 	lingerTimer?: NodeJS.Timeout;
+	/** Identifies the CURRENT linger. The deferred teardown carries the token
+	    it was scheduled with and only fires when the app's live session still
+	    bears it — a revive clears it, and a replacement session (an exit +
+	    fresh start) never inherits it, so an already-expired linger can never
+	    tear down a session the user just reopened. */
+	lingerToken?: number;
 }
 
 // =============================================================================
@@ -98,6 +104,8 @@ export class WatchManager {
 	 */
 	private install: { gen: number; promise: Promise<boolean> } | null = null;
 	private installGen = 0;
+	/** Monotonic source of linger tokens (see WatchSession.lingerToken). */
+	private lingerSeq = 0;
 	private connectionManager = ConnectionManager.getInstance();
 	private logger = getLogger();
 
@@ -231,6 +239,9 @@ export class WatchManager {
 			if (existing.lingerTimer) {
 				clearTimeout(existing.lingerTimer);
 				existing.lingerTimer = undefined;
+				// Drop the token so an already-fired linger's queued teardown
+				// (which captured the old token) no longer matches this session.
+				existing.lingerToken = undefined;
 				this.logger.output(`[appdev] revived lingering dev server for ${app.id}`);
 				this.console(app.id, 'log', 'reopened within the linger window — reusing the running dev server');
 				this.notify(app.id, { state: 'ok', target: existing.devOrigin?.replace(/^https?:\/\//, '') });
@@ -364,10 +375,15 @@ export class WatchManager {
 			// schedule the real teardown. A reopen inside the window cancels
 			// it (doStart's revive path) and reuses the live server.
 			if (session.lingerTimer) return; // already lingering
+			// Stamp this linger with a token; the deferred teardown captures it
+			// and only tears down while the live session still bears the same
+			// token (guards a session the user reopened after the timer fired).
+			const token = ++this.lingerSeq;
+			session.lingerToken = token;
 			this.logger.output(`[appdev] ${appId}: panel closed — dev server lingers ${WatchManager.LINGER_MS / 1000}s for a fast reopen`);
 			session.lingerTimer = setTimeout(() => {
 				session.lingerTimer = undefined;
-				void this.enqueue(appId, () => this.doStop(appId, true));
+				void this.enqueue(appId, () => this.doLingerExpiry(appId, token));
 			}, WatchManager.LINGER_MS);
 			return;
 		}
@@ -376,6 +392,7 @@ export class WatchManager {
 			clearTimeout(session.lingerTimer);
 			session.lingerTimer = undefined;
 		}
+		session.lingerToken = undefined;
 		this.rejectReadiness(appId, 'watch stopped');
 		this.sessions.delete(appId);
 		if (session.reloadTimer) clearTimeout(session.reloadTimer);
@@ -432,6 +449,24 @@ export class WatchManager {
 			}
 		} catch { /* engine gone — the overlay's disconnect expiry covers it */ }
 		this.notify(appId, { state: 'idle' });
+	}
+
+	/**
+	 * The deferred teardown a lingering stop schedules, gated on its token.
+	 *
+	 * It only proceeds when the app's CURRENT session is still the one that
+	 * scheduled this linger (same token). A revive clears the token, and a
+	 * replacement session — the previous server exiting on its own, then a
+	 * fresh start racing behind this already-fired timer — never inherits it,
+	 * so a stale linger cannot tear down a session the user just reopened.
+	 *
+	 * @param appId - The app whose linger is expiring.
+	 * @param token - The token stamped when this linger was scheduled.
+	 */
+	private async doLingerExpiry(appId: string, token: number): Promise<void> {
+		const session = this.sessions.get(appId);
+		if (!session || session.lingerToken !== token) return;
+		await this.doStop(appId, true);
 	}
 
 	/**
@@ -611,10 +646,25 @@ export class WatchManager {
 					'if ($procIds.Count -gt 0) { Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $procIds -contains $_.OwningProcess } | ForEach-Object { "$($_.OwningProcess) $($_.LocalPort)" } }';
 				const probe = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
 				let out = '';
+				let done = false;
+				const settle = (value: string): void => {
+					if (done) return;
+					done = true;
+					clearTimeout(timer);
+					resolve(value);
+				};
 				probe.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
-				probe.on('exit', () => resolve(out));
-				probe.on('error', () => resolve(''));
-				setTimeout(() => resolve(out), 5000);
+				probe.on('exit', () => settle(out));
+				probe.on('error', () => settle(''));
+				// A wedged probe keeps powershell.exe alive with its pipes open
+				// and its data handler appending to `out` after we settle;
+				// discovery runs every burst, so leaked probes accumulate. Kill
+				// the child and detach its handlers before settling.
+				const timer = setTimeout(() => {
+					probe.stdout?.removeAllListeners('data');
+					try { probe.kill('SIGKILL'); } catch { /* already gone */ }
+					settle(out);
+				}, 5000);
 			});
 		}
 		return new Promise<string>((resolve) => {
@@ -627,10 +677,25 @@ export class WatchManager {
 				"awk '/^p/{pid=substr($0,2)} /^n/{n=$0; sub(/^n.*:/, \"\", n); print pid, n}'; fi";
 			const probe = spawn('/bin/sh', ['-c', script]);
 			let out = '';
+			let done = false;
+			const settle = (value: string): void => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				resolve(value);
+			};
 			probe.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
-			probe.on('exit', () => resolve(out));
-			probe.on('error', () => resolve(''));
-			setTimeout(() => resolve(out), 5000);
+			probe.on('exit', () => settle(out));
+			probe.on('error', () => settle(''));
+			// A wedged ps/lsof pipeline keeps /bin/sh alive with its pipes open
+			// and its data handler appending to `out` after we settle;
+			// discovery runs every burst, so leaked probes accumulate. Kill the
+			// child and detach its handlers before settling.
+			const timer = setTimeout(() => {
+				probe.stdout?.removeAllListeners('data');
+				try { probe.kill('SIGKILL'); } catch { /* already gone */ }
+				settle(out);
+			}, 5000);
 		});
 	}
 
@@ -724,7 +789,11 @@ export class WatchManager {
 		// backoff between attempts gives the OS time to release the handle.
 		const MAX_ATTEMPTS = 3;
 		let result = await this.spawnInstallOnce(workspaceRoot);
-		for (let attempt = 1; !result.ok && attempt < MAX_ATTEMPTS && isTransientLockError(result.output); attempt++) {
+		// A terminal failure (a timeout or a spawn error carries failureReason)
+		// is NEVER retried — retrying a timed-out install could start a second
+		// pnpm on the shared root while the first tree is still dying, even if
+		// its accumulated output happens to carry a transient-lock signature.
+		for (let attempt = 1; !result.ok && !result.failureReason && attempt < MAX_ATTEMPTS && isTransientLockError(result.output); attempt++) {
 			const note = `pnpm install hit a transient Windows file lock — retrying (attempt ${attempt + 1}/${MAX_ATTEMPTS})`;
 			this.logger.output(`[appdev] ${note}`);
 			this.appScreen.notifyConsoleAll('warn', note);
@@ -795,14 +864,29 @@ export class WatchManager {
 			// tree, same approach as stop(). A timeout is terminal, not a
 			// transient lock, so it carries its own non-retriable reason.
 			const timer = setTimeout(() => {
-				try {
+				// Claim the settle synchronously so the tree-kill's own 'close'
+				// (a non-zero exit, no failureReason) cannot win the race and
+				// leave the outcome retriable.
+				if (settled) return;
+				settled = true;
+				// AWAIT the tree-kill before resolving: returning while the old
+				// pnpm tree is still dying would let a chained install (a newer
+				// generation) start a SECOND pnpm on the shared root — exactly
+				// the store-corrupting overlap this module forbids.
+				void (async () => {
 					if (process.platform === 'win32' && proc.pid) {
-						spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F']);
+						await new Promise<void>((res) => {
+							const killer = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F']);
+							killer.on('exit', () => res());
+							killer.on('error', () => res());
+							// Never hang the install on a wedged taskkill.
+							setTimeout(res, 3000);
+						});
 					} else {
-						proc.kill('SIGKILL');
+						try { proc.kill('SIGKILL'); } catch { /* already gone */ }
 					}
-				} catch { /* already gone */ }
-				finish({ ok: false, output, code: null, failureReason: 'pnpm install timed out after 10 minutes' });
+					resolve({ ok: false, output, code: null, failureReason: 'pnpm install timed out after 10 minutes' });
+				})();
 			}, 10 * 60 * 1000);
 			// 'close' (not 'exit'): stdio is flushed first, so extractInstallCause
 			// reads the COMPLETE output — aligns with publish.ts and runRootInstall.

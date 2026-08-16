@@ -338,11 +338,13 @@ export function extractInstallCause(output: string, code: number | null): string
  * @returns True when the failure is a retriable transient lock.
  */
 export function isTransientLockError(output: string): boolean {
-	// Both halves must hold: the errno AND a filesystem op it aborted — an
-	// unrelated line merely containing "EPERM" in prose does not qualify.
-	const errno = /\b(EPERM|EBUSY|ENOTEMPTY)\b/.test(output);
-	const fsOp = /(rename|unlink|operation not permitted|resource busy|directory not empty)/i.test(output);
-	return errno && fsOp;
+	// Both halves must hold ON THE SAME LINE: the errno AND a filesystem op it
+	// aborted. pnpm mentions "rename" in ordinary progress, so an EPERM sitting
+	// on an unrelated line must not pair with it — a genuine transient lock
+	// prints the errno and the aborted op together on one line.
+	const errno = /\b(EPERM|EBUSY|ENOTEMPTY)\b/;
+	const fsOp = /(rename|unlink|operation not permitted|resource busy|directory not empty)/i;
+	return output.split(/\r?\n/).some((line) => errno.test(line) && fsOp.test(line));
 }
 
 /**

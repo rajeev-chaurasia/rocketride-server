@@ -582,6 +582,11 @@ export const DeployPanel: React.FC<IDeployPanelProps> = ({ fetchLifecycle, deplo
 													e.stopPropagation();
 													setRemoveTeam({ teamId: dep.teamId, teamName: dep.teamName });
 												}}
+												// Enter/Space on the button also bubble a keydown to
+												// the buttonized header (which activates on those
+												// keys); stop it so removing never also opens the
+												// deployment record.
+												onKeyDown={(e) => e.stopPropagation()}
 											>
 												Remove
 											</button>

@@ -31,6 +31,7 @@ import { resolveDeployTeams, mapVersionCards, mapHistoryRows, mapTeamDeploymentR
 import type { DeploymentWebviewToHost, DeploymentLoadPayload } from './types/deployTypes';
 import type { LogSessionWebviewToHost } from './types/logTypes';
 import { getStripePublishableKey } from './shared/stripe-key';
+import type { StripeKeyUnavailableReason } from './types/checkoutTypes';
 
 // =============================================================================
 // CONSTANTS
@@ -752,9 +753,13 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				// Checkout flow — bridge billing SDK calls for the CheckoutModal
 				case 'checkout:getStripeKey': {
 					// Server-supplied publishable key (cached per URI) so the
-					// CheckoutModal mounts Stripe for THIS server's account.
-					const key = await getStripePublishableKey(this.connectionManager.getClient());
-					webview.postMessage({ type: 'checkout:stripeKey', key });
+					// CheckoutModal mounts Stripe for THIS server's account. An
+					// empty key carries a reason (no connection vs a failed probe)
+					// so the webview can explain the gap.
+					const client = this.connectionManager.getClient();
+					const key = await getStripePublishableKey(client);
+					const reason: StripeKeyUnavailableReason | undefined = key ? undefined : client ? 'probe-failed' : 'no-connection';
+					webview.postMessage({ type: 'checkout:stripeKey', key, ...(reason ? { reason } : {}) });
 					break;
 				}
 
@@ -1055,7 +1060,10 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				// team-scoped task monitor's events trigger the webview's
 				// re-fetches instead of an interval.
 				await this.ensureDeployTaskMonitor(teamId, projectId);
-				await this.fetchAndPushDeployment(webview, teamId, projectId, message.sourceId);
+				// Echo message.teamId (the RAW row id the drawer opened with) on the
+				// pushes so its stale-record guard matches — teamId here is the
+				// translated wire id used only for the fetch.
+				await this.fetchAndPushDeployment(webview, teamId, projectId, message.sourceId, message.teamId);
 				break;
 			}
 
@@ -1201,11 +1209,21 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 	 * versions → preview of the FOCUSED source's schedule → running scan.
 	 *
 	 * @param webview - The project panel's webview.
-	 * @param teamId - The deployment's team.
+	 * @param teamId - The WIRE team id the API calls address ('@me' for the
+	 *                 caller's own space).
 	 * @param projectId - The deployed project.
 	 * @param sourceId - The focused source (the record identity).
+	 * @param echoTeamId - The RAW id the webview opened the drawer with
+	 *                     (mapTeamDeploymentRows emits `dep.teamId`, e.g.
+	 *                     `user~{uid}`); stamped on the pushes so the drawer's
+	 *                     stale-record guard matches. Defaults to `teamId`.
 	 */
-	private async fetchAndPushDeployment(webview: vscode.Webview, teamId: string, projectId: string, sourceId?: string): Promise<void> {
+	private async fetchAndPushDeployment(webview: vscode.Webview, teamId: string, projectId: string, sourceId?: string, echoTeamId?: string): Promise<void> {
+		// The API calls address the WIRE id, but every push must carry the exact
+		// value the webview opened with: a personal deployment opens keyed on the
+		// raw 'user~{uid}' row id while the wire id is '@me', so stamping the wire
+		// id would make the drawer reject its own load and spin forever.
+		const recordTeamId = echoTeamId ?? teamId;
 		try {
 			const client = this.requireDeployClient();
 
@@ -1292,12 +1310,12 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				canControl: teams.find((t) => t.id === teamId)?.canControl ?? false,
 				isConnected: this.connectionManager.isConnected(),
 			};
-			webview.postMessage({ type: 'deployment:load', teamId, ...payload });
+			webview.postMessage({ type: 'deployment:load', teamId: recordTeamId, ...payload });
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
 			// Stamp the addressed record (team + optional source) so the
 			// webview can drop errors from a stale fetch after switching.
-			webview.postMessage({ type: 'deployment:error', teamId, ...(sourceId ? { sourceId } : {}), error: msg });
+			webview.postMessage({ type: 'deployment:error', teamId: recordTeamId, ...(sourceId ? { sourceId } : {}), error: msg });
 		}
 	}
 

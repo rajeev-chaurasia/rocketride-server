@@ -312,11 +312,13 @@ export const PlanPanel: React.FC<IPlanPanelProps> = ({ open, plan, appName, onSa
 		}
 	};
 
-	/** One labelled field cell. */
+	/** One labelled field cell. The label is a plain `<div>`, so the control
+	 * carries no accessible name on its own — push the label text down as an
+	 * `aria-label` so a screen reader announces each input/select by its label. */
 	const field = (label: string, node: React.ReactNode, full = false, hint?: string): React.ReactNode => (
 		<div style={full ? S.fieldFull : undefined}>
 			<div style={S.fieldLabel}>{label}</div>
-			{node}
+			{React.isValidElement(node) ? React.cloneElement(node as React.ReactElement<{ 'aria-label'?: string }>, { 'aria-label': label }) : node}
 			{hint ? <div style={S.fieldHint}>{hint}</div> : null}
 		</div>
 	);
