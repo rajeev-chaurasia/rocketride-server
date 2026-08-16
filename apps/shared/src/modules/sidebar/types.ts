@@ -101,7 +101,9 @@ export interface AppListItem {
  * pre-App-Builder hosts) render exactly as before.
  */
 export interface AppBuilderSidebar {
-	/** Merged MY APPS list (workspace scan ∪ server list_mine, by id). */
+	/** MY APPS list built from the workspace scan ALONE — one row per
+	 *  `.rrapp`-bound working copy on disk. The server catalog is deliberately
+	 *  not merged in: the sidebar lists what you can open and edit locally. */
 	apps: AppListItem[];
 	/** The app whose App Builder screen is open/focused, if any. */
 	activeAppId?: string;

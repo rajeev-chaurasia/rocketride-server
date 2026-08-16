@@ -777,7 +777,13 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 						<div style={styles.versionHint}>No other versions available</div>
 					)}
 					{versionRows !== null && versionRows.map((row) => {
-						const isCurrent = row.appVersion === (override?.appVersion ?? app.version);
+						// Match on the registry version (the wire identity), never
+						// the display semver — two registry records can share one
+						// appVersion, which would light both rows as current. With no
+						// session override the manifest exposes only the semver (no
+						// registry version), so the default resolution can't be pinned
+						// to a specific row: mark nothing current rather than guess.
+						const isCurrent = override != null && override.version === row.registryVersion;
 						return (
 							<button
 								key={row.registryVersion}

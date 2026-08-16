@@ -147,3 +147,83 @@ test("'' packs the workspace root itself (app-as-workspace)", () => {
 	});
 	assert.deepEqual(zipPaths(root, ['']), ['package.json', 'src/App.tsx']);
 });
+
+test('a nested negation re-includes a file an ancestor ignored (deepest wins)', () => {
+	const root = workspace({
+		'.gitignore': '*.log\n',
+		'apps/foo-ui/.gitignore': '!keep.log\n',
+		'apps/foo-ui/package.json': '{}',
+		'apps/foo-ui/keep.log': 'x',
+		'apps/foo-ui/drop.log': 'x',
+	});
+	// The root *.log ignores every log; foo-ui's deeper !keep.log wins for
+	// keep.log (git precedence is deepest-wins), while drop.log stays excluded.
+	assert.deepEqual(zipPaths(root, ['apps/foo-ui']), ['apps/foo-ui/.gitignore', 'apps/foo-ui/keep.log', 'apps/foo-ui/package.json']);
+});
+
+test('a negation cannot re-include a baseline (node_modules) exclude', () => {
+	const root = workspace({
+		'apps/foo-ui/.gitignore': '!node_modules\n',
+		'apps/foo-ui/package.json': '{}',
+		'apps/foo-ui/node_modules/react/index.js': 'x',
+	});
+	// The baseline is a hard floor — no user negation revives node_modules.
+	assert.deepEqual(zipPaths(root, ['apps/foo-ui']), ['apps/foo-ui/.gitignore', 'apps/foo-ui/package.json']);
+});
+
+test('a symlink whose target escapes the workspace is not packed', (t) => {
+	// An outside tree carrying a secret, and a workspace that links into it.
+	const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'packfilter-outside-'));
+	fs.writeFileSync(path.join(outside, 'secret.txt'), 'credentials');
+	const root = workspace({ 'apps/foo-ui/package.json': '{}' });
+	const link = path.join(root, 'apps', 'foo-ui', 'vendor');
+	try {
+		fs.symlinkSync(outside, link, 'dir');
+	} catch (err) {
+		// Windows without the symlink-creation privilege — nothing to assert.
+		t.skip(`symlinks unavailable: ${err instanceof Error ? err.message : String(err)}`);
+		return;
+	}
+	// vendor/ resolves outside the workspace, so its files never enter the zip.
+	assert.deepEqual(zipPaths(root, ['apps/foo-ui']), ['apps/foo-ui/package.json']);
+});
+
+test('a symlink to an in-workspace dir is still packed (containment allows it)', (t) => {
+	const root = workspace({
+		'apps/foo-ui/package.json': '{}',
+		'shared/lib.ts': 'x',
+	});
+	const link = path.join(root, 'apps', 'foo-ui', 'linked-shared');
+	try {
+		fs.symlinkSync(path.join(root, 'shared'), link, 'dir');
+	} catch (err) {
+		t.skip(`symlinks unavailable: ${err instanceof Error ? err.message : String(err)}`);
+		return;
+	}
+	// The link's real target is inside the workspace, so it is walked and its
+	// file packs at the link's path.
+	assert.deepEqual(zipPaths(root, ['apps/foo-ui']), ['apps/foo-ui/linked-shared/lib.ts', 'apps/foo-ui/package.json']);
+});
+
+test('a symlink target that is also a separate pack root packs under both paths', (t) => {
+	const root = workspace({
+		'apps/foo-ui/package.json': '{}',
+		'shared/lib.ts': 'x',
+	});
+	const link = path.join(root, 'apps', 'foo-ui', 'linked-shared');
+	try {
+		fs.symlinkSync(path.join(root, 'shared'), link, 'dir');
+	} catch (err) {
+		t.skip(`symlinks unavailable: ${err instanceof Error ? err.message : String(err)}`);
+		return;
+	}
+	// `shared` is reached through the link (as apps/foo-ui/linked-shared/…) AND
+	// named as its own root. A shared realpath cycle-guard would drop the
+	// second walk and lose shared/lib.ts; the per-root guard keeps both zip
+	// paths (cross-root dedup is by zip path, not real path).
+	assert.deepEqual(zipPaths(root, ['apps/foo-ui', 'shared']), [
+		'apps/foo-ui/linked-shared/lib.ts',
+		'apps/foo-ui/package.json',
+		'shared/lib.ts',
+	]);
+});

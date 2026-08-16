@@ -44,6 +44,12 @@ from ai.account.store import Store, StorageError
 from ai.account.store_providers.filesystem import FilesystemStore
 
 
+# One signing key for the env var, the encode, and the decode. Three copies
+# of the literal could drift, and a mismatched decode key fails as an opaque
+# 401 instead of a clear error.
+_SIGNING_KEY = 'test-signing-key-of-32-bytes-min!'
+
+
 # ============================================================================
 # Fixtures + account stubs
 # ============================================================================
@@ -640,12 +646,12 @@ class TestSignedFetchUrls:
         import jwt
 
         token = url.split('token=', 1)[1]
-        return jwt.decode(token, 'test-signing-key-of-32-bytes-min!', algorithms=['HS256'])
+        return jwt.decode(token, _SIGNING_KEY, algorithms=['HS256'])
 
     @pytest.fixture(autouse=True)
     def _signing_env(self, monkeypatch):
         """The env get_url's local-JWT branch requires."""
-        monkeypatch.setenv('RR_SIGNING_KEY', 'test-signing-key-of-32-bytes-min!')
+        monkeypatch.setenv('RR_SIGNING_KEY', _SIGNING_KEY)
         monkeypatch.setenv('RR_BASE_URL', 'http://localhost:5565')
 
     @pytest.mark.asyncio
@@ -723,9 +729,7 @@ class TestSignedFetchUrls:
 
         from ai.modules.task.fetch import handle_fetch
 
-        token = jwt.encode(
-            {**claim, 'exp': int(time.time()) + 600}, 'test-signing-key-of-32-bytes-min!', algorithm='HS256'
-        )
+        token = jwt.encode({**claim, 'exp': int(time.time()) + 600}, _SIGNING_KEY, algorithm='HS256')
         request = SimpleNamespace(query_params={'token': token})  # handle_fetch reads only query_params
 
         response = await handle_fetch(request)

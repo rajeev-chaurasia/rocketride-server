@@ -38,7 +38,7 @@
  * seam. Live is not a separate mode: it is the position pinned to now.
  */
 
-import type { RocketRideClient } from './client.js';
+import type { MonitorKey, RocketRideClient } from './client.js';
 import type {
 	LogChaptersResult,
 	LogEvent,
@@ -165,17 +165,27 @@ export class LogEventStream {
 		// caller's own run, with runKind selecting dev vs the personal @me
 		// deploy continuum. Best-effort — a session opened before connect
 		// simply streams from disk until reconnect.
-		void this.client
-			.addMonitor(
-				{
-					projectId: stream.projectId,
-					source: stream.source,
-					...(stream.teamId ? { teamId: stream.teamId } : {}),
-					...(!stream.teamId && stream.runKind === 'deploy' ? { runKind: stream.runKind } : {}),
-				},
-				['all'],
-			)
-			.catch(() => undefined);
+		void this.client.addMonitor(this.monitorScope(), ['all']).catch(() => undefined);
+	}
+
+	/**
+	 * The monitor key for this stream's scope. Registration (constructor) and
+	 * deregistration (closeEventStream) MUST subscribe the IDENTICAL key —
+	 * the server ref-counts by it — so both build it here and can never drift.
+	 * The scope rides the key: a team stream keys the team's run; a teamless
+	 * stream the caller's own run, with runKind selecting dev vs the personal
+	 * @me deploy continuum (dev is the default, so only 'deploy' rides).
+	 *
+	 * @returns The MonitorKey for addMonitor/removeMonitor.
+	 */
+	private monitorScope(): MonitorKey {
+		const { projectId, source, teamId, runKind } = this.stream;
+		return {
+			projectId,
+			source,
+			...(teamId ? { teamId } : {}),
+			...(!teamId && runKind === 'deploy' ? { runKind } : {}),
+		};
 	}
 
 	// =========================================================================
@@ -491,18 +501,9 @@ export class LogEventStream {
 	/** Dispose the session (stops playback, clears caches). */
 	closeEventStream(): void {
 		// Release this session's monitor registration (refcounted) — the key
-		// must match the constructor's registration exactly, scope included.
-		void this.client
-			.removeMonitor(
-				{
-					projectId: this.stream.projectId,
-					source: this.stream.source,
-					...(this.stream.teamId ? { teamId: this.stream.teamId } : {}),
-					...(!this.stream.teamId && this.stream.runKind === 'deploy' ? { runKind: this.stream.runKind } : {}),
-				},
-				['all'],
-			)
-			.catch(() => undefined);
+		// must match the constructor's registration exactly, scope included,
+		// so both go through monitorScope().
+		void this.client.removeMonitor(this.monitorScope(), ['all']).catch(() => undefined);
 		this.playing = false;
 		this.stopTimer();
 		this.cache.clear();

@@ -360,14 +360,11 @@ class DeployCommands(_DeployBase):
         await self._notify_deploy_changed(org_id, '', project_id, 'add')
         if args.get('deployTo'):
             # One-step add+deploy — same checks as rrext_deploy_pipe deploy,
-            # including the pointer-time billing stamp.
-            team_id = str(args['deployTo'])
-            if team_id == '@me':
-                if not self._account_info.userId:
-                    raise PermissionError('Personal (@me) deployments require an authenticated user')
-                team_id = f'user~{self._account_info.userId}'
-            else:
-                self.verify_team_permission(team_id, 'task.control')
+            # including the pointer-time billing stamp. _require_team owns the
+            # @me resolution and the task.control check; reusing it keeps the
+            # one authorization rule in a single place (it reads teamId off the
+            # args mapping it is handed).
+            team_id = self._require_team({'teamId': str(args['deployTo'])}, 'task.control')
             billing_team = self._billing_team_of(team_id)
             dep = await account.deployments_deploy(
                 org_id, team_id, project_id, entry['version'], self._actor(), billing_team

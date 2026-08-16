@@ -35,6 +35,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { Banner } from 'shell';
 import { Button } from 'shell';
 import { Card } from 'shell';
 import { EmptyState } from 'shell';
@@ -42,7 +43,7 @@ import { InputField } from 'shell';
 import { StatusBadge } from 'shell';
 import { commonStyles } from 'shell';
 import { PlanPanel } from './PlanPanel';
-import type { AppSummary, BillingPlan, IAppBuilderHost, ListingDraft, PreflightCheck, ReviewTimelineItem } from './types';
+import type { AppSummary, AppVersionInfo, BillingPlan, IAppBuilderHost, ListingDraft, PreflightCheck, ReviewTimelineItem } from './types';
 
 // =============================================================================
 // TYPES
@@ -176,6 +177,9 @@ const styles: Record<string, React.CSSProperties> = {
 	actionNote: {
 		fontSize: 11.5,
 		color: 'var(--rr-text-disabled)',
+	},
+	submitMsg: {
+		marginTop: 10,
 	},
 	checkRow: {
 		display: 'flex',
@@ -317,17 +321,23 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 	const [draft, setDraft] = useState<ListingDraft | null>(null);
 	const [checks, setChecks] = useState<PreflightCheck[]>([]);
 	const [history, setHistory] = useState<ReviewTimelineItem[]>([]);
+	const [versions, setVersions] = useState<AppVersionInfo[]>([]);
 	const [saving, setSaving] = useState(false);
 	const [submitting, setSubmitting] = useState(false);
+	// In-view feedback for a submit that can't proceed (e.g. nothing to submit
+	// because the newest version is not a draft) — a silent console log leaves
+	// the button re-enabled with no explanation.
+	const [submitMsg, setSubmitMsg] = useState('');
 
-	/** Initial load: listing draft, pre-flight results, review history. */
+	/** Initial load: listing draft, pre-flight results, review history, rail. */
 	const refresh = useCallback(async (): Promise<void> => {
 		try {
-			const [d, c, h] = await Promise.all([host.loadListing?.() ?? Promise.resolve(null), host.runPreflight?.() ?? Promise.resolve([]), host.loadReviewHistory?.() ?? Promise.resolve([])]);
+			const [d, c, h, v] = await Promise.all([host.loadListing?.() ?? Promise.resolve(null), host.runPreflight?.() ?? Promise.resolve([]), host.loadReviewHistory?.() ?? Promise.resolve([]), host.listVersions?.() ?? Promise.resolve([])]);
 			// Seed an empty draft from the app facts when no record exists yet
 			setDraft(d ?? { appId: app.id, mode: 'free', name: app.name, description: app.description ?? '', plans: [] });
 			setChecks(c);
 			setHistory(h);
+			setVersions(v);
 		} catch (e) {
 			console.log('[appdev] store refresh failed:', e);
 		}
@@ -371,14 +381,21 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 	const onSubmit = useCallback(async (): Promise<void> => {
 		if (!host.submitForReview) return;
 		setSubmitting(true);
+		setSubmitMsg('');
 		try {
 			const rail = (await host.listVersions?.()) ?? [];
+			// Keep the rendered rail (and thus the button label) in step with
+			// what this click actually resolved.
+			setVersions(rail);
 			// Latest-only review, matching the server rule: only the NEWEST
 			// non-'failed' version may enter the queue — review tracks current
 			// work; older code that should ship is deployed again.
 			const newest = rail.find((v) => v.state !== 'failed');
 			if (!newest || newest.state !== 'private') {
-				console.log('[appdev] store submit: the newest version is not a draft — deploy first');
+				// Tell the user why nothing happened: they must deploy a new
+				// version (which lands as a private draft) before it can be
+				// submitted for public review.
+				setSubmitMsg('The newest version is not a draft. Deploy a new version first, then submit it for review.');
 				return;
 			}
 			await host.submitForReview(newest.registryVersion);
@@ -404,6 +421,10 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 	}
 
 	const canSubmit = checks.length > 0 && !checks.some((c) => c.state === 'fail');
+	// The version a submit would address: the newest non-'failed' rail row.
+	// Its registry int is the wire identity actually submitted — the button
+	// labels by it, not by the working copy's repeatable display semver.
+	const submitNewest = versions.find((v) => v.state !== 'failed');
 
 	return (
 		<div style={styles.wrap}>
@@ -503,12 +524,19 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 									</div>
 								))}
 								{host.submitForReview && !readOnly && (
-									<div style={styles.actions}>
-										<Button onClick={() => void onSubmit()} disabled={submitting || !canSubmit}>
-											{submitting ? 'Submitting…' : `Submit ${app.version ? `v${app.version} ` : ''}for Review`}
-										</Button>
-										<span style={styles.actionNote}>every public version is reviewed; a push event delivers the decision.</span>
-									</div>
+									<>
+										<div style={styles.actions}>
+											<Button onClick={() => void onSubmit()} disabled={submitting || !canSubmit}>
+												{submitting ? 'Submitting…' : `Submit ${submitNewest ? `v${submitNewest.registryVersion} ` : ''}for Review`}
+											</Button>
+											<span style={styles.actionNote}>every public version is reviewed; a push event delivers the decision.</span>
+										</div>
+										{submitMsg ? (
+											<div style={styles.submitMsg}>
+												<Banner variant="warning">{submitMsg}</Banner>
+											</div>
+										) : null}
+									</>
 								)}
 							</>
 						)}

@@ -14,6 +14,11 @@
 
 import type { AppPrice } from 'rocketride';
 
+/** Why a `checkout:stripeKey` reply carries no key — lets the webview explain
+ *  the empty state (and the hook decide whether a retry can help) instead of a
+ *  silently dead Subscribe click. Absent whenever `key` is non-empty. */
+export type StripeKeyUnavailableReason = 'no-connection' | 'probe-failed';
+
 /** Checkout replies from the host. */
 export type CheckoutResultHostToWebview =
 	| { type: 'checkout:plansResult'; plans: AppPrice[]; error: string | null }
@@ -22,14 +27,19 @@ export type CheckoutResultHostToWebview =
 	| { type: 'checkout:sessionResult'; clientSecret: string | null; subscriptionId: string; status?: string; error: string | null }
 	| { type: 'checkout:confirmResult'; error: string | null }
 	// Stripe publishable key of the server the host's billing client is
-	// connected to ('' when unavailable). Answered from the cached probe;
-	// consumed by useStripeKey, not the webviews' main message switches.
-	| { type: 'checkout:stripeKey'; key: string };
+	// connected to ('' when unavailable, with `reason` explaining why).
+	// Answered from the cached probe; consumed by useStripeKey, not the
+	// webviews' main message switches. `requestId` echoes the request it
+	// answers so the hook can drop a stale reply from a previous server
+	// (a pre-switch reply that lands after a re-request).
+	| { type: 'checkout:stripeKey'; key: string; requestId: number; reason?: StripeKeyUnavailableReason };
 
 /** Checkout requests from the webview. */
 export type CheckoutRequestWebviewToHost =
 	| { type: 'checkout:fetchPlans' }
 	| { type: 'checkout:createSession'; priceId: string; promotionCode?: string }
 	| { type: 'checkout:confirmPending'; subscriptionId: string; priceId: string }
-	// Sent by useStripeKey on mount wherever a CheckoutModal can render.
-	| { type: 'checkout:getStripeKey' };
+	// Sent by useStripeKey on mount (and on every re-request) wherever a
+	// CheckoutModal can render. `requestId` is echoed in the reply so a stale
+	// answer from a previous server can be ignored.
+	| { type: 'checkout:getStripeKey'; requestId: number };

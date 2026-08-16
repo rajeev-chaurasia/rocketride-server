@@ -49,16 +49,12 @@ async function main() {
 	let apps: AppManifestEntry[] = [];
 	let stripePublishableKey = '';
 	try {
-		console.log('[bootstrap] probing server', serverUri, 'via getServerInfo…');
 		const info = await RocketRideClient.getServerInfo(serverUri);
-		console.log('[bootstrap] RAW probe response:', JSON.stringify(info));
-		console.log('[bootstrap] probe apps count =', (info.apps ?? []).length, 'ids =', (info.apps ?? []).map((a: { id?: string }) => a.id), 'capabilities =', info.capabilities);
 		capabilities = info.capabilities ?? [];
 		apps = registerAndMapApps(info.apps ?? []);
 		// Stripe publishable key comes from the server (not baked at build
 		// time) so one bundle works against test- and live-keyed servers.
 		stripePublishableKey = info.stripePublishableKey ?? '';
-		console.log('[bootstrap] after registerAndMapApps → apps count =', apps.length, 'ids =', apps.map((a) => a.id));
 	} catch (err) {
 		console.error('[bootstrap] Server probe failed:', err);
 		// Shell will render with no apps — user can retry after server is up

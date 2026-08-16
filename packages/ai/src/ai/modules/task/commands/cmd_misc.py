@@ -54,7 +54,7 @@ from ai.common.list_rows import paginate_rows
 from ai.account.models import resolve_run_permissions
 from ..pipeline import resolve_implied_source, resolve_pipeline_env
 from .. import services_catalog
-from .cmd_monitor import owner_key
+from .cmd_monitor import owner_key, owner_wildcard_key
 
 # Only import for type checking to avoid circular import errors
 if TYPE_CHECKING:
@@ -489,7 +489,7 @@ class MiscCommands(DAPConn):
             # Monitor keys are owner-scoped — build from the control's owner
             # (once per control; they do not vary per connection).
             project_key = owner_key(control.run_kind, control.owner_id, control.project_id, control.source)
-            project_wildcard_key = f'p.{control.run_kind}.{control.owner_id}.{control.project_id}.*'
+            project_wildcard_key = owner_wildcard_key(control.run_kind, control.owner_id, control.project_id)
             pipe_prefix = f'{project_key}.'
             for cid, conn in conn_items:
                 if not hasattr(conn, '_monitors'):
@@ -672,21 +672,19 @@ class MiscCommands(DAPConn):
         if not key.startswith('p.'):
             return 'Task monitor'
 
-        # Strip the 'p.' prefix and split: ownerId, projectId, source, [pipeId]
-        # (keys are owner-scoped: p.{teamId|userId}.{projectId}.{source})
+        # Strip the 'p.' prefix and split the owner-scoped key layout
+        # p.{runKind}.{ownerId}.{projectId}.{source} — the leading runKind
+        # segment (added with @me run identity) shifts every field right by
+        # one, so projectId is parts[2] and source parts[3], NOT parts[1]/[2].
         parts = key[2:].split('.', 3)
-        if len(parts) < 2:
+        if len(parts) < 3:
             return 'Task monitor'
-        project_id = parts[1]
+        project_id = parts[2]
         project_label = project_names.get(project_id, project_id[:8])
 
-        if len(parts) == 2 or (len(parts) == 3 and parts[2] == '*'):
+        if len(parts) == 3 or parts[3] == '*':
             return f'{project_label}.*'
 
-        source = parts[2]
+        source = parts[3]
         source_label = source_names.get(f'{project_id}.{source}', source)
-
-        if len(parts) == 4:
-            return f'{project_label}.{source_label}.pipe{parts[3]}'
-
         return f'{project_label}.{source_label}'

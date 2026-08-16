@@ -153,6 +153,35 @@ class TaskScheduler:
         """
         return self._is_previous_run_active((team_id, project_id, source_id))
 
+    def try_reserve_run(self, team_id: str, project_id: str, source_id: str) -> bool:
+        """Atomically claim the overlap slot for a manual run; False if taken.
+
+        The manual path used to check ``is_run_active`` and only register the
+        token AFTER several awaits (artifact read, task start). Two concurrent
+        run-now requests for one source both passed the check and both started,
+        corrupting the shared team storage anchor. This does the check AND the
+        reservation with NO await between (asyncio is single-threaded, so this
+        is atomic), planting the same ``_DISPATCHING`` marker the cron tick
+        uses. The caller MUST release_run() if the start then fails, and
+        register_manual_run() overwrites the marker with the real token on
+        success.
+        """
+        key = (team_id, project_id, source_id)
+        if self._is_previous_run_active(key):
+            return False
+        self._active_tokens[key] = _DISPATCHING
+        return True
+
+    def release_run(self, team_id: str, project_id: str, source_id: str) -> None:
+        """Drop a reservation planted by try_reserve_run when the start fails.
+
+        Only clears the placeholder; a slot already overwritten with a real
+        run token (register_manual_run) is left intact.
+        """
+        key = (team_id, project_id, source_id)
+        if self._active_tokens.get(key) == _DISPATCHING:
+            self._active_tokens.pop(key, None)
+
     def register_manual_run(self, team_id: str, project_id: str, source_id: str, token: str) -> None:
         """Record a manually-dispatched run under the overlap guard.
 

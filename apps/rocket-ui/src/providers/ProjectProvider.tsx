@@ -305,9 +305,16 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 	 *
 	 * @param saveFilename - The file path to save to.
 	 * @param project      - The pipeline configuration to save.
+	 * @param opts         - When `rethrow` is set, a save failure re-throws
+	 *   after surfacing the error. The save-and-publish path relies on this:
+	 *   DeployPanel awaits the save before publishing, so a swallowed failure
+	 *   would let a failed local save still publish the in-memory pipeline and
+	 *   report success. Re-throwing rejects the awaited promise and aborts the
+	 *   publish. The plain save path leaves it unset (fire-and-forget callers
+	 *   must not see an unhandled rejection).
 	 */
 	const performSave = useCallback(
-		async (saveFilename: string, project: PipelineConfig) => {
+		async (saveFilename: string, project: PipelineConfig, opts?: { rethrow?: boolean }) => {
 			if (!client || !isConnected) return;
 			try {
 				await saveProject(client, saveFilename, project);
@@ -319,6 +326,9 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 				// Surface the failure — a silent catch leaves the user believing
 				// the document was saved.
 				setPipelineError(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
+				// The publish path must abort when the save fails: re-throw so
+				// the awaiting caller's promise rejects instead of resolving.
+				if (opts?.rethrow) throw err;
 			}
 		},
 		[client, isConnected, projectId, uri]
@@ -889,7 +899,7 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 						const docState = getDocs()?.getState();
 						return (docState ? Object.values(docState.editors).find((editor) => editor.documentUri === uri)?.label : undefined) || projectDisplayName(filename);
 					})()}
-					{...(isReadonly ? {} : { fetchDeployLifecycle, teamDeployments, deployTeams, onDeployPublish: handleDeployPublish, onDeployVersion: handleDeployVersion, onOpenDeployment: handleOpenDeployment, onDeploySetDisabled: handleDeploySetDisabled, onDeployRemove: handleDeployRemove, onDeploySetSchedule: handleDeploySetSchedule, onDeploySetSchedulePaused: handleDeploySetSchedulePaused, onDeployPreviewSchedule: handleDeployPreviewSchedule, fetchDeployArtifact: handleDeployFetchArtifact, onSaveDocument: () => performSave(filename, pipeline) })}
+					{...(isReadonly ? {} : { fetchDeployLifecycle, teamDeployments, deployTeams, onDeployPublish: handleDeployPublish, onDeployVersion: handleDeployVersion, onOpenDeployment: handleOpenDeployment, onDeploySetDisabled: handleDeploySetDisabled, onDeployRemove: handleDeployRemove, onDeploySetSchedule: handleDeploySetSchedule, onDeploySetSchedulePaused: handleDeploySetSchedulePaused, onDeployPreviewSchedule: handleDeployPreviewSchedule, fetchDeployArtifact: handleDeployFetchArtifact, onSaveDocument: () => performSave(filename, pipeline, { rethrow: true }) })}
 					servicesJson={servicesJson}
 					isConnected={isConnected}
 					isSubscribed={isSubscribed}

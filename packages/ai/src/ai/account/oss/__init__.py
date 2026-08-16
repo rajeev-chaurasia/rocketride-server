@@ -162,10 +162,24 @@ class Account(AccountBase):
         }
         try:
             for entry in await resolve_app_pins('local', 'local', ['local']):
-                apps[entry['id']] = entry
-        except Exception:
-            # A broken publish store must never block sign-in
-            pass
+                app_id = entry.get('id')
+                if not app_id:
+                    # Skip ONE malformed pin, not the whole set — entry['id']
+                    # would KeyError out of the loop and drop every pin.
+                    continue
+                # Shallow-merge onto the static entry (parity with
+                # get_apps_for_user), then re-apply the desktop decoration so a
+                # pin-only app still reaches the shell with appStatus/onDesktop
+                # — a bare replace lost static manifest fields AND shipped pins
+                # with neither field.
+                merged = {**apps.get(app_id, {}), **entry}
+                merged['appStatus'] = merged.get('appStatus', 'free')
+                merged['onDesktop'] = True
+                apps[app_id] = merged
+        except Exception as exc:
+            # A broken publish store must never block sign-in — but say so
+            # (matches get_apps_for_user; a bare pass hid every pin fault).
+            debug(f'[oss] app pin resolution failed: {exc}')
         return list(apps.values())
 
     # =========================================================================

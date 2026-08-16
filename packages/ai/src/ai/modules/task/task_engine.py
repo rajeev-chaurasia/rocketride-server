@@ -2218,12 +2218,16 @@ class Task(DAPBase):
                     self._run_kind,
                     self.stamp_log_event,
                     self.raise_log_seq_floor,
-                    # Team-owned deploys write the TEAM continuum (teams are
-                    # the environments — teammates watch/replay the same
-                    # stream); user-owned runs stay in the owner's tree. The
-                    # writer's scope helper turns this into the
-                    # '@/Team/=<id>/' store prefix.
-                    team_id=self.team_id if owner_is_team else '',
+                    # team_id is the run's real BILLING team (provenance for
+                    # the control record) for EVERY owner kind; owner_kind
+                    # decides where the logs physically live. Team-owned
+                    # deploys write the TEAM continuum (teams are the
+                    # environments — teammates watch/replay the same stream);
+                    # user-owned (@me) runs stay private in the owner's tree.
+                    # Passing team_id here for an @me run keeps its billing
+                    # provenance without leaking its logs into the team tree.
+                    team_id=self.team_id,
+                    owner_kind=self._owner_kind,
                     org_id=self.org_id,
                     debug=self.debug_message,
                 )

@@ -26,6 +26,7 @@ import type { ConnectResult, TeamDetail } from 'rocketride';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { PIPE_BUILDER_APP_ID } from '../shared/types';
 import { getStripePublishableKey } from './shared/stripe-key';
+import type { StripeKeyUnavailableReason } from './types/checkoutTypes';
 
 // =============================================================================
 // INTERFACES
@@ -50,6 +51,7 @@ interface AccountWebviewMessage {
 	subscriptionId?: string;
 	promotionCode?: string;
 	code?: string;
+	requestId?: number;
 }
 
 // =============================================================================
@@ -251,9 +253,13 @@ export class AccountProvider {
 			// -- Checkout flow (embedded Stripe Elements in the Account webview) ---
 			case 'checkout:getStripeKey': {
 				// Server-supplied publishable key (cached per URI) so the
-				// CheckoutModal mounts Stripe for THIS server's account.
-				const key = await getStripePublishableKey(this.resolveClient().client);
-				await panel.webview.postMessage({ type: 'checkout:stripeKey', key });
+				// CheckoutModal mounts Stripe for THIS server's account. When it
+				// resolves empty, say WHY (no connection vs a failed probe) so
+				// the webview can explain the gap instead of a dead Subscribe.
+				const client = this.resolveClient().client;
+				const key = await getStripePublishableKey(client);
+				const reason: StripeKeyUnavailableReason | undefined = key ? undefined : client ? 'probe-failed' : 'no-connection';
+				await panel.webview.postMessage({ type: 'checkout:stripeKey', key, requestId: message.requestId ?? 0, ...(reason ? { reason } : {}) });
 				break;
 			}
 
