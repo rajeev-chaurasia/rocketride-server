@@ -38,6 +38,17 @@ export interface CloudPanelProps {
 	idPrefix: string;
 	/** When true, hides advanced fields (used on Welcome page). */
 	simplified?: boolean;
+	/** Cloud mode: connect to the custom server instead of the default cloud. */
+	useCustomServer?: boolean;
+	/** Cloud mode: the custom server address. */
+	customUrl?: string;
+	/** The default cloud server (the setting's default, sent by the host —
+	 * this webview bakes no address). */
+	defaultCloudUrl?: string;
+	/** Toggle the custom-server opt-in. */
+	onUseCustomServerChange?: (value: boolean) => void;
+	/** Edit the custom server address. */
+	onCustomUrlChange?: (value: string) => void;
 	/**
 	 * Whether the server supports SaaS/OAuth (from probe result).
 	 * undefined = probing in progress, false = incompatible server.
@@ -58,7 +69,7 @@ export interface CloudPanelProps {
 // COMPONENT
 // =============================================================================
 
-export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUserName, onCloudSignIn, onCloudSignOut, idPrefix, isSaas, onProbeServer, isSubscribed, onFetchPlans, onCreateCheckout, onConfirmPending, onCheckoutSuccess }) => {
+export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUserName, onCloudSignIn, onCloudSignOut, idPrefix, simplified, useCustomServer, customUrl, defaultCloudUrl, onUseCustomServerChange, onCustomUrlChange, isSaas, onProbeServer, isSubscribed, onFetchPlans, onCreateCheckout, onConfirmPending, onCheckoutSuccess }) => {
 	const theme = useTheme();
 	const [showCheckout, setShowCheckout] = useState(false);
 
@@ -71,12 +82,14 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 		onCheckoutSuccess?.();
 	}, [onCheckoutSuccess]);
 
-	const cloudUrl = process.env.ROCKETRIDE_URI || '';
+	// The effective target: the user's custom server when opted in, else the
+	// default cloud from the host. Nothing is baked into this bundle.
+	const cloudUrl = (useCustomServer && customUrl) || defaultCloudUrl || '';
 
-	// Probe on mount to confirm server is SaaS.
+	// Probe on mount (and when the target changes) to confirm server is SaaS.
 	useEffect(() => {
 		if (onProbeServer && cloudUrl) onProbeServer(cloudUrl);
-	}, []); // eslint-disable-line react-hooks/exhaustive-deps
+	}, [cloudUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	return (
 		<>
@@ -84,6 +97,33 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 				<img src={theme === 'dark' ? cloudLogoLight : cloudLogoDark} alt="RocketRide Cloud" style={{ width: 48, height: 48, objectFit: 'contain', flexShrink: 0 }} />
 				<div style={S.modeConfigDesc}>Sign in with your RocketRide account to connect to the cloud.</div>
 			</div>
+
+			{/* Custom server opt-in — the address is a SETTING, never a bake. */}
+			{!simplified && onUseCustomServerChange && (
+				<div style={S.formGroup}>
+					<label htmlFor={`${idPrefix}-useCustomServer`} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+						<input
+							id={`${idPrefix}-useCustomServer`}
+							type="checkbox"
+							checked={Boolean(useCustomServer)}
+							onChange={(e) => onUseCustomServerChange(e.target.checked)}
+						/>
+						<span style={S.label}>Use custom server</span>
+					</label>
+					{useCustomServer && (
+						<input
+							id={`${idPrefix}-cloudUrl`}
+							type="text"
+							value={customUrl || ''}
+							placeholder={defaultCloudUrl || 'https://staging.rocketride.ai'}
+							onChange={(e) => onCustomUrlChange?.(e.target.value)}
+							style={{ marginTop: 6 }}
+						/>
+					)}
+					{!useCustomServer && defaultCloudUrl && <div style={{ ...S.modeConfigDesc, marginTop: 4 }}>Server: {defaultCloudUrl}</div>}
+					{useCustomServer && <div style={{ ...S.modeConfigDesc, marginTop: 4 }}>Sign-in and all traffic target this server.</div>}
+				</div>
+			)}
 
 			{/* Probing server... */}
 			{isSaas === undefined && <div style={S.modeConfigDesc}>Checking server compatibility...</div>}

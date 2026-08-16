@@ -45,7 +45,8 @@ export default defineConfig({
 		// (test vs live) and arrives at runtime from the server probe
 		// (ServerInfoResult.stripePublishableKey) via the host providers.
 		define: {
-			'process.env.ROCKETRIDE_URI': JSON.stringify(env.ROCKETRIDE_URI || 'https://api.rocketride.ai'),
+			// No server address is baked into any webview bundle — the cloud
+			// target is a SETTING, delivered by the host (defaultCloudUrl).
 			// OAuth broker base URL for the social-login buttons (shared OAUTH_ROOT_URL).
 			'process.env.REACT_APP_OAUTH_ROOT_URL': JSON.stringify(env.REACT_APP_OAUTH_ROOT_URL || ''),
 		},

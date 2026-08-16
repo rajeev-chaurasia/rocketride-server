@@ -565,9 +565,11 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 						statuses: editorState.cachedStatuses,
 						serverHost: this.connectionManager.getHttpUrl(),
 						// The OAuth broker only allows https://*.rocketride.ai redirect URLs,
-						// so tokens bounce off this hosted page, which forwards them to the
-						// `<uriScheme>://rocketride.rocketride/auth/google` deep link.
-						oauthReturnUrl: `https://api.rocketride.ai/auth/vscode/google?scheme=${vscode.env.uriScheme}`,
+						// so tokens bounce off the CLOUD SERVER's hosted page, which forwards
+						// them to the `<uriScheme>://rocketride.rocketride/auth/google` deep
+						// link. The bounce host is the effective cloud target (a setting,
+						// never a bake) — a custom server hosts its own bounce endpoint.
+						oauthReturnUrl: `${ConfigManager.getInstance().getEffectiveCloudUrl()}/auth/vscode/google?scheme=${vscode.env.uriScheme}`,
 						envKeys,
 					});
 					webview.postMessage({ type: 'project:dirtyState', isDirty: document.isDirty, isNew: document.isUntitled });

@@ -411,6 +411,13 @@ export interface ShellConfig {
 	apps: AppManifestEntry[];
 	/** Server capability tags: ['oss'] for open-source, ['saas'] for cloud. */
 	capabilities?: string[];
+	/**
+	 * The server's resolved API address from the pre-auth probe
+	 * (endpoints.api). Empty/absent = window.location.origin. Differs from
+	 * the page origin only on split deployments where the probe redirects
+	 * live traffic off the serving host (e.g. CDN-served UI, direct API).
+	 */
+	serverUri?: string;
 	/** All RR_* runtime config — passed through to remote apps via useShellApiConfig(). */
 	apiConfig: ShellApiConfig;
 	/** Branding shown on the loading screen before any app is mounted. */

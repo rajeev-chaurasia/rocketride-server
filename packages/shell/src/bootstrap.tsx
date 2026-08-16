@@ -50,6 +50,7 @@ async function main() {
 	let capabilities: string[] = [];
 	let apps: AppManifestEntry[] = [];
 	let stripePublishableKey = '';
+	let apiEndpoint = '';
 	try {
 		const info = await RocketRideClient.getServerInfo(serverUri);
 		capabilities = info.capabilities ?? [];
@@ -57,6 +58,11 @@ async function main() {
 		// Stripe publishable key comes from the server (not baked at build
 		// time) so one bundle works against test- and live-keyed servers.
 		stripePublishableKey = info.stripePublishableKey ?? '';
+		// The server says where live traffic goes (already resolved by the
+		// SDK — 'origin' became the probed address). Same as the page origin
+		// on single-host deployments; a direct API host on split ones, so
+		// only this probe transits the serving edge.
+		apiEndpoint = info.endpoints.api;
 	} catch (err) {
 		console.error('[bootstrap] Server probe failed:', err);
 		// Shell will render with no apps — user can retry after server is up
@@ -69,7 +75,7 @@ async function main() {
 	void installDevHooks();
 
 	// Assemble the shell configuration with server capabilities
-	const config = buildShellConfig(apps, capabilities, stripePublishableKey);
+	const config = buildShellConfig(apps, capabilities, stripePublishableKey, apiEndpoint);
 
 	// Create portal container for popup menus (must exist before React renders)
 	if (!document.getElementById('rr-popup-portal')) {

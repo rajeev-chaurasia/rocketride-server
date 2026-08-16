@@ -56,6 +56,13 @@ export interface ConnectionGroupSettings {
 	connectionMode: ConnectionMode | null;
 	/** Server URL for cloud/onprem modes. */
 	hostUrl: string;
+	/** Cloud mode: connect to `cloudUrl` instead of the default cloud. */
+	useCustomServer: boolean;
+	/** Cloud mode: the custom server address (used when useCustomServer). */
+	cloudUrl: string;
+	/** Cloud mode: the default cloud server (the setting's package.json
+	 * default, sent by the host — the webview bakes no address). */
+	defaultCloudUrl: string;
 	/** Whether the secret store already has an API key for this group. */
 	hasApiKey: boolean;
 	/** User-entered API key (cleared after save to secret storage). */
@@ -456,6 +463,9 @@ export const Settings: React.FC = () => {
 		development: {
 			connectionMode: 'local',
 			hostUrl: 'http://localhost:5565',
+			useCustomServer: false,
+			cloudUrl: '',
+			defaultCloudUrl: '',
 			hasApiKey: false,
 			apiKey: '',
 			local: { engineVersion: 'latest' },
@@ -463,6 +473,9 @@ export const Settings: React.FC = () => {
 		deployment: {
 			connectionMode: null,
 			hostUrl: '',
+			useCustomServer: false,
+			cloudUrl: '',
+			defaultCloudUrl: '',
 			hasApiKey: false,
 			apiKey: '',
 			local: { engineVersion: 'latest' },

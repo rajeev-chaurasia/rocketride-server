@@ -27,6 +27,7 @@ import { ensureWatch, getWatchManager } from '../appdev/watchManager';
 import { deployApp } from '../appdev/publish';
 import { vendorAppTypes } from '../appdev/appTypes';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
+import { ConfigManager } from '../config';
 
 // =============================================================================
 // TYPES
@@ -204,7 +205,11 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 						// (browser-based, works everywhere), then hand the fresh
 						// credential down the normal rrdev:auth path.
 						const auth = CloudAuthProvider.getInstance();
-						await auth.signIn(process.env.RR_ZITADEL_URL || '', process.env.RR_ZITADEL_VSCODE_CLIENT_ID || '');
+						await auth.signIn(
+							process.env.RR_ZITADEL_URL || '',
+							process.env.RR_ZITADEL_VSCODE_CLIENT_ID || '',
+							ConfigManager.getInstance().getEffectiveCloudUrl()
+						);
 						try {
 							const token = await this.connectionManager.resolveAuthCredential();
 							if (token) await panel.webview.postMessage({ type: 'appdev:auth', token });

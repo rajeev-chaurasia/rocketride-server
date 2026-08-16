@@ -572,10 +572,39 @@ export class RocketRideClient extends DAPClient {
 				throw new Error(response.message || 'Server info request failed');
 			}
 
-			return (response.body ?? {}) as unknown as ServerInfoResult;
+			const body = (response.body ?? {}) as unknown as ServerInfoResult;
+			// Resolve the endpoints HERE, where the probed URI is known, so
+			// consumers always receive absolute URLs and never branch on
+			// presence — a pre-endpoints server or an 'origin' sentinel both
+			// resolve to the address this probe was made to.
+			body.endpoints = RocketRideClient.resolveEndpoints(body.endpoints, uri);
+			return body;
 		} finally {
 			await client.disconnect();
 		}
+	}
+
+	/**
+	 * Resolve a probe's `endpoints` block against the URI that was probed.
+	 *
+	 * The wire value for each key is an absolute URL or the literal
+	 * `'origin'` — the server's way of saying "wherever you reached me"
+	 * (a server behind a proxy cannot know its public name). Absent keys
+	 * and a missing block (pre-endpoints servers) mean `'origin'` too, so
+	 * the ONE conditional in the whole scheme lives here and callers get a
+	 * complete `{ api, ui }` of absolute URLs unconditionally.
+	 *
+	 * @param endpoints - The raw `endpoints` value from the probe body, if any.
+	 * @param probedUri - The URI `getServerInfo` attached to.
+	 * @returns Both keys resolved to absolute URLs.
+	 */
+	public static resolveEndpoints(
+		endpoints: Partial<ServerInfoResult['endpoints']> | undefined,
+		probedUri: string
+	): ServerInfoResult['endpoints'] {
+		const origin = RocketRideClient.normalizeUri(probedUri);
+		const resolve = (value?: string) => (!value || value === 'origin' ? origin : value);
+		return { api: resolve(endpoints?.api), ui: resolve(endpoints?.ui) };
 	}
 
 	/**

@@ -550,4 +550,22 @@ export interface ServerInfoResult {
 	 * Absent on servers without billing (OSS).
 	 */
 	stripePublishableKey?: string;
+
+	/**
+	 * The server's public addresses, RESOLVED to absolute URLs.
+	 *
+	 * `getServerInfo` substitutes the server's `'origin'` sentinel ("the
+	 * address you probed me at") with the probed URI before returning, and
+	 * manufactures the block when probing a pre-endpoints server — so
+	 * consumers ALWAYS receive both keys as absolute URLs and never branch
+	 * on presence. `api` is where clients open the WebSocket; `ui` is the
+	 * environment's public web address (browser links, OAuth returns).
+	 * They differ only on split deployments (e.g. CDN-served UI).
+	 */
+	endpoints: {
+		/** Absolute URL clients connect the DAP WebSocket to. */
+		api: string;
+		/** Absolute URL of the environment's web UI. */
+		ui: string;
+	};
 }

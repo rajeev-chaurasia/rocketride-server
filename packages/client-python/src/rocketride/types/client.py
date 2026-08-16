@@ -348,6 +348,12 @@ class ServerInfoResult(TypedDict, total=False):
             on this server, so clients initialise Stripe Elements with the key
             matching the server's Stripe account (test vs live) instead of a
             build-time value. Absent on servers without billing (OSS).
+        endpoints (ServerEndpoints): The server's public addresses, RESOLVED
+            to absolute URLs by :meth:`RocketRideClient.get_server_info` —
+            the server's ``'origin'`` sentinel ("the address you probed me
+            at") is substituted client-side, and the block is manufactured
+            when probing a pre-endpoints server. Consumers always receive
+            both keys and never branch on presence.
     """
 
     version: str
@@ -355,3 +361,19 @@ class ServerInfoResult(TypedDict, total=False):
     platform: str
     apps: list[AppManifestEntry]
     stripePublishableKey: str
+    endpoints: 'ServerEndpoints'
+
+
+class ServerEndpoints(TypedDict):
+    """
+    The server's public addresses from the pre-auth probe, resolved.
+
+    Attributes:
+        api (str): Absolute URL clients connect the DAP WebSocket to.
+        ui (str): Absolute URL of the environment's web UI (browser links,
+            OAuth returns). Differs from ``api`` only on split deployments
+            (e.g. a CDN-served UI with a direct API host).
+    """
+
+    api: str
+    ui: str

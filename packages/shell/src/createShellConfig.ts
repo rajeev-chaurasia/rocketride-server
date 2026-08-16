@@ -90,9 +90,11 @@ const THEME_OPTIONS = [
  * @param capabilities         - Server capability tags (['oss'] or ['saas']).
  * @param stripePublishableKey - Stripe publishable key from the server probe;
  *                               empty when the server has no billing configured.
+ * @param serverUri            - The probe's resolved endpoints.api — where live
+ *                               traffic connects. Empty = window.location.origin.
  * @returns A fully populated ShellConfig ready to pass to `<ShellApp>`.
  */
-export function buildShellConfig(apps: AppManifestEntry[], capabilities: string[] = [], stripePublishableKey = ''): ShellConfig {
+export function buildShellConfig(apps: AppManifestEntry[], capabilities: string[] = [], stripePublishableKey = '', serverUri = ''): ShellConfig {
 	// Determine mode from server capabilities
 	const isSaas = capabilities.includes('saas');
 	const brandName = isSaas ? 'RocketRide Cloud' : 'RocketRide';
@@ -103,6 +105,10 @@ export function buildShellConfig(apps: AppManifestEntry[], capabilities: string[
 
 		// Server capabilities for feature-flagging (billing, OAuth, etc.)
 		capabilities,
+
+		// Where live traffic connects (the probe's resolved endpoints.api) —
+		// empty falls through to window.location.origin in the connection.
+		serverUri,
 
 		// Build-time API endpoints plus the server-supplied Stripe key —
 		// runtime-sourced so the bundle stays environment-neutral

@@ -131,6 +131,9 @@ const DEFAULT_SETTINGS: SettingsData = {
 	development: {
 		connectionMode: 'local',
 		hostUrl: 'http://localhost:5565',
+		useCustomServer: false,
+		cloudUrl: '',
+		defaultCloudUrl: '',
 		apiKey: '',
 		hasApiKey: false,
 		local: { engineVersion: 'latest' },
@@ -138,6 +141,9 @@ const DEFAULT_SETTINGS: SettingsData = {
 	deployment: {
 		connectionMode: null,
 		hostUrl: '',
+		useCustomServer: false,
+		cloudUrl: '',
+		defaultCloudUrl: '',
 		hasApiKey: false,
 		apiKey: '',
 		local: { engineVersion: 'latest' },

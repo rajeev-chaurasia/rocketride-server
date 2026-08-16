@@ -43,6 +43,9 @@ export class CloudAuthProvider implements vscode.UriHandler, vscode.Disposable {
 
 	private context: vscode.ExtensionContext | undefined;
 	private pendingVerifier: string | null = null;
+	/** The cloud server the in-flight sign-in exchanges its code against —
+	 * captured at signIn() because the callback arrives later. */
+	private pendingCloudUrl: string | null = null;
 	private pendingGoogleOAuth = new Map<string, (tokens: string, state: string) => void>();
 	private disposables: vscode.Disposable[] = [];
 	private readonly _onDidChange = new EventEmitter();
@@ -79,14 +82,30 @@ export class CloudAuthProvider implements vscode.UriHandler, vscode.Disposable {
 
 	// --- Sign In -------------------------------------------------------------
 
-	async signIn(zitadelUrl: string, clientId: string): Promise<void> {
+	/**
+	 * Start the browser PKCE round trip.
+	 *
+	 * @param zitadelUrl - Zitadel issuer (shared across all environments).
+	 * @param clientId   - Zitadel VS Code application client id.
+	 * @param cloudUrl   - The cloud server the OAuth code will be exchanged
+	 *                     against (the caller's effective cloud target —
+	 *                     nothing is baked into the extension). Captured
+	 *                     alongside the verifier because the exchange happens
+	 *                     later, in the deep-link callback.
+	 */
+	async signIn(zitadelUrl: string, clientId: string, cloudUrl: string): Promise<void> {
 		if (!zitadelUrl || !clientId) {
 			vscode.window.showErrorMessage('RocketRide Cloud sign-in required.');
+			return;
+		}
+		if (!cloudUrl) {
+			vscode.window.showErrorMessage('RocketRide Cloud sign-in failed: no cloud server is configured.');
 			return;
 		}
 
 		const { verifier, challenge } = generatePkce();
 		this.pendingVerifier = verifier;
+		this.pendingCloudUrl = cloudUrl;
 
 		const authUrl = buildAuthUrl(zitadelUrl, clientId, REDIRECT_URI, challenge);
 		await vscode.env.openExternal(vscode.Uri.parse(authUrl));
@@ -182,12 +201,13 @@ export class CloudAuthProvider implements vscode.UriHandler, vscode.Disposable {
 		// Exchange the code for a persistent rr_* token using a temporary
 		// client connection. This is auth only — not a persistent connection.
 		try {
-			// Always use the cloud URI for token exchange -- the OAuth code must
-			// be exchanged against the cloud server regardless of the current
-			// connection mode (local, docker, etc.).
-			const cloudUrl = process.env.ROCKETRIDE_URI;
+			// Exchange against the cloud server CAPTURED AT SIGN-IN — the
+			// caller's effective cloud target (default cloud or the user's
+			// custom server), never a value baked into the extension.
+			const cloudUrl = this.pendingCloudUrl;
+			this.pendingCloudUrl = null;
 			if (!cloudUrl) {
-				vscode.window.showErrorMessage('RocketRide Cloud sign-in failed: cloud endpoint is not configured (ROCKETRIDE_URI).');
+				vscode.window.showErrorMessage('RocketRide Cloud sign-in failed: no cloud server was captured for this sign-in.');
 				return;
 			}
 			const tempClient = new RocketRideClient({ persist: false });

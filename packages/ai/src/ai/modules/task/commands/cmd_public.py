@@ -102,6 +102,18 @@ class PublicCommands(DAPConn):
             'capabilities': acct.capabilities,
             'platform': sys.platform,
             'apps': await acct.get_public_apps(),
+            # The server's public addresses. ALWAYS present, both keys, so no
+            # client ever branches on absence: each value is an absolute URL
+            # or the literal 'origin' = "the address you probed me at" (the
+            # SDK substitutes it client-side; a server behind a proxy cannot
+            # know its public name). Managed deployments declare both
+            # explicitly; RR_BACKEND_ORIGIN only carries a real URL when the
+            # API is reachable somewhere OTHER than where the UI is served
+            # (CDN split) — clients then bypass the edge after this probe.
+            'endpoints': {
+                'api': os.environ.get('RR_BACKEND_ORIGIN', '').strip() or 'origin',
+                'ui': os.environ.get('RR_FRONTEND_ORIGIN', '').strip() or 'origin',
+            },
         }
         # Publishable key only — the secret key (sk_*) must never leave the
         # server. Omitted entirely when unset (OSS / no billing). Enforce the

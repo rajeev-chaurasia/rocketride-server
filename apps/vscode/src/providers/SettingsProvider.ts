@@ -287,12 +287,20 @@ export class SettingsProvider {
 			}
 		}
 
+		// The cloudUrl settings' package.json defaults — sent to the webview
+		// so it can show/probe the default cloud without baking any address.
+		const devDefaultCloudUrl = vscode.workspace.getConfiguration('rocketride.development').inspect<string>('cloudUrl')?.defaultValue ?? '';
+		const depDefaultCloudUrl = vscode.workspace.getConfiguration('rocketride.deployment').inspect<string>('cloudUrl')?.defaultValue ?? '';
+
 		// Send nested structure matching the webview SettingsData type
 		const allSettings = {
 			// Connection groups
 			development: {
 				connectionMode: config.development.connectionMode,
 				hostUrl: config.development.hostUrl,
+				useCustomServer: config.development.useCustomServer,
+				cloudUrl: config.development.cloudUrl,
+				defaultCloudUrl: devDefaultCloudUrl,
 				hasApiKey: hasApiKey,
 				apiKey: apiKey,
 				local: {
@@ -302,6 +310,9 @@ export class SettingsProvider {
 			deployment: {
 				connectionMode: config.deployment.connectionMode,
 				hostUrl: config.deployment.hostUrl,
+				useCustomServer: config.deployment.useCustomServer,
+				cloudUrl: config.deployment.cloudUrl,
+				defaultCloudUrl: depDefaultCloudUrl,
 				hasApiKey: !!config.deployment.apiKey,
 				apiKey: config.deployment.apiKey || '',
 				local: {

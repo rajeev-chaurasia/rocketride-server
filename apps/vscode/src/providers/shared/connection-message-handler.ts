@@ -19,7 +19,7 @@ import { EngineInstaller } from '../../engine/shared/engine-installer';
 import { EngineRegistry } from '../../engine';
 import { IMAGE_BASE } from '../../engine/docker/docker-manager';
 import { ConnectionManager } from '../../connection/connection';
-import { type ConnectionMode } from '../../config';
+import { ConfigManager, type ConnectionMode } from '../../config';
 import { CloudAuthProvider } from '../../auth/CloudAuthProvider';
 import { setCachedEngineVersions, setCachedDockerTags, getExtensionContext } from '../../extension';
 import { getLogger } from '../../shared/util/output';
@@ -114,7 +114,11 @@ export class ConnectionMessageHandler {
 		switch (message.type) {
 			case 'cloud:signIn': {
 				const cloudAuth = CloudAuthProvider.getInstance();
-				await cloudAuth.signIn(process.env.RR_ZITADEL_URL || '', process.env.RR_ZITADEL_VSCODE_CLIENT_ID || '');
+				await cloudAuth.signIn(
+					process.env.RR_ZITADEL_URL || '',
+					process.env.RR_ZITADEL_VSCODE_CLIENT_ID || '',
+					ConfigManager.getInstance().getEffectiveCloudUrl()
+				);
 				return true;
 			}
 
