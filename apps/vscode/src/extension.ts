@@ -300,7 +300,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				// file in the Explorer opens the App Builder), plus the
 				// watch-session manager driving the inner loop.
 				appScreen = new AppScreenProvider(context);
-				const watchManager = initWatchManager(appScreen);
+				// The guard wrapper ships beside the bundle (staged by
+				// vscode:stage-files); every dev server spawns through it so
+				// it dies with this extension host.
+				const watchManager = initWatchManager(appScreen, context.asAbsolutePath('devServerGuard.cjs'));
 				context.subscriptions.push(
 					vscode.window.registerCustomEditorProvider('rocketride.appBuilder', appScreen, {
 						webviewOptions: { retainContextWhenHidden: true },

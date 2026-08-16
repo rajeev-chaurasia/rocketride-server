@@ -25,7 +25,7 @@ import { spawn, ChildProcess } from 'child_process';
 import { ConnectionManager } from '../connection/connection';
 import { extractInstallCause, isTransientLockError } from './appTypes';
 import { getLogger } from '../shared/util/output';
-import { scanWorkspaceApps } from './appScan';
+import { DEV_SESSION_NONCE } from './devSession';
 import type { ScannedApp } from './appScan';
 import type { AppScreenProvider, AppWatchStatus } from '../providers/AppScreenProvider';
 
@@ -34,8 +34,8 @@ import type { AppScreenProvider, AppWatchStatus } from '../providers/AppScreenPr
 // =============================================================================
 
 /** One running watch session. Every session is OWNED — the manager spawned
-    its process tree and observes its exit; orphans from a previous extension
-    host are reaped at activation, never reused (see reapOrphans). */
+    its process tree (under the guard wrapper, whose stdin tether kills the
+    server when this extension host dies — see doStart) and observes its exit. */
 interface WatchSession {
 	app: ScannedApp;
 	/** The spawned dev-server tree. */
@@ -52,8 +52,12 @@ interface WatchSession {
 	pkgWatcher?: vscode.FileSystemWatcher;
 	/** Debounce timer for package.json change bursts. */
 	pkgTimer?: NodeJS.Timeout;
-	/** Incomplete trailing line carried over between output chunks. */
-	pending?: string;
+	/** Incomplete trailing STDOUT line carried between chunks. */
+	pendingOut?: string;
+	/** Incomplete trailing STDERR line carried between chunks — a SEPARATE
+	    carry: one shared buffer spliced fragments of one stream into the
+	    middle of the other stream's line. */
+	pendingErr?: string;
 	/** Deferred-teardown timer while the session LINGERS after its panel
 	    closed; a reopen inside the window cancels it and revives. */
 	lingerTimer?: NodeJS.Timeout;
@@ -83,9 +87,6 @@ export class WatchManager {
 	/** Per-app readiness: resolves with the dev origin once the server is
 	    actually serving (spawned and parsed); replaced per start. */
 	private readiness = new Map<string, { promise: Promise<string>; resolve: (origin: string) => void; reject: (err: Error) => void }>();
-	/** Settled when the boot orphan reap finishes; doStart awaits it so a
-	    spawn never races a dying orphan's port (see reapOrphansInBackground). */
-	private reaped: Promise<void> = Promise.resolve();
 	/** Consecutive quick-death respawns per app (crash-loop guard). */
 	private respawnStrikes = new Map<string, number>();
 	/**
@@ -109,7 +110,11 @@ export class WatchManager {
 	private connectionManager = ConnectionManager.getInstance();
 	private logger = getLogger();
 
-	constructor(private readonly appScreen: AppScreenProvider) {
+	constructor(
+		private readonly appScreen: AppScreenProvider,
+		/** Absolute path to the shipped devServerGuard.cjs (see doStart). */
+		private readonly guardPath: string,
+	) {
 		// The dev overlay registration lives server-side and EXPIRES on
 		// disconnect. A reconnect (org switch, network blip) therefore leaves
 		// every running session unregistered until its next rebuild happens to
@@ -285,29 +290,27 @@ export class WatchManager {
 			return;
 		}
 
-		// Orphan safety BEFORE spawning: the extension host can die without
-		// cleanup (window reload, crash), orphaning the previous dev-server
-		// tree — Windows never cascades to grandchildren. A blind spawn then
-		// loses the port race, rsbuild silently bumps to the next free port,
-		// and the preview stays registered against the orphan's stale bundle.
-		// Activation reaps those orphans; awaiting the reap here guarantees
-		// the kill has LANDED before rsbuild binds.
-		await this.reaped;
-
 		// Resolve the app-local rsbuild binary; the scaffolder pins it as a
 		// devDependency. Falling back to `pnpm exec` covers hoisted setups.
 		const spawnArgs = this.resolveRsbuild(app.folder);
 		this.logger.output(`[appdev] watch start: ${app.id} (${spawnArgs.cmd} ${spawnArgs.args.join(' ')})`);
 		this.console(app.id, 'log', '$ rsbuild dev');
 
-		const proc = spawn(spawnArgs.cmd, [...spawnArgs.args, 'dev'], {
+		// The server runs under the GUARD wrapper — a liveness tether to this
+		// extension host. The guard's stdin is a pipe from this process; any
+		// death of the host (crash, window reload, EDH stop, hard kill)
+		// closes it and the guard fells its own tree, so dev-server orphans
+		// are structurally impossible. The guard passes rsbuild's output
+		// through verbatim and mirrors its exit code, so parsing and crash
+		// detection below see the server as before.
+		const proc = spawn(process.execPath, [this.guardPath, String(process.pid), spawnArgs.shell ? '1' : '0', spawnArgs.cmd, ...spawnArgs.args, 'dev'], {
 			cwd: app.folder,
-			shell: spawnArgs.shell,
 			env: { ...process.env, NO_COLOR: '1' },
-			// POSIX: make the dev server its own process GROUP so stop() can
-			// signal the whole tree (kill(-pid)) — signalling a single pid
-			// only fells the pnpm wrapper and orphans the rsbuild grandchild,
-			// the same zombie Windows gets without taskkill /T.
+			// Never allocate a console window for the guard or its tree.
+			windowsHide: true,
+			// POSIX: make the guard its own process GROUP (rsbuild joins it)
+			// so stop() can signal the whole tree (kill(-pid)); Windows uses
+			// taskkill /T for the same whole-tree guarantee.
 			detached: process.platform !== 'win32',
 		});
 
@@ -339,8 +342,8 @@ export class WatchManager {
 		session.pkgWatcher.onDidCreate(onPkgChange);
 
 		// Parse stdout for the dev origin and build results
-		proc.stdout?.on('data', (chunk: Buffer) => this.handleOutput(session, chunk.toString('utf8')));
-		proc.stderr?.on('data', (chunk: Buffer) => this.handleOutput(session, chunk.toString('utf8')));
+		proc.stdout?.on('data', (chunk: Buffer) => this.handleOutput(session, chunk.toString('utf8'), 'stdout'));
+		proc.stderr?.on('data', (chunk: Buffer) => this.handleOutput(session, chunk.toString('utf8'), 'stderr'));
 
 		proc.on('exit', (code) => {
 			this.logger.output(`[appdev] watch exited (${code}): ${app.id}`);
@@ -349,6 +352,10 @@ export class WatchManager {
 			if (this.sessions.get(app.id) !== session) return;
 			this.sessions.delete(app.id);
 			this.rejectReadiness(app.id, `dev server exited (${code})`);
+			// Flush carried partial lines so a crashing server's last words
+			// are not silently swallowed with its session.
+			if (session.pendingOut?.trim()) this.consoleLines(app.id, 'log', session.pendingOut);
+			if (session.pendingErr?.trim()) this.consoleLines(app.id, 'warn', session.pendingErr);
 			this.disposeSessionResources(session);
 
 			// Crash recovery: while the app's panel is open, a dead dev server
@@ -468,7 +475,7 @@ export class WatchManager {
 			if (process.platform === 'win32' && session.proc.pid) {
 				const pid = session.proc.pid;
 				await new Promise<void>((resolve) => {
-					const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F']);
+					const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
 					killer.on('exit', () => resolve());
 					killer.on('error', () => resolve());
 					// Never hang stop() on a wedged taskkill.
@@ -545,229 +552,9 @@ export class WatchManager {
 		for (const appId of [...this.sessions.keys()]) void this.stop(appId, { immediate: true });
 	}
 
-	// =========================================================================
-	// ORPHAN REAPING — boot-time cleanup; sessions are owned-only
-	// =========================================================================
-
-	/**
-	 * Tree-kills every dev server a previous extension host left behind.
-	 *
-	 * A window reload or crash never cascades to the spawned grandchildren,
-	 * so the old dev servers keep running as orphans. They used to be
-	 * ADOPTED (reused without a respawn) — but an adopted session carried no
-	 * process handle, so its death was undetectable: a stale discovery
-	 * snapshot could announce a dead server as live and the preview had no
-	 * way back short of restarting the host. Sessions are now OWNED-only:
-	 * activation reaps the leftovers and every server runs under a process
-	 * handle whose exit is observed (and auto-respawned while its panel is
-	 * open).
-	 *
-	 * Discovery identifies each candidate by its ``mf-manifest.json`` name
-	 * (ports are dynamic — a configured-port probe would shoot a drifted
-	 * neighbor), and the reap is scoped to THIS workspace's apps: another
-	 * window's live dev servers are never touched.
-	 */
-	private async reapOrphans(): Promise<void> {
-		const apps = await scanWorkspaceApps();
-		if (apps.length === 0) return;
-		const mine = new Map(apps.map((a) => [a.moduleId, a.id]));
-		const inventory = await this.discoverDevServers();
-		for (const [moduleId, servers] of inventory) {
-			const appId = mine.get(moduleId);
-			if (!appId) continue;
-			// Never shoot a server this manager owns (re-run safety).
-			if (this.sessions.has(appId)) continue;
-			const pids = servers.flatMap((s) => s.pids);
-			this.logger.output(`[appdev] reaping orphaned dev server for ${appId} (pids ${pids.join(', ')})`);
-			await this.killPids(pids);
-		}
-	}
-
-	/**
-	 * Fire-and-forget boot reap (activation must never wait on process
-	 * enumeration). doStart awaits the same promise before spawning, so a
-	 * fresh server can never lose its port race to a dying orphan tree.
-	 */
-	public reapOrphansInBackground(): void {
-		this.reaped = this.reapOrphans().catch((err) => {
-			this.logger.output(`[appdev] orphan reap failed (continuing): ${err}`);
-		});
-	}
-
-	/**
-	 * Discovers live MF dev servers: every rsbuild-ish node process, the
-	 * ports it actually LISTENS on, identified per port by mf-manifest.
-	 *
-	 * Orphans exist on every OS — an abruptly killed extension host never
-	 * cascades to grandchildren on Windows OR POSIX. Only the enumeration
-	 * mechanism differs per platform; a failed enumeration degrades to an
-	 * empty inventory (the reap then simply finds nothing).
-	 *
-	 * Runs exactly once per host, from the boot reap — no memoization or
-	 * staleness rules; a snapshot consumed the moment it is taken cannot
-	 * announce a server that has since died.
-	 *
-	 * @returns moduleId -> [{port, pids}] for every identified server.
-	 */
-	private async discoverDevServers(): Promise<Map<string, Array<{ port: number; pids: number[] }>>> {
-		const inventory = new Map<string, Array<{ port: number; pids: number[] }>>();
-
-		// Enumerate "pid port" lines of rsbuild LISTEN sockets — OS truth,
-		// however a server got its port.
-		const lines = await this.listRsbuildListeners();
-
-		// port -> pids (a server may listen on v4+v6; dedupe by port).
-		const byPort = new Map<number, Set<number>>();
-		for (const line of lines.split(/\r?\n/)) {
-			const m = /^(\d+)\s+(\d+)$/.exec(line.trim());
-			if (!m) continue;
-			const pid = Number(m[1]);
-			const port = Number(m[2]);
-			if (!byPort.has(port)) byPort.set(port, new Set());
-			byPort.get(port)!.add(pid);
-		}
-
-		// Identify each port by its manifest; unidentifiable ports (HMR-only
-		// sockets, wedged servers) cannot be attributed to an app and are
-		// left alone — the reap only ever kills a positively identified server.
-		await Promise.all(
-			[...byPort.entries()].map(async ([port, pids]) => {
-				const name = await this.identifyDevServer(port);
-				if (!name) return;
-				if (!inventory.has(name)) inventory.set(name, []);
-				inventory.get(name)!.push({ port, pids: [...pids] });
-			}),
-		);
-		return inventory;
-	}
-
-	/**
-	 * Platform enumeration: "pid port" lines for every LISTEN socket owned
-	 * by an rsbuild-ish node process.
-	 *
-	 * Windows: one PowerShell round trip (CIM + Get-NetTCPConnection).
-	 * POSIX: `ps` finds the rsbuild pids, `lsof` lists their LISTEN
-	 * sockets (present by default on macOS; near-universal on Linux). Any
-	 * failure resolves to '' — discovery degrades, never breaks a start.
-	 */
-	private listRsbuildListeners(): Promise<string> {
-		if (process.platform === 'win32') {
-			return new Promise<string>((resolve) => {
-				const script =
-					"$procs = Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'rsbuild' }; " +
-					'$procIds = @($procs | Select-Object -ExpandProperty ProcessId); ' +
-					'if ($procIds.Count -gt 0) { Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $procIds -contains $_.OwningProcess } | ForEach-Object { "$($_.OwningProcess) $($_.LocalPort)" } }';
-				const probe = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
-				let out = '';
-				let done = false;
-				const settle = (value: string): void => {
-					if (done) return;
-					done = true;
-					clearTimeout(timer);
-					resolve(value);
-				};
-				probe.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
-				probe.on('exit', () => settle(out));
-				probe.on('error', () => settle(''));
-				// A wedged probe keeps powershell.exe alive with its pipes open
-				// and its data handler appending to `out` after we settle;
-				// discovery runs every burst, so leaked probes accumulate. Kill
-				// the child and detach its handlers before settling.
-				const timer = setTimeout(() => {
-					probe.stdout?.removeAllListeners('data');
-					try { probe.kill('SIGKILL'); } catch { /* already gone */ }
-					settle(out);
-				}, 5000);
-			});
-		}
-		return new Promise<string>((resolve) => {
-			// ps: pids of rsbuild processes; lsof: their LISTEN sockets as
-			// "p<pid>" / "n<host>:<port>" field lines, normalized to
-			// "pid port" to share the Windows parser.
-			const script =
-				"pids=$(ps -Ao pid=,command= | grep rsbuild | grep -v grep | awk '{print $1}' | paste -s -d, -); " +
-				'if [ -n "$pids" ]; then lsof -nP -iTCP -sTCP:LISTEN -a -p "$pids" -Fpn 2>/dev/null | ' +
-				"awk '/^p/{pid=substr($0,2)} /^n/{n=$0; sub(/^n.*:/, \"\", n); print pid, n}'; fi";
-			const probe = spawn('/bin/sh', ['-c', script]);
-			let out = '';
-			let done = false;
-			const settle = (value: string): void => {
-				if (done) return;
-				done = true;
-				clearTimeout(timer);
-				resolve(value);
-			};
-			probe.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
-			probe.on('exit', () => settle(out));
-			probe.on('error', () => settle(''));
-			// A wedged ps/lsof pipeline keeps /bin/sh alive with its pipes open
-			// and its data handler appending to `out` after we settle;
-			// discovery runs every burst, so leaked probes accumulate. Kill the
-			// child and detach its handlers before settling.
-			const timer = setTimeout(() => {
-				probe.stdout?.removeAllListeners('data');
-				try { probe.kill('SIGKILL'); } catch { /* already gone */ }
-				settle(out);
-			}, 5000);
-		});
-	}
-
-	/**
-	 * Fetches a candidate port's mf-manifest and returns its container name,
-	 * or null when it does not answer like an MF dev server.
-	 *
-	 * @param port - The listening port to identify.
-	 */
-	private async identifyDevServer(port: number): Promise<string | null> {
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), 1000);
-		try {
-			const res = await fetch(`http://localhost:${port}/mf-manifest.json`, { signal: controller.signal });
-			if (!res.ok) return null;
-			const manifest = (await res.json()) as { name?: string };
-			return typeof manifest?.name === 'string' && manifest.name ? manifest.name : null;
-		} catch {
-			return null;
-		} finally {
-			clearTimeout(timer);
-		}
-	}
-
-	/**
-	 * Tree-kills the given process ids, awaited so a subsequent spawn can
-	 * never race the dying tree.
-	 *
-	 * Windows: taskkill /T fells each tree. POSIX: the discovered pids ARE
-	 * the listening servers themselves (not wrappers), so SIGTERM with a
-	 * SIGKILL escalation suffices.
-	 *
-	 * @param pids - Process ids to fell.
-	 */
-	private async killPids(pids: number[]): Promise<void> {
-		if (pids.length === 0) return;
-		if (process.platform === 'win32') {
-			await Promise.all(
-				pids.map(
-					(pid) =>
-						new Promise<void>((resolve) => {
-							const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F']);
-							killer.on('exit', () => resolve());
-							killer.on('error', () => resolve());
-							// Never hang a start on a wedged kill.
-							setTimeout(resolve, 3000);
-						}),
-				),
-			);
-			return;
-		}
-		for (const pid of pids) {
-			try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
-		}
-		await new Promise<void>((resolve) => setTimeout(resolve, 1500));
-		for (const pid of pids) {
-			try { process.kill(pid, 'SIGKILL'); } catch { /* already gone — the normal case */ }
-		}
-	}
+	// NOTE: there is deliberately no orphan reaping here. Dev servers run
+	// under the guard wrapper (see doStart), whose stdin tether guarantees
+	// they die with this extension host — orphans are prevented, not hunted.
 
 	// =========================================================================
 	// INSTALL
@@ -855,6 +642,8 @@ export class WatchManager {
 			const proc = spawn('pnpm', ['install', '--prefer-offline'], {
 				cwd: workspaceRoot,
 				shell: process.platform === 'win32',
+				// cmd.exe (console subsystem) — never allocate a visible window.
+				windowsHide: true,
 				env: { ...process.env, NO_COLOR: '1' },
 				// POSIX: own process group so a timeout can fell the WHOLE tree.
 				// pnpm forks its real work into children; a bare kill of this
@@ -865,10 +654,21 @@ export class WatchManager {
 				detached: process.platform !== 'win32',
 			});
 			// Mirror installer output into every open panel's Console, and
-			// accumulate it so a failure can NAME its cause.
+			// accumulate it so a failure can NAME its cause. Line-buffered PER
+			// STREAM: a chunk ending mid-line would otherwise render as a
+			// partial row that only "completes" when the next chunk arrives.
 			let output = '';
-			proc.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); this.consoleAllLines('log', chunk.toString('utf8')); });
-			proc.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); this.consoleAllLines('warn', chunk.toString('utf8')); });
+			let pendingOut = '';
+			let pendingErr = '';
+			const streamLines = (level: 'log' | 'warn', pending: string, chunk: string): string => {
+				const buffered = pending + chunk;
+				const lines = buffered.split(/\r?\n/);
+				const rest = lines.pop() ?? '';
+				if (lines.length > 0) this.consoleAllLines(level, lines.join('\n'));
+				return rest;
+			};
+			proc.stdout?.on('data', (chunk: Buffer) => { const s = chunk.toString('utf8'); output += s; pendingOut = streamLines('log', pendingOut, s); });
+			proc.stderr?.on('data', (chunk: Buffer) => { const s = chunk.toString('utf8'); output += s; pendingErr = streamLines('warn', pendingErr, s); });
 			// Settle exactly once — exit, spawn-error, and the timeout race here.
 			let settled = false;
 			const finish = (r: { ok: boolean; output: string; code: number | null; failureReason?: string }): void => {
@@ -896,7 +696,7 @@ export class WatchManager {
 				void (async () => {
 					if (process.platform === 'win32' && proc.pid) {
 						await new Promise<void>((res) => {
-							const killer = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F']);
+							const killer = spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true });
 							killer.on('exit', () => res());
 							killer.on('error', () => res());
 							// Never hang the install on a wedged taskkill.
@@ -916,7 +716,12 @@ export class WatchManager {
 			}, 10 * 60 * 1000);
 			// 'close' (not 'exit'): stdio is flushed first, so extractInstallCause
 			// reads the COMPLETE output — aligns with publish.ts and runRootInstall.
-			proc.on('close', (code) => finish({ ok: code === 0, output, code }));
+			proc.on('close', (code) => {
+				// Flush the carried partials so a final unterminated line still shows.
+				if (pendingOut.trim()) this.consoleAllLines('log', pendingOut);
+				if (pendingErr.trim()) this.consoleAllLines('warn', pendingErr);
+				finish({ ok: code === 0, output, code });
+			});
 			proc.on('error', (err) => finish({ ok: false, output, code: null, failureReason: `pnpm could not be started: ${err.message}` }));
 		});
 	}
@@ -969,14 +774,19 @@ export class WatchManager {
 	 *
 	 * @param session - The owning watch session.
 	 * @param chunk - Raw process output chunk.
+	 * @param stream - Which pipe the chunk arrived on (separate line carries).
 	 */
-	private handleOutput(session: WatchSession, chunk: string): void {
+	private handleOutput(session: WatchSession, chunk: string, stream: 'stdout' | 'stderr'): void {
 		// Chunks split mid-line at the pipe's whim — a marker torn across two
-		// chunks would never match its regex. Carry the incomplete trailing
-		// line over and only parse COMPLETE lines.
-		const buffered = (session.pending ?? '') + chunk;
+		// chunks would never match its regex, and a half line rendered now
+		// reads as garbage until its remainder arrives. Carry the incomplete
+		// trailing line PER STREAM (stdout and stderr interleave; one shared
+		// carry spliced fragments across streams) and only emit/parse
+		// COMPLETE lines.
+		const key = stream === 'stdout' ? 'pendingOut' : 'pendingErr';
+		const buffered = (session[key] ?? '') + chunk;
 		const lines = buffered.split(/\r?\n/);
-		session.pending = lines.pop() ?? '';
+		session[key] = lines.pop() ?? '';
 		if (lines.length === 0) return;
 		const text = lines.join('\n');
 
@@ -1056,6 +866,10 @@ export class WatchManager {
 				moduleId: session.app.moduleId,
 				url: `${session.devOrigin}/remoteEntry.js?t=${Date.now()}`,
 				appId: session.app.id,
+				// This host's overlay entry is keyed to its session nonce, so
+				// previews launched from THIS editor resolve THIS dev server
+				// even when another editor serves the same app.
+				session: DEV_SESSION_NONCE,
 			});
 		} catch (err) {
 			this.logger.output(`[appdev] register_dev failed for ${session.app.id}: ${err}`);
@@ -1108,13 +922,14 @@ export function resolveRsbuildInvocation(appRoot: string): { cmd: string; args: 
 /** Module-level accessor wiring (set once in extension activation). */
 let instance: WatchManager | null = null;
 
-/** Installs the singleton WatchManager (called from extension activation). */
-export function initWatchManager(appScreen: AppScreenProvider): WatchManager {
-	instance = new WatchManager(appScreen);
-	// Boot reap: fire-and-forget (activation never waits on process
-	// enumeration) — doStart awaits the reap promise before spawning, so
-	// panels restored ahead of the reap still spawn on a clean port.
-	instance.reapOrphansInBackground();
+/**
+ * Installs the singleton WatchManager (called from extension activation).
+ *
+ * @param appScreen - The App Builder panel provider (status/console sink).
+ * @param guardPath - Absolute path to the shipped devServerGuard.cjs.
+ */
+export function initWatchManager(appScreen: AppScreenProvider, guardPath: string): WatchManager {
+	instance = new WatchManager(appScreen, guardPath);
 	return instance;
 }
 

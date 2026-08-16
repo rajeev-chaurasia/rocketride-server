@@ -137,7 +137,7 @@ def test_idle_cap_expires_stale_entries():
     dev_overlay.register('alice', 1, 'mod_a', 'http://localhost:3011/a.js', 'a')
 
     # Age the entry past the idle cap by rewinding its expiry stamp
-    dev_overlay._overlay['alice']['mod_a']['expires_at'] = time.time() - 1
+    dev_overlay._overlay['alice']['mod_a'][1]['expires_at'] = time.time() - 1
 
     assert dev_overlay.entries_for('alice') == []
     # The bucket is fully cleaned up once empty
@@ -148,11 +148,11 @@ def test_reregister_refreshes_idle_expiry():
     """Re-registering the same module refreshes its idle expiry stamp."""
     _reset_overlay()
     dev_overlay.register('alice', 1, 'mod_a', 'http://localhost:3011/a.js', 'a')
-    dev_overlay._overlay['alice']['mod_a']['expires_at'] = time.time() + 5
+    dev_overlay._overlay['alice']['mod_a'][1]['expires_at'] = time.time() + 5
 
     dev_overlay.register('alice', 1, 'mod_a', 'http://localhost:3011/a.js', 'a')
 
-    remaining = dev_overlay._overlay['alice']['mod_a']['expires_at'] - time.time()
+    remaining = dev_overlay._overlay['alice']['mod_a'][1]['expires_at'] - time.time()
     assert remaining > dev_overlay._IDLE_TTL_SECONDS - 60
 
 
@@ -189,3 +189,93 @@ def test_drop_user_only_targets_the_named_user():
     dev_overlay.drop_user('alice')
     assert dev_overlay.entries_for('alice') == []
     assert len(dev_overlay.entries_for('bob')) == 1
+
+
+# =============================================================================
+# MULTI-EDITOR — one entry per registering connection
+# =============================================================================
+
+
+def test_two_connections_coexist_on_one_module():
+    """Two editors dev-serving the same app hold independent registrations:
+    neither register clobbers the other, and apply_overlay exposes BOTH via
+    devEntries (newest first) with the newest as the default entry.
+    """
+    _reset_overlay()
+    dev_overlay.register(
+        'alice', 1, 'acme_brandy', 'http://localhost:3014/remoteEntry.js', 'acme.brandy', session='s-vscode'
+    )
+    dev_overlay.register(
+        'alice', 2, 'acme_brandy', 'http://localhost:3015/remoteEntry.js', 'acme.brandy', session='s-cursor'
+    )
+    # Newest wins the default: force a deterministic order
+    dev_overlay._overlay['alice']['acme_brandy'][1]['registered_at'] = 100.0
+    dev_overlay._overlay['alice']['acme_brandy'][2]['registered_at'] = 200.0
+
+    apps = [{'id': 'acme.brandy', 'moduleId': 'acme_brandy', 'entry': '/apps/brandy/remoteEntry.js'}]
+    out = dev_overlay.apply_overlay('alice', apps)
+
+    assert out[0]['entry'] == 'http://localhost:3015/remoteEntry.js'
+    assert out[0]['dev'] is True
+    assert [d['session'] for d in out[0]['devEntries']] == ['s-cursor', 's-vscode']
+    assert [d['url'] for d in out[0]['devEntries']] == [
+        'http://localhost:3015/remoteEntry.js',
+        'http://localhost:3014/remoteEntry.js',
+    ]
+
+
+def test_reregister_touches_only_the_calling_connections_entry():
+    """A rebuild's re-register refreshes the caller's entry without touching
+    the sibling editor's URL — the clobbering that made shells loop.
+    """
+    _reset_overlay()
+    dev_overlay.register('alice', 1, 'mod_a', 'http://localhost:3014/remoteEntry.js', 'a')
+    dev_overlay.register('alice', 2, 'mod_a', 'http://localhost:3015/remoteEntry.js', 'a')
+
+    dev_overlay.register('alice', 1, 'mod_a', 'http://localhost:3014/remoteEntry.js?t=2', 'a')
+
+    urls = {e['connection_id']: e['url'] for e in dev_overlay.entries_for('alice')}
+    assert urls[1] == 'http://localhost:3014/remoteEntry.js?t=2'
+    assert urls[2] == 'http://localhost:3015/remoteEntry.js'
+
+
+def test_connection_scoped_unregister_keeps_the_sibling():
+    """One editor closing its panel removes only ITS registration."""
+    _reset_overlay()
+    dev_overlay.register('alice', 1, 'mod_a', 'http://localhost:3014/remoteEntry.js', 'a')
+    dev_overlay.register('alice', 2, 'mod_a', 'http://localhost:3015/remoteEntry.js', 'a')
+
+    assert dev_overlay.unregister('alice', 'mod_a', connection_id=1) is True
+    remaining = dev_overlay.entries_for('alice')
+    assert [e['connection_id'] for e in remaining] == [2]
+    # The sibling's entry still applies to the manifest
+    out = dev_overlay.apply_overlay('alice', [{'id': 'a', 'moduleId': 'mod_a', 'entry': '/x.js'}])
+    assert out[0]['entry'] == 'http://localhost:3015/remoteEntry.js'
+
+
+def test_drop_connection_keeps_sibling_entry_of_same_module():
+    """Disconnect expiry removes the dead editor's entry for a module while
+    the sibling editor's registration for the SAME module survives.
+    """
+    _reset_overlay()
+    dev_overlay.register('alice', 1, 'mod_a', 'http://localhost:3014/remoteEntry.js', 'a')
+    dev_overlay.register('alice', 2, 'mod_a', 'http://localhost:3015/remoteEntry.js', 'a')
+
+    assert dev_overlay.drop_connection('alice', 1) is True
+    remaining = dev_overlay.entries_for('alice')
+    assert [e['url'] for e in remaining] == ['http://localhost:3015/remoteEntry.js']
+
+
+def test_synthetic_entry_carries_dev_entries():
+    """An unpublished app's synthetic manifest row exposes every live
+    registration, so session routing works before first publish too.
+    """
+    _reset_overlay()
+    dev_overlay.register('alice', 1, 'acme_new', 'http://localhost:3014/remoteEntry.js', 'acme.new', session='s-one')
+    dev_overlay.register('alice', 2, 'acme_new', 'http://localhost:3015/remoteEntry.js', 'acme.new', session='s-two')
+
+    out = dev_overlay.apply_overlay('alice', [])
+
+    assert len(out) == 1
+    assert {d['session'] for d in out[0]['devEntries']} == {'s-one', 's-two'}
+    assert out[0]['entry'] in {'http://localhost:3014/remoteEntry.js', 'http://localhost:3015/remoteEntry.js'}

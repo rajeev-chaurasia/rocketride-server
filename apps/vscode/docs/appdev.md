@@ -36,10 +36,15 @@ their locally built bundle. The extension manages the underlying rsbuild dev
 servers through a serialized per-app operation chain (start/stop/restart run one
 at a time). Closing a preview **lingers** the server for 60 s so a quick reopen
 revives it instantly; a Reload or extension deactivation stops immediately.
-Every dev server is **owned** by the current extension host: orphans left by a
-previous host (window reload, crash) are reaped at activation and respawned
-fresh, and a server that crashes while its panel is open respawns itself
+Every dev server is **owned** by the current extension host and runs under a
+guard wrapper whose stdin tether kills it the moment the host dies (window
+reload, crash, EDH stop — any death mode), so orphaned dev servers cannot
+exist. A server that crashes while its panel is open respawns itself
 automatically (bounded, so a crash loop gives up and points at the Console).
+The dev overlay holds one registration **per editor session** — several
+editors (or windows) can dev-serve the same app concurrently; previews
+launched from an editor carry its `rrsession` nonce and resolve that
+editor's server, and shells without a nonce take the newest registration.
 
 ## `appdev:call` — the app-control message
 

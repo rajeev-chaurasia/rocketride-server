@@ -179,7 +179,7 @@ const PreviewInitializing: React.FC<{ status: WatchStatus }> = ({ status }) => (
 		<div style={styles.loading}>
 			<div style={{ textAlign: 'center', maxWidth: 460, padding: '0 24px' }}>
 				<div style={styles.initTitle}>{status.state === 'error' ? 'Dev session failed' : 'Initializing Services'}</div>
-				<div style={styles.initDetail}>{status.state === 'error' ? (status.reason ?? 'See the Console pane for the error output.') : status.state === 'building' ? 'Starting the dev server\u2026' : 'Installing dependencies\u2026'}</div>
+				<div style={styles.initDetail}>{status.state === 'error' ? (status.reason ?? 'See the Console pane for the error output.') : status.state === 'building' ? 'Starting the dev server\u2026' : status.state === 'idle' ? 'Restarting the dev server\u2026' : 'Installing dependencies\u2026'}</div>
 			</div>
 		</div>
 	</div>
@@ -399,15 +399,19 @@ const AppWebview: React.FC = () => {
 	// Latest watch status — drives the Initializing pane's phase line and,
 	// on error, its center-screen reason.
 	const [watchStatus, setWatchStatus] = useState<WatchStatus>({ state: 'installing' });
-	// Latched true at the FIRST successful build with a known dev entry:
-	// the iframe mounts once and stays (later rebuilds go through HMR and
-	// the dev-entry origin-change remount, never back to Initializing).
+	// True while the dev session is genuinely serving: latched at a
+	// successful build with a known dev entry, and RELEASED when the server
+	// stops serving ('idle' — stopped or exited — or 'error'), so a cold
+	// restart shows the phase pane instead of a dead shell holding on a
+	// black page. 'building' deliberately keeps the latch: incremental
+	// rebuilds are HMR's job, and flipping to Initializing on every save
+	// would flash the preview away.
 	const [previewLive, setPreviewLive] = useState(false);
-	// Latch the preview live once the dev session is genuinely ready (entry
-	// known + a completed build). Monotonic: never un-latches. MUST stay
-	// above the conditional loading return so hook order is render-stable.
+	// MUST stay above the conditional loading return so hook order is
+	// render-stable.
 	React.useEffect(() => {
 		if (!previewLive && devEntry && watchStatus.state === 'ok') setPreviewLive(true);
+		else if (previewLive && (watchStatus.state === 'idle' || watchStatus.state === 'error')) setPreviewLive(false);
 	}, [previewLive, devEntry, watchStatus]);
 	// The extension's auth credential — handed to the preview shell so apps
 	// that require authentication render with a real signed-in session.

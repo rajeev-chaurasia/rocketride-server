@@ -20,6 +20,7 @@ import { randomBytes } from 'crypto';
 import { ConnectionManager } from '../connection/connection';
 import { GenericEvent } from '../shared/types';
 import { scanWorkspaceApps } from '../appdev/appScan';
+import { DEV_SESSION_NONCE } from '../appdev/devSession';
 import type { ScannedApp } from '../appdev/appScan';
 import { ensureAppTrigger, ensureProjectId, readAppListing, saveAppListing } from '../appdev/appMarker';
 import type { AppListing } from '../appdev/appMarker';
@@ -566,7 +567,9 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		const base = override || this.connectionManager.getHttpUrl?.() || 'http://localhost:5565';
 		// _ts busts the browser's cached index.html — the flavor picker lives
 		// in the html, and a stale copy silently serves the wrong shell flavor.
-		return `${base.replace(/\/$/, '')}/?appid=${encodeURIComponent(appId)}&rrdev=1&_ts=${Date.now()}`;
+		// rrsession routes the preview to THIS editor's dev-overlay entry when
+		// several editors dev-serve the same app.
+		return `${base.replace(/\/$/, '')}/?appid=${encodeURIComponent(appId)}&rrdev=1&rrsession=${DEV_SESSION_NONCE}&_ts=${Date.now()}`;
 	}
 
 	// =========================================================================
@@ -649,6 +652,32 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		};
 		this.connectionManager.on('shell:accountUpdate', onAccountUpdate);
 		this.disposables.push({ dispose: () => this.connectionManager.off('shell:accountUpdate', onAccountUpdate) });
+
+		// Tab-based close detection. A tab can close WITHOUT ever having been
+		// resolved by THIS host — reconcileOpenTabs starts watches for tabs
+		// restored from a previous host, and until VSCode re-resolves one it
+		// has no panel handle, so panel.onDidDispose cannot fire and closing
+		// the tab would leave its dev server running forever. The tab list is
+		// the universal close signal; for resolved panels this double-fires
+		// alongside onDidDispose, which stop()'s linger path absorbs.
+		const tabListener = vscode.window.tabGroups.onDidChangeTabs(async (e) => {
+			for (const tab of e.closed) {
+				const input = tab.input;
+				if (!(input instanceof vscode.TabInputCustom) || input.viewType !== 'rocketride.appBuilder') continue;
+				try {
+					// A tab MOVE between groups reports close+open — only stop
+					// when no tab still shows this document.
+					const uriKey = input.uri.toString();
+					const stillOpen = vscode.window.tabGroups.all.some((g) =>
+						g.tabs.some((t) => t.input instanceof vscode.TabInputCustom && t.input.viewType === 'rocketride.appBuilder' && t.input.uri.toString() === uriKey),
+					);
+					if (stillOpen) continue;
+					const appId = await this.appIdOf(input.uri);
+					void getWatchManager()?.stop(appId);
+				} catch { /* unresolvable marker — nothing to stop */ }
+			}
+		});
+		this.disposables.push(tabListener);
 	}
 
 	// =========================================================================

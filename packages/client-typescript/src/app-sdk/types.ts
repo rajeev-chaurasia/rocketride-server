@@ -191,6 +191,14 @@ export interface AppManifestEntry {
 	version?: string;
 	/** True when the entry is a dev-overlay override (live watch build). */
 	dev?: boolean;
+	/**
+	 * Every live dev-server registration for this app — one per editor
+	 * session, newest first; `entry` already carries the newest. Pages
+	 * launched from a specific editor carry that editor's session nonce
+	 * and prefer its registration, so several editors can dev-serve the
+	 * same app concurrently.
+	 */
+	devEntries?: Array<{ url: string; session?: string; registeredAt?: number }>;
 	/** When false, the app runs without authentication. Default: true. */
 	authenticated?: boolean;
 	/** When false, the status bar is hidden for this app. Default: true. */

@@ -167,7 +167,7 @@ function makeStageFilesAction() {
 			const pkg = JSON.parse(await readFile(pkgPath));
 			pkg.main = './rocketride.js';
 			pkg.icon = 'rocketride-dark-icon.png';
-			pkg.files = ['rocketride.js', 'rocketride.js.map', 'webview/**', 'docs/**', 'shell.tgz', 'rocketride-dark-icon.png', 'rocketride-light-icon.png', 'docker.svg', 'onprem.svg', 'package.json', 'LICENSE', 'README.md'];
+			pkg.files = ['rocketride.js', 'rocketride.js.map', 'webview/**', 'docs/**', 'shell.tgz', 'devServerGuard.cjs', 'rocketride-dark-icon.png', 'rocketride-light-icon.png', 'docker.svg', 'onprem.svg', 'package.json', 'LICENSE', 'README.md'];
 			const stagedPkg = JSON.stringify(pkg, null, 2);
 			const manifestChanged = !buildHasManifest || String(await readFile(stagedPkgPath)) !== stagedPkg;
 
@@ -201,6 +201,14 @@ function makeStageFilesAction() {
 			}
 			if (await exists(iconLight)) {
 				await copyFile(iconLight, path.join(BUILD_DIR, 'rocketride-light-icon.png'));
+			}
+			// The dev-server guard wrapper — spawned as a real file by the
+			// watch manager (it cannot live inside the esbuild bundle), so it
+			// ships beside the bundle. Sourced under src/ so the source-hash
+			// change detection restages it on edit.
+			const guardSrc = path.join(SRC_DIR, 'appdev', 'devServerGuard.cjs');
+			if (await exists(guardSrc)) {
+				await copyFile(guardSrc, path.join(BUILD_DIR, 'devServerGuard.cjs'));
 			}
 			const dockerSvg = path.join(APP_ROOT, 'docker.svg');
 			const onpremSvg = path.join(APP_ROOT, 'onprem.svg');

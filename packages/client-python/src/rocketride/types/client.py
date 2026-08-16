@@ -261,6 +261,12 @@ class AppManifestEntry(TypedDict, total=False):
         seats (int): Total seats on the subscription.
         seatsUsed (int): Seats currently occupied in this org.
         features (list[str]): Feature flags enabled by the subscribed plan.
+        dev (bool): True when ``entry`` is a dev-overlay override (live
+            watch build).
+        devEntries (list[dict]): Every live dev-server registration for
+            this app — one per editor session, newest first, each
+            ``{url, session, registeredAt}``; ``entry`` already carries
+            the newest.
     """
 
     id: str
@@ -282,6 +288,8 @@ class AppManifestEntry(TypedDict, total=False):
     seats: int
     seatsUsed: int
     features: list[str]
+    dev: bool
+    devEntries: list[dict]
 
 
 class ConnectResult(TypedDict, total=False):
