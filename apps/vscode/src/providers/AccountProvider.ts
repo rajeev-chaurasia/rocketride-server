@@ -51,6 +51,7 @@ interface AccountWebviewMessage {
 	subscriptionId?: string;
 	promotionCode?: string;
 	code?: string;
+	requestId?: number;
 }
 
 // =============================================================================
@@ -258,7 +259,7 @@ export class AccountProvider {
 				const client = this.resolveClient().client;
 				const key = await getStripePublishableKey(client);
 				const reason: StripeKeyUnavailableReason | undefined = key ? undefined : client ? 'probe-failed' : 'no-connection';
-				await panel.webview.postMessage({ type: 'checkout:stripeKey', key, ...(reason ? { reason } : {}) });
+				await panel.webview.postMessage({ type: 'checkout:stripeKey', key, requestId: message.requestId ?? 0, ...(reason ? { reason } : {}) });
 				break;
 			}
 

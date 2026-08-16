@@ -223,7 +223,7 @@ export class SettingsProvider {
 						const client = getConnectionManager()?.getClient();
 						const key = await getStripePublishableKey(client);
 						const reason: StripeKeyUnavailableReason | undefined = key ? undefined : client ? 'probe-failed' : 'no-connection';
-						panel.webview.postMessage({ type: 'checkout:stripeKey', key, ...(reason ? { reason } : {}) });
+						panel.webview.postMessage({ type: 'checkout:stripeKey', key, requestId: message.requestId, ...(reason ? { reason } : {}) });
 						break;
 					}
 

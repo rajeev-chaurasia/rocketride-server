@@ -62,17 +62,26 @@ export function useStripeKey(enabled = true): string {
 		let settled = false;
 		let attempt = 0;
 		let retryTimer: ReturnType<typeof setTimeout> | undefined;
+		// Monotonic request id: each request bumps it, and a reply is honored
+		// only if it echoes the CURRENT id. This drops a stale reply from a
+		// previous server (requested before a switch) that lands after the
+		// re-request — otherwise it would clobber the new server's key.
+		let requestId = 0;
 
 		const request = (): void => {
-			getVsCodeApi()?.postMessage({ type: 'checkout:getStripeKey' });
+			requestId += 1;
+			getVsCodeApi()?.postMessage({ type: 'checkout:getStripeKey', requestId });
 		};
 
 		// Listen before asking so a fast host reply cannot be missed.
 		const onHostMessage = (event: MessageEvent): void => {
-			const message = event.data as { type?: string; key?: string; reason?: string; isConnected?: boolean } | undefined;
+			const message = event.data as { type?: string; key?: string; reason?: string; isConnected?: boolean; requestId?: number } | undefined;
 			if (!message) return;
 
 			if (message.type === 'checkout:stripeKey') {
+				// Ignore a reply that does not answer the current request — a
+				// stale key from a previous server would otherwise win a race.
+				if (message.requestId !== requestId) return;
 				// A real key settles the hook for good.
 				if (message.key) {
 					settled = true;

@@ -759,7 +759,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 					const client = this.connectionManager.getClient();
 					const key = await getStripePublishableKey(client);
 					const reason: StripeKeyUnavailableReason | undefined = key ? undefined : client ? 'probe-failed' : 'no-connection';
-					webview.postMessage({ type: 'checkout:stripeKey', key, ...(reason ? { reason } : {}) });
+					webview.postMessage({ type: 'checkout:stripeKey', key, requestId: data.requestId, ...(reason ? { reason } : {}) });
 					break;
 				}
 

@@ -79,10 +79,12 @@ injects platform deps and performs the build.
 
 - `{ type: 'account:setDevTeam', teamId }` — set the caller's development team
   for the active org (dev-run billing + environment layer). Per-org selection.
-- `{ type: 'checkout:getStripeKey' }` → host replies
-  `{ type: 'checkout:stripeKey', key, reason? }`. The publishable key is fetched
-  at runtime from the connected server's public probe (never baked into the
-  build). When the key is empty, `reason` explains why
+- `{ type: 'checkout:getStripeKey', requestId }` → host replies
+  `{ type: 'checkout:stripeKey', key, requestId, reason? }`. The publishable key
+  is fetched at runtime from the connected server's public probe (never baked
+  into the build). When the key is empty, `reason` explains why
   (`'no-connection' | 'probe-failed'`) so the webview can show a message instead
-  of a dead Subscribe button; the requesting hook re-requests when a connection
-  lands.
+  of a dead Subscribe button. The requesting hook re-requests when a connection
+  lands (a server switch invalidates the previous key), and the `requestId`
+  echo lets it drop a stale reply from a prior server that races in after the
+  re-request.
