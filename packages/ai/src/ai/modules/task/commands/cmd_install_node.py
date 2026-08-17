@@ -39,17 +39,38 @@ until the airlock passes.
 
 import asyncio
 import base64
+import json
 import posixpath
 from typing import Any, Dict
 
 from ai.common.dap.dap_conn import DAPConn
 
-from .capsule_airlock import AirlockRejected, CapsuleInfo, validate_capsule
+from .capsule_airlock import NODES_ROOT, AirlockRejected, CapsuleInfo, validate_capsule
 
 # Root (relative to the caller's file area) under which installed node capsules
 # live. Matches the capsule's internal ``local_nodes/`` layout and the path the
 # catalog overlay and per-run materializer read back from.
 STORE_NODES_ROOT = 'local_nodes'
+
+# The installed copy of the capsule's manifest, kept beside the node's files.
+# The store holds the node payload only, so without this the capsule's version
+# and declared capabilities would be lost and no export could rebuild the
+# original. Dot-prefixed and skipped when re-packing, so it never becomes part
+# of the payload it describes.
+STORE_MANIFEST_NAME = '.capsule.json'
+
+
+def _safe_node_name(raw: Any) -> str:
+    """
+    Narrow a caller-supplied node name to a single dir under ``local_nodes/``.
+
+    Rejects empty, path separators and dot segments, so a name can never escape
+    the root. Returns '' when the name is unusable.
+    """
+    name = str(raw or '').strip()
+    if not name or '/' in name or '\\' in name or name in ('.', '..'):
+        return ''
+    return name
 
 
 class InstallNodeCommands(DAPConn):
@@ -110,10 +131,9 @@ class InstallNodeCommands(DAPConn):
         {'ok': False, 'error': <why>}.
         """
         args = request.get('arguments') or {}
-        name = str(args.get('node') or '').strip()
-        # Confine the delete to a single dir directly under local_nodes/: reject
-        # empty, path separators and dot segments so it can never escape the root.
-        if not name or '/' in name or '\\' in name or name in ('.', '..'):
+        # Confine the delete to a single dir directly under local_nodes/.
+        name = _safe_node_name(args.get('node'))
+        if not name:
             return self.build_response(request, body={'ok': False, 'error': 'invalid node name'})
         try:
             from ai.account import Store
@@ -126,7 +146,115 @@ class InstallNodeCommands(DAPConn):
             self.debug_message(f'rrext_uninstall_node failed: {e}')
             return self.build_response(request, body={'ok': False, 'error': str(e)})
 
+    async def on_rrext_export_node(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Re-pack an installed node capsule so the caller can save it as a ``.rrc``.
+
+        The round-trip half of ``rrext_install_node``: reads the node back out of
+        the caller's store, rebuilds the manifest from the copy kept at install
+        time (see STORE_MANIFEST_NAME), and re-packs. The result passes the
+        airlock again — the checksum is recomputed over the payload that is
+        actually there, so a node edited in place exports as a valid capsule.
+
+        Arguments (in ``request['arguments']``):
+            node (str): the installed node's name.
+
+        Returns {'ok': True, 'node': <name>, 'filename': '<name>.rrc',
+        'capsule': <base64>} or {'ok': False, 'error': <why>}.
+        """
+        args = request.get('arguments') or {}
+        name = _safe_node_name(args.get('node'))
+        if not name:
+            return self.build_response(request, body={'ok': False, 'error': 'invalid node name'})
+        try:
+            from ai.account import Store
+
+            from .capsule_airlock import load_relaxed_json
+            from .capsule_pack import pack_payload
+
+            fs = Store.file_store(self.request_context())
+            node_dir = f'{STORE_NODES_ROOT}/{name}'
+            files = await self._read_store_tree(fs, node_dir)
+            if not files:
+                return self.build_response(request, body={'ok': False, 'error': f'node {name!r} is not installed'})
+
+            # The manifest is metadata ABOUT the payload, so it is stripped
+            # before packing and re-emitted by pack_payload().
+            manifest_raw = files.pop(STORE_MANIFEST_NAME, None)
+            manifest = json.loads(manifest_raw.decode('utf-8')) if manifest_raw else {}
+
+            services_raw = files.get('services.json')
+            services = load_relaxed_json(services_raw.decode('utf-8')) if services_raw else {}
+            protocol = manifest.get('protocol') or services.get('protocol') or f'{name}://'
+
+            payload = {f'{NODES_ROOT}/{name}/{rel}': data for rel, data in files.items()}
+            capsule = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: pack_payload(
+                    name,
+                    payload,
+                    protocol,
+                    version=str(manifest.get('version') or '0.0.0'),
+                    declares=list(manifest.get('declares') or []),
+                ),
+            )
+            self.debug_message(f'Exported node capsule {name!r} ({len(capsule)} bytes)')
+            return self.build_response(
+                request,
+                body={
+                    'ok': True,
+                    'node': name,
+                    'filename': f'{name}.rrc',
+                    'capsule': base64.b64encode(capsule).decode('ascii'),
+                },
+            )
+        except Exception as e:
+            self.debug_message(f'rrext_export_node failed: {e}')
+            return self.build_response(request, body={'ok': False, 'error': str(e)})
+
     # -------------------------------------------------------------------------
+
+    async def _read_store_tree(self, fs, root: str) -> Dict[str, bytes]:
+        """
+        Read every file under a store directory, keyed by path relative to it.
+
+        Walks depth-first through ``list_dir`` (which only reports immediate
+        children). A missing root yields an empty dict rather than raising —
+        the caller reports it as "not installed".
+        """
+        out: Dict[str, bytes] = {}
+        try:
+            listing = await fs.list_dir(root)
+        except Exception:
+            return out
+        for entry in listing.get('entries', []) if isinstance(listing, dict) else []:
+            child = entry.get('name') if isinstance(entry, dict) else entry
+            if not child:
+                continue
+            path = f'{root}/{child}'
+            if isinstance(entry, dict) and entry.get('type') == 'dir':
+                for rel, data in (await self._read_store_tree(fs, path)).items():
+                    out[f'{child}/{rel}'] = data
+            else:
+                out[child] = await self._read_store_bytes(fs, path)
+        return out
+
+    async def _read_store_bytes(self, fs, path: str) -> bytes:
+        """Read a whole store file through the chunked handle API."""
+        meta = await fs.open_read(path)
+        handle = meta['handle']
+        data = bytearray()
+        offset = 0
+        try:
+            while True:
+                chunk = await fs.read_chunk(handle, offset)
+                if not chunk:
+                    break
+                data.extend(chunk)
+                offset += len(chunk)
+        finally:
+            await fs.close_read(handle)
+        return bytes(data)
 
     async def _resolve_capsule_bytes(self, args: Dict[str, Any]) -> bytes:
         """Get the raw .rrc bytes from a base64 payload or an uploaded store path."""
@@ -172,15 +300,25 @@ class InstallNodeCommands(DAPConn):
         except Exception:
             pass  # first install: nothing to remove
 
+        # The node's payload, plus the manifest that describes it (see
+        # STORE_MANIFEST_NAME) so an export can rebuild an equivalent capsule.
+        manifest = json.dumps(
+            {'name': info.name, 'protocol': info.protocol, 'version': info.version, 'declares': list(info.declares)},
+            indent=2,
+            sort_keys=True,
+        ).encode('utf-8')
+        to_write = dict(info.files)
+        to_write[f'{node_dir}/{STORE_MANIFEST_NAME}'] = manifest
+
         made: set = set()
-        for arc in sorted(info.files):
+        for arc in sorted(to_write):
             parent = posixpath.dirname(arc)
             if parent and parent not in made:
                 await fs.mkdir(parent)
                 made.add(parent)
             handle = await fs.open_write(arc)
             try:
-                await fs.write_chunk(handle, info.files[arc])
+                await fs.write_chunk(handle, to_write[arc])
             finally:
                 await fs.close_write(handle)
 

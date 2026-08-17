@@ -38,13 +38,49 @@ import io
 import json
 import os
 import zipfile
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .capsule_airlock import MANIFEST_NAME, NODES_ROOT, _payload_sha256, load_relaxed_json
 
 # Files that never belong in a capsule (build/runtime cruft).
 _SKIP_DIRS = frozenset({'__pycache__', '.git', '.mypy_cache', '.ruff_cache'})
 _SKIP_SUFFIX = ('.pyc', '.pyo')
+
+
+def pack_payload(
+    name: str, payload: Dict[str, bytes], protocol: str, version: str = '0.0.0', declares: Optional[List[str]] = None
+) -> bytes:
+    """
+    Build capsule bytes from an in-memory payload.
+
+    The packing half that needs no filesystem, so a caller holding the node's
+    files (e.g. read back from the user's store on export) reaches the exact
+    same format the airlock validates on the way in.
+
+    Args:
+        name: Node name — the ``local_nodes/<name>/`` folder inside the capsule.
+        payload: arcname -> bytes, each arcname already under ``local_nodes/<name>/``.
+        protocol: The node's protocol, recorded in the manifest.
+        version: Capsule version string, recorded in the manifest.
+        declares: Capability strings the node needs (network/subprocess/filesystem).
+
+    Returns:
+        The ``.rrc`` bytes, ready to send to ``rrext_install_node``.
+    """
+    manifest = {
+        'name': name,
+        'protocol': protocol,
+        'version': version,
+        'declares': list(declares or []),
+        'sha256': _payload_sha256(payload),
+    }
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, sort_keys=True))
+        for arc in sorted(payload):
+            zf.writestr(arc, payload[arc])
+    return buf.getvalue()
 
 
 def pack_node_dir(node_src_dir: str, version: str = '0.0.0', declares: Optional[List[str]] = None) -> bytes:
@@ -81,20 +117,7 @@ def pack_node_dir(node_src_dir: str, version: str = '0.0.0', declares: Optional[
             with open(abs_path, 'rb') as fh:
                 payload[f'{node_arc_root}/{rel}'] = fh.read()
 
-    manifest = {
-        'name': name,
-        'protocol': protocol,
-        'version': version,
-        'declares': list(declares or []),
-        'sha256': _payload_sha256(payload),
-    }
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(MANIFEST_NAME, json.dumps(manifest, indent=2, sort_keys=True))
-        for arc in sorted(payload):
-            zf.writestr(arc, payload[arc])
-    return buf.getvalue()
+    return pack_payload(name, payload, protocol, version=version, declares=declares)
 
 
 def _main() -> int:

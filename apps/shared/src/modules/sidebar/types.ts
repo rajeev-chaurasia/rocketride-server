@@ -75,6 +75,14 @@ export interface UnknownTask {
 // APP BUILDER SIDEBAR (MY APPS)
 // =============================================================================
 
+/** One installed node capsule row in the Nodes sidebar mode. */
+export interface InstalledCapsule {
+	/** The node's name — its `local_nodes/<name>/` folder and catalog key. */
+	name: string;
+	/** Display title from the node's services.json; falls back to the name. */
+	title?: string;
+}
+
 /** One MY APPS row in the App Builder sidebar mode. */
 export interface AppListItem {
 	/** App id (the appManifest.id binding key, e.g. 'acme.brandy'). */
@@ -204,6 +212,20 @@ export interface ISidebarViewProps {
 	 * placeholder still rides along whenever the mode tabs render).
 	 */
 	appBuilder?: AppBuilderSidebar;
+
+	// ── Node builder (Nodes tab) ────────────────────────────────────────────
+	/**
+	 * Node capsules installed for the caller, listed under the Nodes tab.
+	 * Hosts read them from the services catalog (entries tagged
+	 * `source: 'capsule'`). Omitted → the tab shows its empty state.
+	 */
+	capsules?: InstalledCapsule[];
+	/**
+	 * Per-capsule action from the Nodes tab. The host owns the engine call and
+	 * whatever the platform needs around it (a download in the browser, a save
+	 * dialog in VS Code), plus refreshing the list afterwards.
+	 */
+	onCapsuleAction?: (action: 'export' | 'uninstall', name: string) => void;
 	/**
 	 * Force the mode tabs visible without appBuilder — Pipelines plus the
 	 * Nodes placeholder (the web host: more modes will land on that strip).

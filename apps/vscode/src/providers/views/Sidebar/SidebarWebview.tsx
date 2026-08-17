@@ -32,7 +32,7 @@ import { BxUser, BxCog, BxExport, BxLock, BxRocket } from 'shell';
 import { foldTaskEvent } from 'shared/modules/sidebar/taskFold';
 import { SidebarFooter } from 'shell';
 import type { SidebarFooterMenuItem } from 'shell';
-import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, AppListItem, SidebarMode } from 'shared/modules/sidebar/types';
+import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, AppListItem, InstalledCapsule, SidebarMode } from 'shared/modules/sidebar/types';
 import { useMessaging } from '../hooks/useMessaging';
 
 // =============================================================================
@@ -92,12 +92,15 @@ type IncomingMessage =
 				unknownTasks: UnknownTask[];
 				// App Builder (MY APPS) — merged workspace ∪ server list
 				apps?: AppListItem[];
+				// Node capsules installed in the caller's store (Nodes tab).
+				capsules?: InstalledCapsule[];
 				/** Host-persisted sidebar mode (workspaceState). */
 				sidebarMode?: SidebarMode;
 			};
 	  }
 	| { type: 'entriesUpdate'; entries: HostProjectEntry[] }
 	| { type: 'appsUpdate'; apps: AppListItem[] }
+	| { type: 'capsulesUpdate'; capsules: InstalledCapsule[] }
 	| { type: 'taskEvent'; event: TaskEventBody }
 	| { type: 'statusUpdate'; projectId: string; sourceId: string; errors: string[]; warnings: string[] }
 	| { type: 'dashboardSnapshot'; tasks: DashboardTaskDTO[] };
@@ -127,6 +130,8 @@ const SidebarViewWebview: React.FC = () => {
 
 	// ── App Builder (MY APPS) ───────────────────────────────────────────────
 	const [apps, setApps] = useState<AppListItem[]>([]);
+	// ── Node capsules (Nodes tab) ───────────────────────────────────────────
+	const [capsules, setCapsules] = useState<InstalledCapsule[]>([]);
 	const [sidebarMode, setSidebarMode] = useState<SidebarMode>('pipelines');
 	// The host-persisted mode seeds the strip ONCE: an `update` composed
 	// before the persist round trip completed carries the previous value and
@@ -231,6 +236,7 @@ const SidebarViewWebview: React.FC = () => {
 					if ((msg.data as any).isSubscribed !== undefined) setSubscribed((msg.data as any).isSubscribed);
 					// App Builder list + host-persisted mode (seed once — see ref)
 					if (msg.data.apps) setApps(msg.data.apps);
+					if (msg.data.capsules) setCapsules(msg.data.capsules);
 					if (msg.data.sidebarMode && !sidebarModeSeededRef.current) {
 						sidebarModeSeededRef.current = true;
 						setSidebarMode(msg.data.sidebarMode);
@@ -243,6 +249,10 @@ const SidebarViewWebview: React.FC = () => {
 
 				case 'appsUpdate':
 					setApps(msg.apps);
+					break;
+
+				case 'capsulesUpdate':
+					setCapsules(msg.capsules);
 					break;
 
 				case 'taskEvent':
@@ -312,6 +322,16 @@ const SidebarViewWebview: React.FC = () => {
 	const onOpenFile = useCallback(
 		(path: string) => {
 			sendMessage({ type: 'openFile', fsPath: path });
+		},
+		[sendMessage]
+	);
+
+	// Capsule row actions run as host commands — the save dialog, the store
+	// call and the confirm prompt all belong to the extension side.
+	const onCapsuleAction = useCallback(
+		(action: 'export' | 'uninstall', name: string) => {
+			const command = action === 'export' ? 'rocketride.node.exportCapsule' : 'rocketride.node.uninstallCapsule';
+			sendMessage({ type: 'command', command, args: [name] });
 		},
 		[sendMessage]
 	);
@@ -477,7 +497,7 @@ const SidebarViewWebview: React.FC = () => {
 	// No headerSlot: the VS Code host has no home-app destination, so it injects no
 	// host-specific top nav. The "Home" button is a SaaS-shell concept owned by the
 	// web host (rocket-ui), intentionally absent from shared / this extension.
-	return <SidebarView connection={connection} isSubscribed={subscribed} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} onNavigate={onNavigate} onOpenFile={onOpenFile} onSourceAction={onSourceAction} onRefresh={onRefresh} footerSlot={footerSlot} onOpenUnknownTask={onOpenUnknownTask} appBuilder={{ apps, onNewApp, onOpenApp }} sidebarMode={sidebarMode} onSidebarModeChange={onSidebarModeChange} />;
+	return <SidebarView connection={connection} isSubscribed={subscribed} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} onNavigate={onNavigate} onOpenFile={onOpenFile} onSourceAction={onSourceAction} onRefresh={onRefresh} footerSlot={footerSlot} onOpenUnknownTask={onOpenUnknownTask} appBuilder={{ apps, onNewApp, onOpenApp }} capsules={capsules} onCapsuleAction={onCapsuleAction} sidebarMode={sidebarMode} onSidebarModeChange={onSidebarModeChange} />;
 };
 
 export default SidebarViewWebview;

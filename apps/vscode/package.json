@@ -350,6 +350,18 @@
 				"icon": "$(cloud-upload)"
 			},
 			{
+				"command": "rocketride.node.exportCapsule",
+				"title": "Export Node Capsule (.rrc)",
+				"category": "RocketRide",
+				"icon": "$(cloud-download)"
+			},
+			{
+				"command": "rocketride.node.uninstallCapsule",
+				"title": "Uninstall Node Capsule",
+				"category": "RocketRide",
+				"icon": "$(trash)"
+			},
+			{
 				"command": "rocketride.sidebar.connection.connect",
 				"title": "Connect to Server",
 				"category": "RocketRide",

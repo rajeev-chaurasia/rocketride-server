@@ -524,6 +524,67 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 				vscode.window.showErrorMessage(`Failed to install node capsule: ${err}`);
 			}
 		}),
+		vscode.commands.registerCommand('rocketride.node.exportCapsule', async (node?: string) => {
+			const logger = getLogger();
+			try {
+				const client = connectionManager?.getClient();
+				if (!client) {
+					vscode.window.showWarningMessage('Not connected to a RocketRide engine. Connect first.');
+					return;
+				}
+				const name = node ?? (await pickInstalledCapsule(client, 'Export'));
+				if (!name) {
+					return;
+				}
+				// The engine re-packs from the store, so an edited node exports
+				// exactly what is installed rather than the original upload.
+				const res = await client.call<{ ok?: boolean; capsule?: string; filename?: string; error?: string }>('rrext_export_node', { node: name });
+				if (!res?.ok || !res.capsule) {
+					vscode.window.showWarningMessage(`Export failed: ${res?.error ?? 'unknown error'}`);
+					return;
+				}
+				const target = await vscode.window.showSaveDialog({
+					defaultUri: vscode.Uri.file(res.filename ?? `${name}.rrc`),
+					filters: { 'RocketRide Capsule': ['rrc'] },
+				});
+				if (!target) {
+					return;
+				}
+				await vscode.workspace.fs.writeFile(target, Buffer.from(res.capsule, 'base64'));
+				vscode.window.showInformationMessage(`Node capsule exported: ${target.fsPath}`);
+			} catch (err) {
+				logger.error(`[ExportCapsule] failed: ${err}`);
+				vscode.window.showErrorMessage(`Failed to export node capsule: ${err}`);
+			}
+		}),
+		vscode.commands.registerCommand('rocketride.node.uninstallCapsule', async (node?: string) => {
+			const logger = getLogger();
+			try {
+				const client = connectionManager?.getClient();
+				if (!client) {
+					vscode.window.showWarningMessage('Not connected to a RocketRide engine. Connect first.');
+					return;
+				}
+				const name = node ?? (await pickInstalledCapsule(client, 'Uninstall'));
+				if (!name) {
+					return;
+				}
+				const confirmed = await vscode.window.showWarningMessage(`Uninstall node capsule "${name}"? Pipelines using this node will stop working.`, { modal: true }, 'Uninstall');
+				if (confirmed !== 'Uninstall') {
+					return;
+				}
+				const res = await client.call<{ ok?: boolean; error?: string }>('rrext_uninstall_node', { node: name });
+				if (!res?.ok) {
+					vscode.window.showWarningMessage(`Uninstall failed: ${res?.error ?? 'unknown error'}`);
+					return;
+				}
+				vscode.window.showInformationMessage(`Node capsule uninstalled: ${name}`);
+				await refreshAllProviders();
+			} catch (err) {
+				logger.error(`[UninstallCapsule] failed: ${err}`);
+				vscode.window.showErrorMessage(`Failed to uninstall node capsule: ${err}`);
+			}
+		}),
 		vscode.commands.registerCommand('rocketride.agents.install', async () => {
 			const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 			if (!workspaceFolder) {
@@ -644,6 +705,26 @@ function setupConnectionEventHandlers(): void {
 /**
  * Refreshes all data providers
  */
+/**
+ * Asks the user which installed capsule to act on.
+ *
+ * Only needed when a command is invoked from the palette — the sidebar rows
+ * pass the name directly. Returns undefined when nothing is installed or the
+ * user dismisses the pick.
+ */
+async function pickInstalledCapsule(client: { call<T>(command: string, args: Record<string, unknown>): Promise<T> }, action: string): Promise<string | undefined> {
+	const res = await client.call<{ services?: Record<string, { title?: string; source?: string }> }>('rrext_services', {});
+	const names = Object.entries(res?.services ?? {})
+		.filter(([, def]) => def?.source === 'capsule')
+		.map(([name, def]) => ({ label: def?.title || name, description: name }));
+	if (!names.length) {
+		vscode.window.showInformationMessage('No node capsules are installed.');
+		return undefined;
+	}
+	const picked = await vscode.window.showQuickPick(names, { placeHolder: `${action} which node capsule?` });
+	return picked?.description;
+}
+
 async function refreshAllProviders(): Promise<void> {
 	// SidebarProvider handles its own refresh via event listeners
 }

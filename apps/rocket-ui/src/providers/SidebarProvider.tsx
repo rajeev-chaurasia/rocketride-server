@@ -38,7 +38,7 @@ import { getDocs } from '../docs';
 import { SidebarView } from 'shared/modules/sidebar/SidebarView';
 import { BxExport, useSidebarCollapsed } from 'shell';
 import { foldTaskEvent } from 'shared/modules/sidebar/taskFold';
-import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode } from 'shared/modules/sidebar/types';
+import type { ProjectEntry, ActiveTaskState, UnknownTask, ConnectionInfo, SidebarMode, InstalledCapsule } from 'shared/modules/sidebar/types';
 import type { TaskLifecycleEvent } from 'shared/modules/sidebar/taskFold';
 import { loadProject, listProjectDir, isPipelineFile, pipelineExtension } from '../utils/projectStore';
 import { downloadJson } from '../utils/downloadFile';
@@ -286,6 +286,44 @@ const SidebarProvider: React.FC = () => {
 
 	// --- Callbacks -----------------------------------------------------------
 
+	// Action error state — shown as a dialog when an action fails (run/stop,
+	// and the node-capsule calls below).
+	const [actionError, setActionError] = useState<string | null>(null);
+
+	// --- Node capsules (Nodes tab) -------------------------------------------
+
+	const [capsules, setCapsules] = useState<InstalledCapsule[]>([]);
+	// Success notice for capsule actions (the error path uses actionError).
+	const [capsuleNotice, setCapsuleNotice] = useState<string | null>(null);
+
+	/**
+	 * Installed capsules, read from the services catalog: the engine tags the
+	 * ones it overlays from the caller's store with `source: 'capsule'`.
+	 */
+	const refreshCapsules = useCallback(async () => {
+		if (!client || !isConnected) {
+			setCapsules([]);
+			return;
+		}
+		try {
+			type CatalogEntry = { title?: string; source?: string };
+			const res = await client.call<{ services?: Record<string, CatalogEntry> }>('rrext_services', {});
+			const services: Record<string, CatalogEntry> = res?.services ?? {};
+			const installed = Object.entries(services)
+				.filter(([, def]) => def?.source === 'capsule')
+				.map(([name, def]) => ({ name, title: def?.title }));
+			setCapsules(installed);
+		} catch (err) {
+			// A catalog that cannot be read is not an error worth a dialog —
+			// the tab simply shows no capsules.
+			setCapsules([]);
+		}
+	}, [client, isConnected]);
+
+	useEffect(() => {
+		void refreshCapsules();
+	}, [refreshCapsules]);
+
 	/**
 	 * Prompts for a .rrc capsule and installs it through the engine airlock.
 	 * Web counterpart of the VS Code `rocketride.node.installCapsule` command:
@@ -293,7 +331,7 @@ const SidebarProvider: React.FC = () => {
 	 */
 	const installCapsule = useCallback(() => {
 		if (!client || !isConnected) {
-			window.alert('Not connected to a RocketRide engine. Connect first.');
+			setActionError('Not connected to a RocketRide engine. Connect first.');
 			return;
 		}
 		const input = document.createElement('input');
@@ -314,16 +352,57 @@ const SidebarProvider: React.FC = () => {
 					capsule,
 				});
 				if (res?.ok) {
-					window.alert(`Node capsule installed: ${res.installed}`);
+					setCapsuleNotice(`Node capsule installed: ${res.installed}`);
+					await refreshCapsules();
 				} else {
-					window.alert(`Airlock rejected the capsule: ${(res?.violations ?? ['unknown reason']).join('; ')}`);
+					setActionError(`Airlock rejected the capsule: ${(res?.violations ?? ['unknown reason']).join('; ')}`);
 				}
 			} catch (err) {
-				window.alert(`Failed to install node capsule: ${err}`);
+				setActionError(`Failed to install node capsule: ${err}`);
 			}
 		};
 		input.click();
-	}, [client, isConnected]);
+	}, [client, isConnected, refreshCapsules]);
+
+	/**
+	 * Export/uninstall from the Nodes tab. Export re-packs the installed node
+	 * server-side and hands the bytes back as base64, which the browser saves
+	 * through a temporary object URL (the only way to write a file from a page).
+	 */
+	const handleCapsuleAction = useCallback(
+		async (action: 'export' | 'uninstall', name: string) => {
+			if (!client) return;
+			try {
+				if (action === 'export') {
+					const res = await client.call<{ ok?: boolean; capsule?: string; filename?: string; error?: string }>('rrext_export_node', { node: name });
+					if (!res?.ok || !res.capsule) {
+						setActionError(`Export failed: ${res?.error ?? 'unknown error'}`);
+						return;
+					}
+					const bytes = Uint8Array.from(atob(res.capsule), (c) => c.charCodeAt(0));
+					const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+					const a = document.createElement('a');
+					a.href = url;
+					a.download = res.filename ?? `${name}.rrc`;
+					a.click();
+					URL.revokeObjectURL(url);
+					return;
+				}
+
+				const confirmed = await showConfirm('Uninstall node capsule', `Uninstall "${name}"? Pipelines using this node will stop working.`, 'Uninstall');
+				if (!confirmed) return;
+				const res = await client.call<{ ok?: boolean; error?: string }>('rrext_uninstall_node', { node: name });
+				if (!res?.ok) {
+					setActionError(`Uninstall failed: ${res?.error ?? 'unknown error'}`);
+					return;
+				}
+				await refreshCapsules();
+			} catch (err) {
+				setActionError(`Node capsule ${action} failed: ${err}`);
+			}
+		},
+		[client, refreshCapsules, showConfirm]
+	);
 
 	/**
 	 * Handles navigation button clicks.
@@ -433,9 +512,6 @@ const SidebarProvider: React.FC = () => {
 		[client]
 	);
 
-	// Action error state — shown as a dialog when run/stop fails
-	const [actionError, setActionError] = useState<string | null>(null);
-
 	/**
 	 * Handles run/stop actions on source components.
 	 */
@@ -515,10 +591,11 @@ const SidebarProvider: React.FC = () => {
 	return (
 		<>
 			<SidebarCollapsedGate>
-				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} showModeStrip sidebarMode={sidebarMode} onSidebarModeChange={setSidebarMode} />
+				<SidebarView connection={connection} entries={entries} activeTasks={activeTasks} unknownTasks={unknownTasks} activeFilePath={activeFilePath} onNavigate={handleNavigate} onOpenFile={handleOpenFile} onFileManage={handleFileManage} fileActions={[{ id: 'export', label: 'Export', icon: <BxExport size={16} />, onSelect: handleExportPipeline }]} onSourceAction={handleSourceAction} onOpenUnknownTask={handleOpenUnknownTask} onRefresh={refresh} capsules={capsules} onCapsuleAction={handleCapsuleAction} showModeStrip sidebarMode={sidebarMode} onSidebarModeChange={setSidebarMode} />
 			</SidebarCollapsedGate>
 			{confirmState && <ConfirmDialog title={confirmState.title} message={confirmState.message} confirmLabel={confirmState.confirmLabel} cancelLabel="Cancel" onConfirm={() => handleConfirmResult(true)} onCancel={() => handleConfirmResult(false)} />}
 			{actionError && <ConfirmDialog title="Pipeline Error" message={actionError} confirmLabel="OK" onConfirm={() => setActionError(null)} onCancel={() => setActionError(null)} />}
+			{capsuleNotice && <ConfirmDialog title="Node capsules" message={capsuleNotice} confirmLabel="OK" onConfirm={() => setCapsuleNotice(null)} onCancel={() => setCapsuleNotice(null)} />}
 		</>
 	);
 };

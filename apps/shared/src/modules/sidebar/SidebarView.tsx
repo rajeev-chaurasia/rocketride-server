@@ -21,7 +21,7 @@
 
 import React, { useState, useCallback, CSSProperties } from 'react';
 import { commonStyles } from 'shell';
-import { BxPlus, BxDesktop, BxChevronRight, BxChevronDown, BxStop, BxGridAlt, BxCloudUpload } from 'shell';
+import { BxPlus, BxDesktop, BxChevronRight, BxChevronDown, BxStop, BxGridAlt, BxCloudUpload, BxExport, BxTrash } from 'shell';
 import { SidebarMenu, TabControl, TabPanel } from 'shell';
 import { StatusBadge } from 'shell';
 import type { StatusVariant } from 'shell';
@@ -174,7 +174,7 @@ const PIPELINE_CONFIG: ExplorerConfig = {
  * Maps ISidebarViewProps (pipeline-specific) to IExplorerProps (generic).
  * The Explorer component handles all file tree rendering internally.
  */
-export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscribed = true, entries, activeTasks, unknownTasks, headerSlot, onNavigate, onOpenFile, onFileManage, fileActions, onSourceAction, onRefresh, footerSlot, onOpenUnknownTask, activeFilePath, appBuilder, showModeStrip = false, sidebarMode = 'pipelines', onSidebarModeChange }) => {
+export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscribed = true, entries, activeTasks, unknownTasks, headerSlot, onNavigate, onOpenFile, onFileManage, fileActions, onSourceAction, onRefresh, footerSlot, onOpenUnknownTask, activeFilePath, appBuilder, capsules = [], onCapsuleAction, showModeStrip = false, sidebarMode = 'pipelines', onSidebarModeChange }) => {
 	const [hoveredRow, setHoveredRow] = useState<string | null>(null);
 	const [unknownExpanded, setUnknownExpanded] = useState(true);
 
@@ -195,13 +195,9 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 		entries: [{ id: 'monitor', label: 'Monitor', icon: <BxDesktop size={16} />, disabled: !isConnected }],
 	};
 
-	// "+ New pipeline" belongs to the Pipelines tab body only, alongside the
-	// capsule installer (a node capsule is only useful to a pipeline).
+	// "+ New pipeline" belongs to the Pipelines tab body only.
 	const pipelinesNavMenu: ViewMenu = {
-		entries: [
-			{ id: 'new', label: 'New pipeline', icon: <BxPlus size={16} /> },
-			{ id: 'installCapsule', label: 'Install node capsule', icon: <BxCloudUpload size={16} />, disabled: !isConnected },
-		],
+		entries: [{ id: 'new', label: 'New pipeline', icon: <BxPlus size={16} /> }],
 	};
 
 	// The mode tabs — the stock TabControl menu. The Apps entry only exists
@@ -266,7 +262,7 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 					menu={pipelinesNavMenu}
 					activeId=""
 					onSelect={(id) => {
-						if (id === 'new' || id === 'installCapsule') onNavigate(id);
+						if (id === 'new') onNavigate(id);
 					}}
 				/>
 			</div>
@@ -365,10 +361,48 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 		</div>
 	) : null;
 
-	// Nodes tab body: node-builder placeholder until the real surface lands.
+	// Nodes tab body: the node builder's capsule surface — import a .rrc, and
+	// export or uninstall the capsules already installed. Node authoring itself
+	// still lands here later.
+	const nodesNavMenu: ViewMenu = {
+		entries: [{ id: 'installCapsule', label: 'Import node capsule', icon: <BxCloudUpload size={16} />, disabled: !isConnected }],
+	};
+
 	const nodesPanel = (
 		<div style={S.panelColumn}>
-			<div style={S.comingSoon}>Coming soon...</div>
+			<div style={S.navSection}>
+				<SidebarMenu
+					menu={nodesNavMenu}
+					activeId=""
+					onSelect={(id) => {
+						if (id === 'installCapsule') onNavigate(id);
+					}}
+				/>
+			</div>
+
+			<div style={S.appsLabel}>Installed capsules</div>
+			{capsules.length === 0 ? (
+				<div style={S.comingSoon}>No node capsules installed</div>
+			) : (
+				<div style={S.appsList}>
+					{capsules.map((capsule) => (
+						<div key={capsule.name} style={{ ...S.row, ...hoverBg(`capsule-${capsule.name}`) }} onMouseEnter={() => setHoveredRow(`capsule-${capsule.name}`)} onMouseLeave={() => setHoveredRow(null)}>
+							<BxGridAlt size={16} />
+							<span style={S.rowName} title={capsule.name}>
+								{capsule.title || capsule.name}
+							</span>
+							{/* Actions stay mounted (not hover-gated) so they are
+							    reachable by keyboard, matching the Explorer rows. */}
+							<button style={S.actionBtn('var(--rr-text-secondary)')} title={`Export ${capsule.name} as .rrc`} disabled={!isConnected} onClick={() => onCapsuleAction?.('export', capsule.name)}>
+								<BxExport size={14} />
+							</button>
+							<button style={S.actionBtn('var(--rr-text-secondary)')} title={`Uninstall ${capsule.name}`} disabled={!isConnected} onClick={() => onCapsuleAction?.('uninstall', capsule.name)}>
+								<BxTrash size={14} />
+							</button>
+						</div>
+					))}
+				</div>
+			)}
 		</div>
 	);
 

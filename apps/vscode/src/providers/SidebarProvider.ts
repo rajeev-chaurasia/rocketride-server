@@ -437,6 +437,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 		// Re-parse when service definitions arrive
 		const servicesUpdatedHandler = () => {
 			this.loadPipelineFiles();
+			// An installed/uninstalled capsule shows up as a catalog change.
+			this.sendCapsulesUpdate();
 		};
 		this.connectionManager.on('shell:servicesUpdated', servicesUpdatedHandler);
 
@@ -560,8 +562,31 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 				// them out-of-band so this update never awaits the catalog RPC
 				apps: this.appRows,
 				sidebarMode: this.sidebarMode,
+				// Node capsules (Nodes tab) — read off the same cached catalog
+				// the canvas uses, so this update costs no extra RPC.
+				capsules: this.buildCapsules(),
 			},
 		});
+	}
+
+	/**
+	 * Installed node capsules for the Nodes tab.
+	 *
+	 * The engine tags the entries it overlays from the caller's store with
+	 * `source: 'capsule'`, so the cached services catalog already carries
+	 * everything the list needs.
+	 */
+	private buildCapsules(): { name: string; title?: string }[] {
+		const { services } = this.connectionManager.getCachedServices();
+		return Object.entries(services ?? {})
+			.filter(([, def]) => (def as { source?: string })?.source === 'capsule')
+			.map(([name, def]) => ({ name, title: (def as { title?: string })?.title }));
+	}
+
+	/** Pushes just the capsule list (the catalog changed under a stable view). */
+	private sendCapsulesUpdate(): void {
+		if (!this._view) return;
+		this._view.webview.postMessage({ type: 'capsulesUpdate', capsules: this.buildCapsules() });
 	}
 
 	/** Sends only updated entries. */
