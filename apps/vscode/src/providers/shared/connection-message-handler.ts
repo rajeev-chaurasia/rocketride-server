@@ -116,11 +116,14 @@ export class ConnectionMessageHandler {
 				const cloudAuth = CloudAuthProvider.getInstance();
 				// Prefer the webview's IN-FORM effective server (checkbox + URL
 				// may not be saved yet); fall back to the saved config for
-				// senders without a form (sidebar, welcome).
+				// senders without a form (sidebar, welcome) — and for a payload
+				// that is not a usable string: webview messages are untrusted
+				// input, and signIn's contract is a string URL.
+				const requested = typeof message.cloudUrl === 'string' ? message.cloudUrl.trim() : '';
 				await cloudAuth.signIn(
 					process.env.RR_ZITADEL_URL || '',
 					process.env.RR_ZITADEL_VSCODE_CLIENT_ID || '',
-					(message.cloudUrl as string) || ConfigManager.getInstance().getEffectiveCloudUrl()
+					requested || ConfigManager.getInstance().getEffectiveCloudUrl()
 				);
 				return true;
 			}

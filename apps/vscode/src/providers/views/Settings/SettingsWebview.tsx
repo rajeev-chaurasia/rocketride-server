@@ -162,6 +162,24 @@ export type SettingsOutgoingMessage =
 	  }
 	| {
 			type: 'openSubscribe';
+	  }
+	| {
+			/** Ask the host for the current cloud auth state (a cloud:status reply). */
+			type: 'cloud:getStatus';
+	  }
+	| {
+			/**
+			 * Start the OAuth sign-in. `cloudUrl` carries the FORM's current
+			 * effective server (the custom-server checkbox + URL may be unsaved)
+			 * — the host exchanges the OAuth code against exactly this server.
+			 * Form-less senders (sidebar, welcome) omit it and the host falls
+			 * back to the saved configuration.
+			 */
+			type: 'cloud:signIn';
+			cloudUrl?: string;
+	  }
+	| {
+			type: 'cloud:signOut';
 	  };
 
 // ============================================================================
@@ -575,7 +593,7 @@ export const Settings: React.FC = () => {
 					setEngineVersionsLoading(true);
 					sendMessage({ type: 'fetchVersions' });
 					// Hydrate cloud auth status so the Cloud panel renders correctly
-					sendMessage({ type: 'cloud:getStatus' } as any);
+					sendMessage({ type: 'cloud:getStatus' });
 					break;
 
 				case 'versionsLoaded' as any:
@@ -957,8 +975,8 @@ export const Settings: React.FC = () => {
 							// Sign-in targets the form's CURRENT effective server — the
 							// saved config lags until Save, and exchanging the OAuth code
 							// against the wrong server mints the wrong session.
-							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.development.useCustomServer && settings.development.cloudUrl) || settings.development.defaultCloudUrl } as any)}
-							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' } as any)}
+							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.development.useCustomServer && settings.development.cloudUrl) || settings.development.defaultCloudUrl })}
+							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' })}
 							onProbeCloudServer={handleProbeCloudServer}
 							isSaas={isSaasProbed}
 							dockerStatus={dockerStatus}
@@ -1021,8 +1039,8 @@ export const Settings: React.FC = () => {
 							// Sign-in targets the form's CURRENT effective server — the
 							// saved config lags until Save, and exchanging the OAuth code
 							// against the wrong server mints the wrong session.
-							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.deployment.useCustomServer && settings.deployment.cloudUrl) || settings.deployment.defaultCloudUrl } as any)}
-							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' } as any)}
+							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.deployment.useCustomServer && settings.deployment.cloudUrl) || settings.deployment.defaultCloudUrl })}
+							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' })}
 							onProbeCloudServer={handleProbeCloudServer}
 							isSaas={isSaasProbed}
 							dockerStatus={dockerStatus}

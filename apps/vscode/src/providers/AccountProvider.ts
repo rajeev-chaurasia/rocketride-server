@@ -835,46 +835,61 @@ export class AccountProvider {
 	// EVENT LISTENERS
 	// =========================================================================
 
-	/** Subscribes to connection state changes and account update events. */
+	/** Subscribes to connection state changes and account update events.
+	 *
+	 * BOTH connection managers are observed: resolveClient() serves the panel
+	 * from whichever connection group is cloud-connected (development first,
+	 * deployment otherwise), so an org switch or account push arriving on the
+	 * DEPLOYMENT connection must refresh the panel exactly like one on the
+	 * development connection — observing only one manager left the panel
+	 * holding the previous organization's identity in deploy-only-cloud
+	 * setups. Every refresh routes through resolveClient(), so a signal from
+	 * the non-serving manager at worst re-reads current data.
+	 */
 	private setupEventListeners(): void {
-		// Re-sync webview when connection state changes
-		const connectionStateListener = this.connectionManager.on('shell:statusChange', (status: ConnectionStatus) => {
-			this.handleConnectionStateChange(status).catch((error) => {
-				console.error(`[AccountProvider] Connection state change error: ${error}`);
+		for (const manager of [this.connectionManager, DeployManager.getDeployInstance()]) {
+			// Re-sync webview when connection state changes
+			const connectionStateListener = manager.on('shell:statusChange', (status: ConnectionStatus) => {
+				this.handleConnectionStateChange(status).catch((error) => {
+					console.error(`[AccountProvider] Connection state change error: ${error}`);
+				});
 			});
-		});
 
-		// Re-fetch data when the server pushes an account update
-		const accountEventListener = this.connectionManager.on('shell:accountUpdate', () => {
-			if (AccountProvider.panel) {
-				const panel = AccountProvider.panel;
-				// Refresh profile (always needed — identity/permissions may have changed)
-				this.refreshProfile(panel).catch((error) => {
-					console.error(`[AccountProvider] Account update error: ${error}`);
-				});
-				// Re-fetch the currently visible section's data (teams, members, etc.)
-				this.handleSectionChange(panel, AccountProvider.currentSection).catch((error) => {
-					console.error(`[AccountProvider] Section reload error: ${error}`);
-				});
-				// Notify the webview that account data has changed
-				panel.webview.postMessage({ type: 'account:accountUpdate' }).then(undefined, (err: unknown) => {
-					console.error(`[AccountProvider] Failed to post accountUpdate: ${err}`);
-				});
-			}
-		});
+			// Re-fetch data when the server pushes an account update
+			const accountEventListener = manager.on('shell:accountUpdate', () => {
+				if (AccountProvider.panel) {
+					const panel = AccountProvider.panel;
+					// Refresh profile (always needed — identity/permissions may have changed)
+					this.refreshProfile(panel).catch((error) => {
+						console.error(`[AccountProvider] Account update error: ${error}`);
+					});
+					// Re-fetch the currently visible section's data (teams, members, etc.)
+					this.handleSectionChange(panel, AccountProvider.currentSection).catch((error) => {
+						console.error(`[AccountProvider] Section reload error: ${error}`);
+					});
+					// Notify the webview that account data has changed
+					panel.webview.postMessage({ type: 'account:accountUpdate' }).then(undefined, (err: unknown) => {
+						console.error(`[AccountProvider] Failed to post accountUpdate: ${err}`);
+					});
+				}
+			});
 
-		// Subscribe to billing monitor and re-fetch on billing ledger events
-		const client = this.connectionManager.getClient();
+			// Re-fetch on billing ledger events from either connection
+			const billingEventListener = manager.on('shell:event' as any, ({ event }: any) => {
+				if (event?.event === 'apaext_billing_update' && AccountProvider.panel) {
+					this.fetchBillingData(AccountProvider.panel).catch(() => {});
+				}
+			});
+
+			this.disposables.push(connectionStateListener, accountEventListener, billingEventListener);
+		}
+
+		// Subscribe the billing monitor on the connection serving the panel
+		// (falls back to the development client pre-resolution).
+		const client = this.resolveClient().client ?? this.connectionManager.getClient();
 		if (client) {
 			client.addMonitor({ token: '*' }, ['billing']).catch(() => {});
 		}
-		const billingEventListener = this.connectionManager.on('shell:event' as any, ({ event }: any) => {
-			if (event?.event === 'apaext_billing_update' && AccountProvider.panel) {
-				this.fetchBillingData(AccountProvider.panel).catch(() => {});
-			}
-		});
-
-		this.disposables.push(connectionStateListener, accountEventListener, billingEventListener);
 	}
 
 	/**
