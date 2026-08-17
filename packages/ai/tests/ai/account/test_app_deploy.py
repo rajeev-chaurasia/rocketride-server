@@ -458,6 +458,29 @@ async def test_add_unpacks_zip_and_returns_rail_entry(registry, content_store):
 
 
 @pytest.mark.asyncio
+async def test_add_ticks_uploaded_on_the_card(registry, content_store):
+    """A successful receipt broadcasts the org-scoped 'uploaded' card tick —
+    the first server-side word of the build status ticker (the client's own
+    'uploading' state hands over here; the worker ticks the rest).
+    """
+    conn = _FakeConn()
+    events = []
+
+    async def broadcast_server_event(event_type, message, org_id=None):
+        events.append({'message': message, 'org_id': org_id})
+
+    conn._server = SimpleNamespace(broadcast_server_event=broadcast_server_event)
+    result = await handle_app_add(conn, _add_request(data=_app_zip()))
+    assert result['success'] is True
+
+    ticks = [e for e in events if e['message'].get('event') == 'apaevt_build_status']
+    assert len(ticks) == 1
+    assert ticks[0]['org_id'] == 'org1'
+    body = ticks[0]['message']['body']
+    assert (body['appId'], body['version'], body['status']) == ('acme.brandy', 1, 'uploaded')
+
+
+@pytest.mark.asyncio
 async def test_add_rejects_unsafe_zip_entries(registry, content_store):
     """Path traversal inside the archive is refused before any write."""
     conn = _FakeConn()

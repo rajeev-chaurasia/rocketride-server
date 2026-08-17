@@ -62,6 +62,7 @@ export type {
 	AppStatus,
 	AppSummary,
 	AppVersionInfo,
+	BuildStatusTick,
 	ConsoleRow,
 	DevelopPane,
 	IAppBuilderHost,

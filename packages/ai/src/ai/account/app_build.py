@@ -121,6 +121,7 @@ _TOOLCHAIN_PINS = {
     '@module-federation/rsbuild-plugin': '2.5.1',
     'typescript': '^5.3.0',
     'react-refresh': '^0.14.2',
+    '@types/node': '^20.19.41',
     '@types/react': '^18.2.0',
     '@types/react-dom': '^18.2.0',
 }
@@ -147,13 +148,20 @@ _NEUTRALIZED_CONFIGS = (
 
 
 def _scratch_root() -> str:
-    """The local scratch root builds materialize under (k8s: the emptyDir)."""
-    return os.environ.get('RR_BUILD_SCRATCH_ROOT') or tempfile.gettempdir()
+    """The local scratch root builds materialize under (k8s: the emptyDir).
+
+    Resolved to its FINAL (long) form: on Windows ``tempfile.gettempdir()``
+    is routinely the 8.3 SHORT spelling (``RODCHR~1``), and pnpm resolves
+    ``--filter ./path`` against the literal cwd while enumerating workspace
+    projects at their long paths — short vs long never compares equal, so
+    the filter silently matches NOTHING (exit 0, nothing installed).
+    """
+    return os.path.realpath(os.environ.get('RR_BUILD_SCRATCH_ROOT') or tempfile.gettempdir())
 
 
 def _engine_dir() -> str:
     """The engine's install dir — static client tgzs and the env cache live here."""
-    return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.realpath(sys.executable))
 
 
 class BuildFailure(Exception):
@@ -245,12 +253,17 @@ def _kill_tree(proc: Any) -> None:
             pass  # already gone
 
 
-async def _exec(argv: List[str], cwd: str, timeout: int) -> Tuple[int, str]:
+async def _exec(argv: List[str], cwd: str, timeout: int, on_line: Any = None) -> Tuple[int, str]:
     """Run one toolchain command; ``(exit_code, combined_output)``.
 
     THE seam every external tool runs through (tests patch it). Windows
     package-manager shims (.cmd) are routed through cmd.exe — CreateProcess
     does not reliably exec batch files directly.
+
+    ``on_line`` (optional async callable) receives each output line AS IT
+    ARRIVES — the live build feed. Output is read incrementally either way;
+    the returned transcript keeps the same head+tail truncation as before.
+    The timeout is the OVERALL phase deadline, enforced across every read.
 
     Raises:
         BuildInfraFailure: The command could not be SPAWNED (missing binary,
@@ -271,12 +284,33 @@ async def _exec(argv: List[str], cwd: str, timeout: int) -> Tuple[int, str]:
         )
     except Exception as exc:
         raise BuildInfraFailure('spawn', f'could not start {argv[0]!r}: {exc}')
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    chunks: List[str] = []
+    assert proc.stdout is not None
     try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            try:
+                raw = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+            except (asyncio.LimitOverrunError, ValueError):
+                # A single line larger than the stream limit: drain a bounded
+                # chunk instead — the transcript keeps flowing, the feed just
+                # sees it as one oversized "line".
+                raw = await asyncio.wait_for(proc.stdout.read(64 * 1024), timeout=max(1.0, deadline - loop.time()))
+            if not raw:
+                break  # EOF — the process is finishing
+            text = raw.decode('utf-8', errors='replace')
+            chunks.append(text)
+            if on_line is not None:
+                await on_line(text.rstrip('\r\n'))
+        await asyncio.wait_for(proc.wait(), timeout=max(1.0, deadline - loop.time()))
     except asyncio.TimeoutError:
         _kill_tree(proc)
         raise
-    return int(proc.returncode or 0), _truncated((stdout or b'').decode('utf-8', errors='replace'))
+    return int(proc.returncode or 0), _truncated(''.join(chunks))
 
 
 # =============================================================================
@@ -295,18 +329,24 @@ def _find_pnpm() -> Optional[str]:
 
 
 def _env_dir() -> str:
-    """The toolchain env home (image: pre-baked read-only; dev: a cache)."""
-    return os.environ.get('RR_BUILD_ENV_DIR') or os.path.join(_engine_dir(), 'cache', 'app-build-env')
+    """The toolchain env home (image: pre-baked read-only; dev: a cache).
+
+    realpath'd like every worker path — pnpm path handling must never see
+    a Windows 8.3 short spelling (see _scratch_root).
+    """
+    return os.path.realpath(os.environ.get('RR_BUILD_ENV_DIR') or os.path.join(_engine_dir(), 'cache', 'app-build-env'))
 
 
-async def _ensure_toolchain_env() -> str:
+async def _ensure_toolchain_env(on_line: Any = None) -> str:
     """The installed toolchain env dir, bootstrapping it once when absent.
 
     The image ships it pre-baked (RR_BUILD_ENV_DIR, read-only layer); dev/OSS
     machines install the pinned set ONCE into a local cache on first build
-    (network is available there) and reuse it forever after. The `.ready`
-    marker gates completeness — a half-installed env from a killed bootstrap
-    re-installs.
+    (network is available there) and reuse it until the PINS change. The
+    `.ready` marker records the pins it was built with: a marker whose pins
+    no longer match the current set re-bootstraps (a platform upgrade must
+    refresh the cached env, never serve stale tools), and a half-installed
+    env from a killed bootstrap re-installs the same way.
 
     Raises:
         BuildInfraFailure: No pnpm to bootstrap with, or the install failed.
@@ -314,7 +354,14 @@ async def _ensure_toolchain_env() -> str:
     env_dir = _env_dir()
     marker = os.path.join(env_dir, '.ready')
     if os.path.isfile(marker) and os.path.isdir(os.path.join(env_dir, 'node_modules')):
-        return env_dir
+        try:
+            with open(marker, 'r', encoding='utf-8') as handle:
+                recorded = json.load(handle).get('pins')
+        except Exception:
+            recorded = None
+        if recorded == _TOOLCHAIN_PINS:
+            return env_dir
+        debug(f'[app_build] toolchain env pins changed — re-bootstrapping {env_dir}')
     pnpm = _find_pnpm()
     if not pnpm:
         raise BuildInfraFailure(
@@ -330,11 +377,25 @@ async def _ensure_toolchain_env() -> str:
             indent=1,
         )
     debug(f'[app_build] bootstrapping toolchain env at {env_dir}')
+    # --ignore-workspace is LOAD-BEARING: the default env dir can live inside
+    # a checked-out repo (dist/server/cache on a dev machine), and pnpm walks
+    # UP from cwd looking for a pnpm-workspace.yaml — without the flag it
+    # finds the REPO's workspace, "successfully" installs THAT, and leaves
+    # this env with no node_modules at all (exit 0, nothing here).
     code, out = await _exec(
-        [pnpm, 'install', '--ignore-scripts', '--prefer-offline'], env_dir, _PHASE_TIMEOUTS['install']
+        [pnpm, 'install', '--ignore-workspace', '--ignore-scripts', '--prefer-offline'],
+        env_dir,
+        _PHASE_TIMEOUTS['install'],
+        on_line=on_line,
     )
     if code != 0:
         raise BuildInfraFailure('materialize', f'toolchain env bootstrap failed (pnpm exit {code}): {out[-2000:]}')
+    # Trust nothing: exit 0 with no node_modules (a workspace-context install,
+    # a broken pnpm) must fail REASONED here, never crash a job downstream.
+    if not os.path.isdir(os.path.join(env_dir, 'node_modules')):
+        raise BuildInfraFailure(
+            'materialize', f'toolchain env bootstrap produced no node_modules at {env_dir} — pnpm output: {out[-1000:]}'
+        )
     with open(marker, 'w', encoding='utf-8') as handle:
         handle.write(json.dumps({'pins': _TOOLCHAIN_PINS, 'at': time.time()}))
     return env_dir
@@ -563,7 +624,14 @@ def _link_toolchain(job_dir: str, env_dir: str) -> None:
     layer — beneath the app's own pnpm-installed node_modules, above
     nothing. Symlink first; Windows hosts without symlink rights fall back
     to a junction (no privilege needed), then to a copy as the last resort.
+
+    Raises:
+        BuildInfraFailure: The env carries no node_modules — a reasoned
+            failure here beats a dangling link (or a copytree crash) that
+            surfaces as a confusing resolve error phases later.
     """
+    if not os.path.isdir(os.path.join(env_dir, 'node_modules')):
+        raise BuildInfraFailure('materialize', f'toolchain env at {env_dir} has no node_modules')
     source = os.path.join(env_dir, 'node_modules')
     target = os.path.join(job_dir, 'node_modules')
     try:
@@ -661,6 +729,88 @@ def _drift_of(before: Dict[str, Dict[str, str]], after: Dict[str, Dict[str, str]
             if now is not None and now != version:
                 drifted.append(f'{importer}: {name} {version} -> {now}')
     return drifted
+
+
+# =============================================================================
+# THE BUILD FEED — throttled live-output events
+# =============================================================================
+
+
+class _BuildFeed:
+    """Throttled ``apaevt_build`` emitter — the live compile feed + card ticker.
+
+    Buffers subprocess output lines and broadcasts them org-scoped in
+    BATCHES — immediately at ``_FLUSH_LINES``, otherwise at most one event
+    per ``_FLUSH_SECONDS`` — so a chatty pnpm can never flood the wire.
+    Phase changes ALSO emit the coarse ``apaevt_build_status`` card word
+    (one short display term per transition; ``status('')`` clears it).
+    A feed with no server (tests, minimal embeddings) swallows everything.
+    """
+
+    _FLUSH_LINES = 25
+    _FLUSH_SECONDS = 0.7
+
+    # Phase -> the card's display word. The card renders these verbatim, so
+    # they are user vocabulary, not internal phase names.
+    _PHASE_STATUS = {
+        'bootstrap': 'preparing',
+        'install': 'installing',
+        'typecheck': 'checking',
+        'bundle': 'building',
+        'harvest': 'publishing',
+    }
+
+    def __init__(self, server: Any, org_id: str, app_id: str, version: int) -> None:
+        """Bind the feed to one job's identity (the event body)."""
+        self._server = server
+        self._org_id = org_id
+        self._app_id = app_id
+        self._version = version
+        self._phase = ''
+        self._buffer: List[str] = []
+        self._last = 0.0
+
+    async def set_phase(self, phase: str) -> None:
+        """Switch the phase label, flushing the previous phase's lines first
+        and ticking the card with the phase's display word.
+        """
+        if phase != self._phase:
+            await self.flush()
+            self._phase = phase
+            await self.status(self._PHASE_STATUS.get(phase, phase))
+
+    async def status(self, word: str) -> None:
+        """Tick the card with one display word ('' clears it)."""
+        if self._server is None:
+            return
+        try:
+            from ai.modules.task.deploy_events import broadcast_build_status
+
+            await broadcast_build_status(self._server, self._org_id, self._app_id, self._version, word)
+        except Exception as exc:
+            debug(f'[app_build] build status tick failed: {exc}')
+
+    async def line(self, text: str) -> None:
+        """Buffer one output line; broadcast when the batch is due."""
+        if self._server is None:
+            return
+        self._buffer.append(text[:_MAX_ERROR_CHARS])
+        now = asyncio.get_running_loop().time()
+        if len(self._buffer) >= self._FLUSH_LINES or now - self._last >= self._FLUSH_SECONDS:
+            await self.flush()
+
+    async def flush(self) -> None:
+        """Broadcast the buffered batch (no-op when empty or serverless)."""
+        if self._server is None or not self._buffer:
+            return
+        batch, self._buffer = self._buffer, []
+        self._last = asyncio.get_running_loop().time()
+        try:
+            from ai.modules.task.deploy_events import broadcast_build_output
+
+            await broadcast_build_output(self._server, self._org_id, self._app_id, self._version, self._phase, batch)
+        except Exception as exc:
+            debug(f'[app_build] build feed flush failed: {exc}')
 
 
 # =============================================================================
@@ -808,14 +958,24 @@ class AppBuildWorker:
         await self._stamp(org_id, app_id, version, build)
 
         content_root = artifact_content_dir(str(entry.get('artifactPath') or ''))
+        # The live feed carries BOTH channels for this job: batched output
+        # lines (apaevt_build) and the coarse card ticker
+        # (apaevt_build_status) — created here so the terminal arms below
+        # can tick the card's final word.
+        feed = _BuildFeed(self._server, org_id, app_id, version)
         log_parts: List[str] = []
         job_dir = ''
         try:
-            job_dir = tempfile.mkdtemp(prefix=f'app-build-{app_id}-v{version}-', dir=_scratch_root())
-            await self._build(org_id, app_id, version, entry, artifact, content_root, job_dir, build, log_parts)
+            # realpath is LOAD-BEARING (not hygiene): a short-path (8.3)
+            # jobdir makes pnpm's --filter silently match nothing — see
+            # _scratch_root. mkdtemp inherits the root's spelling; resolve
+            # the final form regardless of how the root was configured.
+            job_dir = os.path.realpath(tempfile.mkdtemp(prefix=f'app-build-{app_id}-v{version}-', dir=_scratch_root()))
+            await self._build(org_id, app_id, version, entry, artifact, content_root, job_dir, build, log_parts, feed)
             build.update({'status': 'ok', 'phase': 'harvest', 'endedAt': time.time()})
             build.pop('errors', None)
             await self._stamp(org_id, app_id, version, build)
+            await feed.status('')  # success clears the card
             await self._notify_success(org_id, app_id, entry)
             debug(f'[app_build] {app_id} v{version}: build ok')
             return False
@@ -829,24 +989,35 @@ class AppBuildWorker:
                 phase, errors = exc.phase, exc.errors
             build.update({'status': 'failed', 'phase': phase, 'errors': errors[:_MAX_ERRORS], 'endedAt': time.time()})
             await self._stamp(org_id, app_id, version, build)
+            await feed.status('failed')
             debug(f'[app_build] {app_id} v{version}: build failed in {phase}')
             return False
-        except BuildInfraFailure as exc:
+        except Exception as exc:
             # PLATFORM failure: bounded retry, then failed with the reason.
+            # This arm is deliberately BROAD (user-visible failures were
+            # caught above): an UNEXPECTED error — an OS quirk, a store
+            # hiccup, a bug — must never strand the row in 'building' with
+            # no outcome, so it rides the same infra path: the developer
+            # always sees a reasoned failure and the attempt cap still
+            # bounds the retries. (CancelledError is a BaseException and
+            # passes through — shutdown must not mark rows failed.)
+            phase = exc.phase if isinstance(exc, BuildInfraFailure) else str(build.get('phase') or 'build')
             if attempt < _MAX_ATTEMPTS:
-                build.update({'status': 'queued', 'phase': exc.phase})
+                build.update({'status': 'queued', 'phase': phase})
                 await self._stamp(org_id, app_id, version, build)
-                debug(f'[app_build] {app_id} v{version}: infra failure in {exc.phase}, requeued: {exc}')
+                await feed.status('queued')
+                debug(f'[app_build] {app_id} v{version}: infra failure in {phase}, requeued: {exc}')
                 return True
             build.update(
                 {
                     'status': 'failed',
-                    'phase': exc.phase,
-                    'errors': [{'phase': exc.phase, 'message': str(exc)[:_MAX_ERROR_CHARS]}],
+                    'phase': phase,
+                    'errors': [{'phase': phase, 'message': str(exc)[:_MAX_ERROR_CHARS]}],
                     'endedAt': time.time(),
                 }
             )
             await self._stamp(org_id, app_id, version, build)
+            await feed.status('failed')
             error(f'[app_build] {app_id} v{version}: infra failure (attempts exhausted): {exc}')
             return False
         finally:
@@ -866,6 +1037,7 @@ class AppBuildWorker:
         job_dir: str,
         build: Dict[str, Any],
         log_parts: List[str],
+        feed: _BuildFeed,
     ) -> None:
         """The phase chain for one job (raises on any failure)."""
         from ai.account.store import Store
@@ -900,7 +1072,9 @@ class AppBuildWorker:
             raise BuildInfraFailure(
                 'materialize', 'server build toolchain unavailable: pnpm not found (RR_BUILD_PNPM/PATH)'
             )
-        env_dir = await _ensure_toolchain_env()
+        await feed.set_phase('bootstrap')
+        env_dir = await _ensure_toolchain_env(on_line=feed.line)
+        await feed.flush()
         build['toolchain'] = {
             'node': os.path.basename(node),
             'rsbuild': _installed_version(env_dir, '@rsbuild/core'),
@@ -985,7 +1159,9 @@ class AppBuildWorker:
             for inc in include_roots:
                 if os.path.isfile(os.path.join(ws_dir, *inc.split('/'), 'package.json')):
                     argv += ['--filter', f'./{inc}']
-        code, out = await _exec(argv, ws_dir, _PHASE_TIMEOUTS['install'])
+        await feed.set_phase('install')
+        code, out = await _exec(argv, ws_dir, _PHASE_TIMEOUTS['install'], on_line=feed.line)
+        await feed.flush()
         log_parts.append(f'== install ==\n$ {" ".join(argv)}\n{out}')
         if code != 0:
             raise BuildFailure('install', f'pnpm install failed (exit {code})', _tail_errors('install', out))
@@ -1009,7 +1185,11 @@ class AppBuildWorker:
                 raise BuildInfraFailure(
                     'typecheck', 'no typescript available (user install and baked env both missing it)'
                 )
-            code, out = await _exec([node, tsc, '--noEmit', '-p', tsconfig], app_dir, _PHASE_TIMEOUTS['typecheck'])
+            await feed.set_phase('typecheck')
+            code, out = await _exec(
+                [node, tsc, '--noEmit', '-p', tsconfig], app_dir, _PHASE_TIMEOUTS['typecheck'], on_line=feed.line
+            )
+            await feed.flush()
             log_parts.append(f'== typecheck ==\n$ node {tsc} --noEmit -p {tsconfig}\n{out}')
             if code != 0:
                 raise BuildFailure('typecheck', f'tsc --noEmit failed (exit {code})', _tsc_errors(out))
@@ -1020,7 +1200,11 @@ class AppBuildWorker:
         rsbuild = _resolve_bin(job_dir, '@rsbuild/core', ('rsbuild',))
         if not rsbuild:
             raise BuildInfraFailure('bundle', 'baked rsbuild missing from the toolchain env')
-        code, out = await _exec([node, rsbuild, 'build', '--config', config_path], app_dir, _PHASE_TIMEOUTS['bundle'])
+        await feed.set_phase('bundle')
+        code, out = await _exec(
+            [node, rsbuild, 'build', '--config', config_path], app_dir, _PHASE_TIMEOUTS['bundle'], on_line=feed.line
+        )
+        await feed.flush()
         log_parts.append(f'== bundle ==\n$ node {rsbuild} build --config {config_path}\n{out}')
         if code != 0:
             raise BuildFailure('bundle', f'rsbuild build failed (exit {code})', _tail_errors('bundle', out))
@@ -1030,6 +1214,7 @@ class AppBuildWorker:
         # ── HARVEST — local -> store dist/ + manifest assets ─────────────
         build['phase'] = 'harvest'
         await self._stamp(org_id, app_id, version, build)
+        await feed.set_phase('harvest')
         # Manifest-referenced assets: rsbuild only emits what code imports,
         # and the entry token is scoped to dist/ — copy icon/readme in.
         for key in ('icon', 'readme'):

@@ -524,6 +524,16 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
         enqueue_build(getattr(conn, '_server', None), org_id, app_id, version)
     except Exception as exc:
         debug(f'[app_deploy] could not enqueue build for {app_id} v{version}: {exc}')
+    # First card-ticker word: the zip is on the server (the client's own
+    # 'uploading' state hands over here); the worker ticks the rest.
+    server = getattr(conn, '_server', None)
+    if server is not None:
+        try:
+            from ai.modules.task.deploy_events import broadcast_build_status
+
+            await broadcast_build_status(server, org_id, app_id, version, 'uploaded')
+        except Exception as exc:
+            debug(f'[app_deploy] uploaded status broadcast failed: {exc}')
 
     debug(f'[app_deploy] deployed {app_id} v{artifact["appVersion"]} as registry v{version} (private, build queued)')
     # One generic response shape for every kind: rrext_deploy add -> {artifact}

@@ -23,7 +23,7 @@
 import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import { ConnectionManager } from '../connection/connection';
-import { extractInstallCause, isTransientLockError } from './appTypes';
+import { extractInstallCause, isTransientLockError, setWorkspaceInstallDelegate } from './appTypes';
 import { getLogger } from '../shared/util/output';
 import { DEV_SESSION_NONCE } from './devSession';
 import type { ScannedApp } from './appScan';
@@ -121,6 +121,19 @@ export class WatchManager {
 		// re-register it — re-register eagerly so embedder-less shells (F5's
 		// external browser) regain the override without waiting on a save.
 		this.connectionManager.on('shell:statusChange', this.onStatusChange);
+
+		// THE one install door: the shell-vendor pass (appTypes) must never
+		// spawn its own pnpm beside this manager's single-flight — two pnpm
+		// processes on one node_modules half-write the virtual store
+		// (ERR_PNPM_EEXIST in symlinkAllModules). Registered as an injected
+		// delegate (appTypes cannot import this module back — cycle). The
+		// tarball has just changed whenever the delegate runs, so bump the
+		// generation for a guaranteed-fresh run CHAINED behind any in-flight
+		// install.
+		setWorkspaceInstallDelegate(() => {
+			this.invalidateInstall();
+			return this.ensureInstalled();
+		});
 	}
 
 	/** Bound reconnect listener (see constructor); removed in dispose(). */

@@ -246,6 +246,14 @@ export interface WatchStatus {
 	reason?: string;
 }
 
+/** One server build-status ticker word for a version ('' = clear). */
+export interface BuildStatusTick {
+	/** The registry version the word belongs to. */
+	version?: number;
+	/** The display word, rendered verbatim; '' clears the card text. */
+	status: string;
+}
+
 // =============================================================================
 // THE HOST CONTRACT
 // =============================================================================
@@ -280,6 +288,16 @@ export interface IAppBuilderHost {
 	subscribeErrors?: (listener: (row: AppErrorRow) => void) => () => void;
 	/** Subscribe to watch/build status for the DEV badge. Returns unsubscribe. */
 	subscribeWatch?: (listener: (status: WatchStatus) => void) => () => void;
+	/**
+	 * Subscribe to the SERVER build-status ticker (apaevt_build_status): one
+	 * short display word per build-lifecycle transition of this app's
+	 * versions — 'uploaded', 'preparing', 'installing', 'checking',
+	 * 'building', 'publishing', 'failed', 'queued' — rendered verbatim
+	 * beside the version card's state badge; '' clears it (the success
+	 * terminal). A late subscriber replays the latest word per version.
+	 * Returns unsubscribe.
+	 */
+	subscribeBuildStatus?: (listener: (tick: BuildStatusTick) => void) => () => void;
 	/** Reload the preview surface. */
 	reloadPreview?: () => void;
 	/**

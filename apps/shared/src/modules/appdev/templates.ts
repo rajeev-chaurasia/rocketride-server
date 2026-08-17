@@ -117,6 +117,13 @@ function packageJson(v: TemplateVars): string {
 				'@module-federation/rsbuild-plugin': '2.5.1',
 				'@rsbuild/core': '~2.0.11',
 				'@rsbuild/plugin-react': '~2.0.1',
+				// The scaffolded rsbuild.config.mts imports node:fs/node:path
+				// and uses __dirname, and tsconfig includes the config — so
+				// Node type declarations are a REAL dependency of every app.
+				// In-tree apps inherit this hoisted from the monorepo root; a
+				// user workspace has no root to hoist from, so the app must
+				// declare it (mirrors the platform root's pin).
+				'@types/node': '^20.19.41',
 				'@types/react': '^18.2.0',
 				'@types/react-dom': '^18.2.0',
 				// Fallback copy for the shared 'react-refresh/runtime' (HMR);

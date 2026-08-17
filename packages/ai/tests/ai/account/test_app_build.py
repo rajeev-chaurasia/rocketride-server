@@ -296,7 +296,7 @@ def toolchain(monkeypatch, tmp_path):
     scratch = tmp_path / 'scratch'
     scratch.mkdir()
 
-    async def ensure_env():
+    async def ensure_env(on_line=None):
         return str(env)
 
     monkeypatch.setattr(app_build, '_ensure_toolchain_env', ensure_env)
@@ -316,7 +316,7 @@ class _FakeExec:
         self.typecheck_exit = 0
         self.typecheck_out = ''
 
-    async def __call__(self, argv: List[str], cwd: str, timeout: int) -> 'tuple[int, str]':
+    async def __call__(self, argv: List[str], cwd: str, timeout: int, on_line=None) -> 'tuple[int, str]':
         self.calls.append({'argv': list(argv), 'cwd': cwd, 'timeout': timeout})
         if 'install' in argv:
             if self.install_hook:
@@ -478,7 +478,7 @@ async def test_job_infra_failure_requeues_then_exhausts(monkeypatch, build_store
     rail.install(monkeypatch)
     await _seed_zip(rail.zip_bytes)
 
-    async def broken_exec(argv, cwd, timeout):
+    async def broken_exec(argv, cwd, timeout, on_line=None):
         raise BuildInfraFailure('install', 'registry unreachable')
 
     monkeypatch.setattr(app_build, '_exec', broken_exec)
@@ -490,6 +490,73 @@ async def test_job_infra_failure_requeues_then_exhausts(monkeypatch, build_store
     final = rail.stamps[-1]
     assert final['status'] == 'failed'
     assert 'registry unreachable' in final['errors'][0]['message']
+
+
+@pytest.mark.asyncio
+async def test_job_unexpected_exception_never_strands_building(monkeypatch, build_store, toolchain):
+    """An UNEXPECTED error (not a Build*Failure) rides the infra path —
+    requeued while attempts remain, then a reasoned 'failed'. A row must
+    never strand in 'building' with no outcome (the copytree-crash lesson).
+    """
+    rail = _FakeRail(_app_source_zip(), {'status': 'queued', 'attempt': 0})
+    rail.install(monkeypatch)
+    await _seed_zip(rail.zip_bytes)
+
+    async def buggy_exec(argv, cwd, timeout, on_line=None):
+        raise RuntimeError('unexpected OS quirk')
+
+    monkeypatch.setattr(app_build, '_exec', buggy_exec)
+    worker = AppBuildWorker(server=None)
+
+    assert await worker._run_job('org1', 'acme.brandy', 1) is True  # requeue
+    assert rail.stamps[-1]['status'] == 'queued'
+    assert await worker._run_job('org1', 'acme.brandy', 1) is False  # exhausted
+    final = rail.stamps[-1]
+    assert final['status'] == 'failed'
+    assert 'unexpected OS quirk' in final['errors'][0]['message']
+
+
+@pytest.mark.asyncio
+async def test_toolchain_bootstrap_is_workspace_proof(monkeypatch, tmp_path):
+    """The env bootstrap installs standalone (--ignore-workspace) and fails
+    REASONED when pnpm exits 0 without materializing node_modules — the
+    workspace-context trap: an env dir inside a checked-out repo makes a
+    flagless pnpm walk up, install the REPO's workspace, and leave the env
+    empty with exit 0. Also pins the marker lifecycle: short-circuit on a
+    matching marker, re-bootstrap on a pin change.
+    """
+    env = tmp_path / 'env'
+    monkeypatch.setattr(app_build, '_env_dir', lambda: str(env))
+    monkeypatch.setattr(app_build, '_find_pnpm', lambda: 'pnpm')
+    calls = []
+
+    async def hollow_exec(argv, cwd, timeout, on_line=None):
+        calls.append(list(argv))
+        return 0, 'Done'  # exit 0, nothing materialized
+
+    monkeypatch.setattr(app_build, '_exec', hollow_exec)
+    with pytest.raises(BuildInfraFailure) as exc:
+        await app_build._ensure_toolchain_env()
+    assert 'no node_modules' in str(exc.value)
+    assert '--ignore-workspace' in calls[0]
+
+    # A bootstrap that actually materializes the env succeeds and records
+    # its pins; the next call short-circuits without another install.
+    async def real_exec(argv, cwd, timeout, on_line=None):
+        calls.append(list(argv))
+        (env / 'node_modules').mkdir(parents=True, exist_ok=True)
+        return 0, 'Done'
+
+    monkeypatch.setattr(app_build, '_exec', real_exec)
+    assert await app_build._ensure_toolchain_env() == str(env)
+    installs = len(calls)
+    assert await app_build._ensure_toolchain_env() == str(env)
+    assert len(calls) == installs  # marker short-circuit
+
+    # Changed pins re-bootstrap — a platform upgrade must refresh the cache.
+    monkeypatch.setattr(app_build, '_TOOLCHAIN_PINS', {**app_build._TOOLCHAIN_PINS, 'typescript': '^9.9.9'})
+    assert await app_build._ensure_toolchain_env() == str(env)
+    assert len(calls) == installs + 1
 
 
 @pytest.mark.asyncio
@@ -511,3 +578,71 @@ async def test_enqueue_dedupes_and_sweep_requeues(monkeypatch, build_store, tool
     await fresh._startup_sweep()
     assert ('org1', 'acme.brandy', 1) in fresh._pending
     assert not stale.exists()
+
+
+# =============================================================================
+# THE BUILD FEED — live compile output over apaevt_build
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_build_feed_batches_and_scopes():
+    """The feed batches output lines into org-scoped apaevt_build events
+    (phase-stamped, order-preserving); a serverless feed swallows everything
+    without touching the wire.
+    """
+    events = []
+
+    class _Server:
+        async def broadcast_server_event(self, event_type, message, org_id=None):
+            events.append({'message': message, 'org_id': org_id})
+
+    feed = app_build._BuildFeed(_Server(), 'org1', 'acme.brandy', 1)
+    await feed.set_phase('install')
+    for i in range(30):
+        await feed.line(f'line {i}')
+    await feed.flush()
+    await feed.status('')  # the success clear
+
+    assert events  # batched, not one-per-line and not zero
+    assert all(item['org_id'] == 'org1' for item in events)  # OWNING org only
+    replayed = []
+    ticks = []
+    for item in events:
+        body = item['message']['body']
+        if item['message']['event'] == 'apaevt_build_status':
+            assert (body['appId'], body['version']) == ('acme.brandy', 1)
+            ticks.append(body['status'])
+        else:
+            assert item['message']['event'] == 'apaevt_build'
+            assert (body['appId'], body['version'], body['phase']) == ('acme.brandy', 1, 'install')
+            replayed += body['lines']
+    assert replayed == [f'line {i}' for i in range(30)]
+    # The card ticker: the phase's DISPLAY word on entry, '' as the clear.
+    assert ticks == ['installing', '']
+
+    silent = app_build._BuildFeed(None, 'org1', 'acme.brandy', 1)
+    await silent.line('x')
+    await silent.status('failed')
+    await silent.flush()
+    assert len(replayed) == 30  # nothing new happened
+
+
+@pytest.mark.asyncio
+async def test_exec_streams_lines_live():
+    """The REAL _exec hands each output line to on_line as it arrives and
+    still returns the full transcript + exit code (the feed's data source).
+    """
+    import sys
+
+    seen = []
+
+    async def collect(line):
+        seen.append(line)
+
+    code, out = await app_build._exec(
+        [sys.executable, '-c', "print('alpha'); print('beta')"], os.getcwd(), 30, on_line=collect
+    )
+    assert code == 0
+    assert seen == ['alpha', 'beta']
+    assert 'alpha' in out and 'beta' in out

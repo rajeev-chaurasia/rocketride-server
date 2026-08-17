@@ -39,7 +39,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Button, ConfirmDialog, EmptyState, InputField, Modal, StatusBadge } from 'shell';
-import type { AppSummary, AppVersionInfo, IAppBuilderHost, RungPin } from './types';
+import type { AppSummary, AppVersionInfo, BuildStatusTick, IAppBuilderHost, RungPin } from './types';
 
 // =============================================================================
 // TYPES
@@ -99,6 +99,15 @@ const styles: Record<string, React.CSSProperties> = {
 		color: 'var(--rr-text-disabled)',
 		marginLeft: 8,
 	},
+	// The server build ticker beside the state badge: one small live word
+	// ('uploaded' → 'installing' → … ), cleared by the server on success.
+	buildTick: {
+		fontSize: 11,
+		fontStyle: 'italic',
+		color: 'var(--rr-text-secondary)',
+		marginLeft: 6,
+		whiteSpace: 'nowrap',
+	},
 	rail: {
 		display: 'flex',
 		gap: 12,
@@ -115,6 +124,11 @@ const styles: Record<string, React.CSSProperties> = {
 		padding: '13px 15px',
 		boxShadow: '0 1px 3px rgba(30,40,55,0.06)',
 		flexShrink: 0,
+		// Column layout so the action row can pin to the card's BOTTOM —
+		// cards vary in content (message, chip count) but the rail stretches
+		// them to one height, and ragged mid-card buttons read as clutter.
+		display: 'flex',
+		flexDirection: 'column',
 	},
 	cardVersion: {
 		fontSize: 15,
@@ -146,7 +160,9 @@ const styles: Record<string, React.CSSProperties> = {
 		minHeight: 20,
 	},
 	cardAction: {
-		marginTop: 10,
+		// auto margin pins the buttons to the card bottom (see card).
+		marginTop: 'auto',
+		paddingTop: 10,
 		display: 'flex',
 		gap: 6,
 		flexWrap: 'wrap',
@@ -465,6 +481,10 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app, readOnly }) 
 	const [regSlug, setRegSlug] = useState('');
 	const [regBusy, setRegBusy] = useState(false);
 	const [regError, setRegError] = useState('');
+	// The server build ticker: registryVersion -> the current display word
+	// ('uploaded' → 'preparing' → 'installing' → …); '' from the server
+	// clears the entry (success — nothing left to say).
+	const [buildTicks, setBuildTicks] = useState<Record<number, string>>({});
 
 	/**
 	 * Load versions + pins. The two queries run INDEPENDENTLY so the versions
@@ -502,6 +522,26 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app, readOnly }) 
 	useEffect(() => {
 		void refresh();
 	}, [refresh]);
+
+	// The server build ticker (apaevt_build_status via the host): keep the
+	// latest word per version for the cards, and re-fetch the rail on the
+	// TERMINAL ticks — 'uploaded' (a new version row exists), '' (success:
+	// the version just became servable), 'failed' (errors landed on the
+	// rail row). Intermediate words are display-only.
+	useEffect(() => {
+		if (!host.subscribeBuildStatus) return;
+		return host.subscribeBuildStatus((tick: BuildStatusTick) => {
+			if (typeof tick.version !== 'number') return;
+			const version = tick.version;
+			setBuildTicks((prev) => {
+				const next = { ...prev };
+				if (tick.status === '') delete next[version];
+				else next[version] = tick.status;
+				return next;
+			});
+			if (tick.status === '' || tick.status === 'failed' || tick.status === 'uploaded') void refresh();
+		});
+	}, [host, refresh]);
 
 	// Load the org's developer id (null when the host can't report it — no banner).
 	useEffect(() => {
@@ -697,7 +737,10 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app, readOnly }) 
 							<div style={styles.publishCard} onClick={onDeployBuild}>
 								<span style={styles.publishPlus}>+</span>
 								<span style={styles.publishTitle}>Deploy</span>
-								<span style={styles.publishHint}>snapshot the current build to the server</span>
+								{/* While the zip is in flight the tile itself is the card —
+								    the version row (and its 'uploaded' tick) exists only
+								    once the server has accepted the upload. */}
+								<span style={styles.publishHint}>{deployBusy ? 'uploading…' : 'snapshot the current build to the server'}</span>
 							</div>
 						)}
 						{(versions ?? []).map((v) => (
@@ -724,6 +767,10 @@ export const DeployView: React.FC<IDeployViewProps> = ({ host, app, readOnly }) 
 										// name as a muted chip rather than crash the row on undefined.
 										<StatusBadge variant="muted">{v.state}</StatusBadge>
 									) : null}
+									{/* The server build ticker: the live lifecycle word beside
+									    the badge ('uploaded' → 'installing' → …) — the server
+									    clears it ('' tick) once the version is servable. */}
+									{buildTicks[v.registryVersion] ? <span style={styles.buildTick}>{buildTicks[v.registryVersion]}</span> : null}
 									{/* Audience chips NAME who serves this version (the pipe
 									    card's pattern) — derived from the where-live pins. */}
 									{(pins ?? [])

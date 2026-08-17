@@ -26,7 +26,7 @@ import '../../../themes/rocketride-vscode.css';
 import '../../styles/root.css';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { AppBuilderScreen } from 'shared/modules/appdev';
-import type { AppBuilderStage, AppErrorRow, AppEventRow, AppSummary, AppVersionInfo, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus } from 'shared/modules/appdev';
+import type { AppBuilderStage, AppErrorRow, AppEventRow, AppSummary, AppVersionInfo, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus } from 'shared/modules/appdev';
 import { useMessaging } from '../hooks/useMessaging';
 
 // =============================================================================
@@ -48,6 +48,7 @@ type IncomingMessage =
 	| { type: 'appdev:console'; row: ConsoleRow }
 	| { type: 'appdev:error'; row: AppErrorRow }
 	| { type: 'appdev:watch'; status: WatchStatus }
+	| { type: 'appdev:buildStatus'; appId: string; version?: number; status: string }
 	| { type: 'appdev:devServer'; entry: string }
 	| { type: 'appdev:auth'; token: string }
 	| { type: 'appdev:reload' }
@@ -474,6 +475,20 @@ const AppWebview: React.FC = () => {
 		for (const fn of errorListeners.current) fn(row);
 	}, []);
 
+	// ── Server build-status ticker (apaevt_build_status relay) ──────────
+	// Latest word per version is RETAINED (not a backlog): a late-mounted
+	// DEPLOY view replays the current words, and '' (the success clear)
+	// removes the retained entry so nothing stale replays.
+	const buildStatusListeners = useRef<Set<(tick: BuildStatusTick) => void>>(new Set());
+	const buildTicks = useRef<Map<number, string>>(new Map());
+	const emitBuildStatus = useCallback((tick: BuildStatusTick) => {
+		if (typeof tick.version === 'number') {
+			if (tick.status === '') buildTicks.current.delete(tick.version);
+			else buildTicks.current.set(tick.version, tick.status);
+		}
+		for (const fn of buildStatusListeners.current) fn(tick);
+	}, []);
+
 	// ── RPC lane (appdev:call/appdev:result correlation) ────────────────
 	const pendingCalls = useRef<Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>>(new Map());
 	const nextCallId = useRef(1);
@@ -510,6 +525,9 @@ const AppWebview: React.FC = () => {
 				case 'appdev:watch':
 					setWatchStatus(msg.status);
 					for (const fn of watchListeners.current) fn(msg.status);
+					break;
+				case 'appdev:buildStatus':
+					emitBuildStatus({ version: msg.version, status: msg.status });
 					break;
 				case 'appdev:devServer': {
 					// Same server, new build (?t only): HMR owns it — no action.
@@ -562,7 +580,7 @@ const AppWebview: React.FC = () => {
 				}
 			}
 		},
-		[emitEvent, emitConsole, emitError]
+		[emitEvent, emitConsole, emitError, emitBuildStatus]
 	);
 
 	const { sendMessage } = useMessaging<OutgoingMessage, IncomingMessage>({ onMessage });
@@ -660,6 +678,13 @@ const AppWebview: React.FC = () => {
 		watchListeners.current.add(fn);
 		return () => watchListeners.current.delete(fn);
 	}, []);
+	const subscribeBuildStatus = useCallback((fn: (tick: BuildStatusTick) => void) => {
+		// Replay the retained latest word per version so a late-mounted
+		// DEPLOY view shows the current tick, then stream live.
+		for (const [version, status] of buildTicks.current) fn({ version, status });
+		buildStatusListeners.current.add(fn);
+		return () => buildStatusListeners.current.delete(fn);
+	}, []);
 
 	// ── The BRIDGE adapter (IAppBuilderHost over useMessaging) ──────────
 	const host: IAppBuilderHost = useMemo(() => {
@@ -674,6 +699,7 @@ const AppWebview: React.FC = () => {
 			subscribeConsole,
 			subscribeErrors,
 			subscribeWatch,
+			subscribeBuildStatus,
 			// Preview chrome
 			getPreviewUrl: () => previewUrl,
 			// Reload = full inner-loop reset in the extension host (kill dev
@@ -769,7 +795,7 @@ const AppWebview: React.FC = () => {
 			},
 			runPreflight: async () => await rpc<PreflightCheck[]>('preflight'),
 		};
-	}, [capabilities, previewUrl, sendMessage, rpc, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch]);
+	}, [capabilities, previewUrl, sendMessage, rpc, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch, subscribeBuildStatus]);
 
 	// ── Render ──────────────────────────────────────────────────────────
 	if (!app) {

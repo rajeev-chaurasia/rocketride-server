@@ -27,6 +27,7 @@ import type { AppListing } from '../appdev/appMarker';
 import { ensureWatch, getWatchManager } from '../appdev/watchManager';
 import { deployApp } from '../appdev/publish';
 import { vendorAppTypes } from '../appdev/appTypes';
+import { getLogger } from '../shared/util/output';
 import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { ConfigManager } from '../config';
 
@@ -169,6 +170,11 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 			localResourceRoots: [this.context.extensionUri],
 		};
 		this.panels.set(appId, panel);
+		// The build ticker + compile feed are org-scoped DEPLOY-type pushes:
+		// without this monitor the server filters every apaevt_build* event
+		// out for this connection (only the pipeline editor armed 'deploy'
+		// before, so App Builder sessions heard nothing).
+		this.armDeployMonitor();
 		panel.webview.html = this.getHtmlForWebview(panel.webview);
 
 		// Bridge: answer the webview's messages
@@ -581,6 +587,33 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		return new Date().toLocaleTimeString(undefined, { hour12: false });
 	}
 
+	/** Whether the org-wide DEPLOY monitor has been armed this session. */
+	private deployMonitorArmed = false;
+
+	/**
+	 * Subscribes this connection to org-scoped DEPLOY-type server events.
+	 *
+	 * The build ticker (apaevt_build_status) and compile feed (apaevt_build)
+	 * ride EVENT_TYPE.DEPLOY, and the server delivers a type only to
+	 * connections that monitored it — the pipeline editor arms 'deploy' for
+	 * its own views, but an App Builder session without an open pipeline
+	 * heard NOTHING. Idempotent; a failed arm re-tries on the next
+	 * connected status change, and the SDK replays a successful monitor
+	 * across reconnects on its own.
+	 */
+	private armDeployMonitor(): void {
+		if (this.deployMonitorArmed) return;
+		const client = this.connectionManager.getClient();
+		if (!client || !this.connectionManager.isConnected()) return;
+		this.deployMonitorArmed = true;
+		client.addMonitor({ token: '*' }, ['deploy']).catch((err: unknown) => {
+			// Arm again on the next reconnect — the feed is telemetry, never
+			// worth failing a panel over.
+			this.deployMonitorArmed = false;
+			getLogger().output(`[appdev] deploy monitor subscribe failed: ${err}`);
+		});
+	}
+
 	/** Forward connection + server events to every open App Builder panel. */
 	private setupEventListeners(): void {
 		// connectionManager.on() returns the SHARED manager (a Node
@@ -589,6 +622,31 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 		// Server push events → Events pane rows
 		const onEvent = (event: GenericEvent): void => {
 			if (!event?.event) return;
+			// Server BUILD feed (apaevt_build): the build worker's live
+			// pnpm/tsc/rsbuild output for this org's apps — routed into the
+			// app's Console pane so a deploy shows its compile as it runs
+			// (between the coarse status-ticker transitions).
+			if (event.event === 'apaevt_build' && event.body) {
+				const b = event.body as { appId?: string; phase?: string; lines?: string[] };
+				if (b.appId && Array.isArray(b.lines) && b.lines.length > 0) {
+					const prefix = `[build:${b.phase || '?'}]`;
+					this.notifyConsole(b.appId, 'log', b.lines.map((l) => `${prefix} ${l}`).join('\n'));
+				}
+			}
+			// Server BUILD status ticker (apaevt_build_status): one short
+			// display word per lifecycle transition ('' clears) — forwarded
+			// to the app's panel for the DEPLOY-view version card.
+			if (event.event === 'apaevt_build_status' && event.body) {
+				const b = event.body as { appId?: string; version?: number; status?: string };
+				if (b.appId && typeof b.status === 'string') {
+					this.panels.get(b.appId)?.webview.postMessage({
+						type: 'appdev:buildStatus',
+						appId: b.appId,
+						version: b.version,
+						status: b.status,
+					});
+				}
+			}
 			const row = {
 				time: AppScreenProvider.feedTime(),
 				name: String(event.event),
@@ -616,6 +674,10 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 			// now that a server is reachable — center-screen error to running
 			// preview without closing and reopening the app.
 			if (this.connectionManager.isConnected()) {
+				// A panel opened while disconnected could not arm the DEPLOY
+				// monitor — arm it now (the SDK replays a successful monitor
+				// across later reconnects on its own).
+				if (this.panels.size > 0) this.armDeployMonitor();
 				// A reconnect may carry a NEW identity (an org switch re-logs-in
 				// under the new default org): tell every open panel to re-fetch
 				// its org-scoped data (developer namespace, publish rail, teams).
