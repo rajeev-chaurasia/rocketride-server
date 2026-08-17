@@ -192,6 +192,9 @@ export interface IFlowProjectContext {
 	onSave?: () => void;
 	onExport?: () => void;
 
+	/** Uninstalls a capsule-installed node (source:capsule) by name; host wires the DAP call + catalog refresh. */
+	onUninstallNode?: (name: string) => void;
+
 	/** Available ROCKETRIDE_* environment variable key names for autocomplete in config fields. */
 	envKeys?: string[];
 }
@@ -265,6 +268,9 @@ export interface IFlowProjectProviderProps {
 	onSave?: () => void;
 	onExport?: () => void;
 
+	/** Uninstalls a capsule-installed node by name (host wires the DAP call + catalog refresh). */
+	onUninstallNode?: (name: string) => void;
+
 	/** Available ROCKETRIDE_* environment variable key names for autocomplete in config fields. */
 	envKeys?: string[];
 }
@@ -280,7 +286,7 @@ export interface IFlowProjectProviderProps {
  * The host application passes props that are tunneled through this context
  * so deeply nested components can access them without prop drilling.
  */
-export function FlowProjectProvider({ children, project: currentProject, isReadonly = false, taskStatuses, componentPipeCounts, totalPipes, servicesJson: rawServicesJson, servicesJsonError, getNodeSchema, inventory, inventoryConnectorTitleMap, handleValidatePipeline, onContentChanged, onViewportChange, onUndo, onRedo, oauth2RootUrl, oauthReturnUrl, onOpenExternal, pendingOAuthTokens, clearPendingOAuthTokens, onOpenLink, googlePickerDeveloperKey, googlePickerClientId, onRunPipeline, onStopPipeline, onOpenStatus, serverHost, isConnected, isSubscribed, initialViewport, isDirty, isNew, onSave, onExport, envKeys }: IFlowProjectProviderProps): ReactElement {
+export function FlowProjectProvider({ children, project: currentProject, isReadonly = false, taskStatuses, componentPipeCounts, totalPipes, servicesJson: rawServicesJson, servicesJsonError, getNodeSchema, inventory, inventoryConnectorTitleMap, handleValidatePipeline, onContentChanged, onViewportChange, onUndo, onRedo, oauth2RootUrl, oauthReturnUrl, onOpenExternal, pendingOAuthTokens, clearPendingOAuthTokens, onOpenLink, googlePickerDeveloperKey, googlePickerClientId, onRunPipeline, onStopPipeline, onOpenStatus, serverHost, isConnected, isSubscribed, initialViewport, isDirty, isNew, onSave, onExport, onUninstallNode, envKeys }: IFlowProjectProviderProps): ReactElement {
 	// --- Toolchain state ---------------------------------------------------
 
 	const [toolchainState, setToolchainState] = useState<IToolchainState>(DEFAULT_TOOLCHAIN_STATE);
@@ -395,6 +401,7 @@ export function FlowProjectProvider({ children, project: currentProject, isReado
 		isNew,
 		onSave,
 		onExport,
+		onUninstallNode,
 		envKeys,
 	}), [
 		currentProject, toolchainState, patchToolchainState, toggleDevMode,
@@ -404,7 +411,7 @@ export function FlowProjectProvider({ children, project: currentProject, isReado
 		oauth2RootUrl, oauthReturnUrl, onOpenExternal, pendingOAuthTokens, clearPendingOAuthTokens,
 		onOpenLink, googlePickerDeveloperKey, googlePickerClientId,
 		onRunPipeline, onStopPipeline, onOpenStatus, serverHost, isConnected,
-		isSubscribed, initialViewport, isDirty, isNew, onSave, onExport, envKeys,
+		isSubscribed, initialViewport, isDirty, isNew, onSave, onExport, onUninstallNode, envKeys,
 	]);
 
 	return <FlowProjectContext.Provider value={value}>{children}</FlowProjectContext.Provider>;

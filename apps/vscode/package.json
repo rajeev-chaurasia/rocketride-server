@@ -2,7 +2,7 @@
 	"name": "rocketride",
 	"displayName": "RocketRide",
 	"description": "RocketRide extension for Visual Studio Code",
-	"version": "1.2.0",
+	"version": "1.2.4",
 	"publisher": "rocketride",
 	"repository": {
 		"type": "git",
@@ -32,6 +32,21 @@
 		"onStartupFinished"
 	],
 	"contributes": {
+		"languages": [
+			{
+				"id": "rocketride-capsule",
+				"aliases": [
+					"RocketRide Capsule"
+				],
+				"extensions": [
+					".rrc"
+				],
+				"icon": {
+					"light": "./rocketride-light-icon.png",
+					"dark": "./rocketride-dark-icon.png"
+				}
+			}
+		],
 		"customEditors": [
 			{
 				"viewType": "rocketride.PageProject",
@@ -329,6 +344,12 @@
 				"category": "RocketRide"
 			},
 			{
+				"command": "rocketride.node.installCapsule",
+				"title": "Install Node Capsule (.rrc)",
+				"category": "RocketRide",
+				"icon": "$(cloud-upload)"
+			},
+			{
 				"command": "rocketride.sidebar.connection.connect",
 				"title": "Connect to Server",
 				"category": "RocketRide",
@@ -579,6 +600,11 @@
 					"command": "rocketride.sidebar.files.createFile",
 					"when": "view == rocketride.provider.files",
 					"group": "navigation@2"
+				},
+				{
+					"command": "rocketride.node.installCapsule",
+					"when": "view == rocketride.provider.files",
+					"group": "navigation@3"
 				}
 			],
 			"view/item/context": [

@@ -59,6 +59,7 @@ export type ProjectWebviewToHost =
 	| { type: 'project:openExternal'; url: string }
 	| { type: 'status:pipelineAction'; action: 'run' | 'stop' | 'restart'; source?: string }
 	| { type: 'status:missingEnvVars'; keys: string[] }
+	| { type: 'node:uninstallCapsule'; node: string }
 	| { type: 'trace:clear' }
 	// Embedded checkout requests (the Subscribe overlay).
 	| CheckoutRequestWebviewToHost

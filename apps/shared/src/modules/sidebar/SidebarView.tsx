@@ -21,7 +21,7 @@
 
 import React, { useState, useCallback, CSSProperties } from 'react';
 import { commonStyles } from 'shell';
-import { BxPlus, BxDesktop, BxChevronRight, BxChevronDown, BxStop, BxGridAlt } from 'shell';
+import { BxPlus, BxDesktop, BxChevronRight, BxChevronDown, BxStop, BxGridAlt, BxCloudUpload } from 'shell';
 import { SidebarMenu, TabControl, TabPanel } from 'shell';
 import { StatusBadge } from 'shell';
 import type { StatusVariant } from 'shell';
@@ -195,9 +195,13 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 		entries: [{ id: 'monitor', label: 'Monitor', icon: <BxDesktop size={16} />, disabled: !isConnected }],
 	};
 
-	// "+ New pipeline" belongs to the Pipelines tab body only.
+	// "+ New pipeline" belongs to the Pipelines tab body only, alongside the
+	// capsule installer (a node capsule is only useful to a pipeline).
 	const pipelinesNavMenu: ViewMenu = {
-		entries: [{ id: 'new', label: 'New pipeline', icon: <BxPlus size={16} /> }],
+		entries: [
+			{ id: 'new', label: 'New pipeline', icon: <BxPlus size={16} /> },
+			{ id: 'installCapsule', label: 'Install node capsule', icon: <BxCloudUpload size={16} />, disabled: !isConnected },
+		],
 	};
 
 	// The mode tabs — the stock TabControl menu. The Apps entry only exists
@@ -262,7 +266,7 @@ export const SidebarView: React.FC<ISidebarViewProps> = ({ connection, isSubscri
 					menu={pipelinesNavMenu}
 					activeId=""
 					onSelect={(id) => {
-						if (id === 'new') onNavigate(id);
+						if (id === 'new' || id === 'installCapsule') onNavigate(id);
 					}}
 				/>
 			</div>

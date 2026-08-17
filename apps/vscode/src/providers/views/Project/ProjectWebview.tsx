@@ -513,6 +513,13 @@ const ProjectWebview: React.FC = () => {
 		[sendMessage]
 	);
 
+	const handleUninstallNode = useCallback(
+		(name: string) => {
+			sendMessage({ type: 'node:uninstallCapsule', node: name });
+		},
+		[sendMessage]
+	);
+
 	const handleViewStateChange = useCallback(
 		(vs: ViewState) => {
 			// Keep local state current so the next run message carries the latest trace level
@@ -815,6 +822,7 @@ const ProjectWebview: React.FC = () => {
 				pendingOAuthTokens={pendingOAuthTokens}
 				clearPendingOAuthTokens={clearPendingOAuthTokens}
 				onSave={handleSave}
+				onUninstallNode={handleUninstallNode}
 				isReadonly={isReadonly}
 				envKeys={envKeys}
 				onMissingEnvVars={handleMissingEnvVars}
