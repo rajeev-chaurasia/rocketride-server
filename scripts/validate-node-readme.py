@@ -218,6 +218,7 @@ def profile_results(svc: dict, hand: str) -> list[tuple[str, str, str]]:
                 {
                     'row': row,
                     'key': resolve_profile_row(row, profiles),
+                    'headers': table['headers'],
                     'collapsed': table['collapsed'],
                 }
             )
@@ -240,9 +241,11 @@ def profile_results(svc: dict, hand: str) -> list[tuple[str, str, str]]:
         for record in row_records:
             key = record['key']
             metadata = profiles.get(key) if key is not None else None
-            if key == 'custom' or not isinstance(metadata, dict) or field not in metadata or field not in record['row']:
+            if key == 'custom' or not isinstance(metadata, dict) or field not in metadata:
                 continue
-            rendered = _clean_cell(record['row'][field]).replace(',', '')
+            if field not in record['headers']:
+                continue
+            rendered = _clean_cell(record['row'].get(field, '')).replace(',', '')
             expected = _clean_cell(str(metadata[field])).replace(',', '')
             if rendered != expected:
                 mismatches.append(f"{key}: '{rendered}' != '{expected}'")

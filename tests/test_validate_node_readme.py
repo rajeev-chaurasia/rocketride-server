@@ -296,6 +296,15 @@ def test_profiles_reject_mismatched_output_tokens(tmp_path):
     assert any(check == 'Profiles output tokens match preconfig' for check, _ in failures(node))
 
 
+def test_profiles_reject_missing_value_in_present_semantic_column(tmp_path):
+    profile_section = VALUE_SECTION_ALIASES.replace(
+        '| `profile-b` | `model-b` | 1,000,000 | 64,000 |', '| `profile-b` | `model-b` | 1,000,000 |'
+    )
+    node = write_node(tmp_path, profiles=VALUE_PROFILES, default='profile-a', profile_section=profile_section)
+
+    assert any(check == 'Profiles output tokens match preconfig' for check, _ in failures(node))
+
+
 def test_profiles_accept_header_aliases_and_thousands_separators(tmp_path):
     aliases_root = tmp_path / 'aliases'
     aliases_root.mkdir()

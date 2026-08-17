@@ -222,7 +222,7 @@ Default: **GPT-5.2** (`openai-5-2`).
 | `gpt-5-5` | `gpt-5.5` | 1,050,000 | 128,000 |
 
 <details>
-<summary><strong>View 44 more models</strong></summary>
+<summary><strong>View 2 more models</strong></summary>
 
 | Profile | Model | Context | Output |
 | ------- | ----- | ------- | ------ |
