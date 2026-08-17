@@ -28,6 +28,7 @@ import { ConnectionManager } from '../connection/connection';
 import { extractInstallCause, isTransientLockError, setWorkspaceInstallDelegate } from './appTypes';
 import { getLogger } from '../shared/util/output';
 import { DEV_SESSION_NONCE } from './devSession';
+import { appIconDataUri } from './appScan';
 import type { ScannedApp } from './appScan';
 import type { AppScreenProvider, AppWatchStatus } from '../providers/AppScreenProvider';
 
@@ -69,6 +70,10 @@ interface WatchSession {
 	    fresh start) never inherits it, so an already-expired linger can never
 	    tear down a session the user just reopened. */
 	lingerToken?: number;
+	/** The app's manifest icon as a data: URI, resolved ONCE per session
+	    ('' when absent/unreadable) — registerOverlay re-fires on every
+	    rebuild and must not re-read a 256 KiB file each time. */
+	iconUri?: string;
 }
 
 // =============================================================================
@@ -886,6 +891,12 @@ export class WatchManager {
 		try {
 			const client = this.connectionManager.getClient();
 			if (!client || !this.connectionManager.isConnected()) return;
+			// Manifest basics ride along so a never-published app's desktop
+			// tile renders like a store tile (real name/icon/description)
+			// instead of a bare app id.
+			if (session.iconUri === undefined) {
+				session.iconUri = (await appIconDataUri(session.app.icon)) ?? '';
+			}
 			await client.call('rrext_deploy_app', {
 				subcommand: 'register_dev',
 				moduleId: session.app.moduleId,
@@ -895,6 +906,10 @@ export class WatchManager {
 				// previews launched from THIS editor resolve THIS dev server
 				// even when another editor serves the same app.
 				session: DEV_SESSION_NONCE,
+				name: session.app.name,
+				description: session.app.description ?? '',
+				appVersion: session.app.version ?? '',
+				icon: session.iconUri,
 			});
 		} catch (err) {
 			this.logger.output(`[appdev] register_dev failed for ${session.app.id}: ${err}`);
