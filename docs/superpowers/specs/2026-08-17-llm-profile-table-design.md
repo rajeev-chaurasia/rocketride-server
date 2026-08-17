@@ -81,13 +81,13 @@ Default: **GPT-5.2** (`openai-5-2`).
 | Profile | Model | Context | Output |
 | ------- | ----- | ------- | ------ |
 | `openai-5-2` **(default)** | `gpt-5.2` | 400,000 | 128,000 |
-| `openai-5-6-sol` | `gpt-5.6-sol` | 1,000,000 | 128,000 |
-| `openai-5-6-terra` | `gpt-5.6-terra` | 1,000,000 | 128,000 |
-| `openai-5-6-luna` | `gpt-5.6-luna` | 1,000,000 | 128,000 |
-| `openai-5-5` | `gpt-5.5` | 400,000 | 128,000 |
+| `gpt-5-6-sol` | `gpt-5.6-sol` | 1,050,000 | 128,000 |
+| `gpt-5-6-terra` | `gpt-5.6-terra` | 1,050,000 | 128,000 |
+| `gpt-5-6-luna` | `gpt-5.6-luna` | 1,050,000 | 128,000 |
+| `gpt-5-5` | `gpt-5.5` | 1,050,000 | 128,000 |
 
 <details>
-<summary><strong>View 43 more models</strong></summary>
+<summary><strong>View 44 more models</strong></summary>
 
 | Profile | Model | Context | Output |
 | ------- | ----- | ------- | ------ |
