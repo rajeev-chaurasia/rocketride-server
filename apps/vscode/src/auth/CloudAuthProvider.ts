@@ -32,6 +32,7 @@ import { EventEmitter } from 'events';
 
 const SECRET_KEY_TOKEN = 'rocketride.cloudToken';
 const SECRET_KEY_NAME = 'rocketride.cloudUserName';
+const SECRET_KEY_URL = 'rocketride.cloudServerUrl';
 const REDIRECT_URI = `${vscode.env.uriScheme}://rocketride.rocketride/auth/callback`;
 
 // =============================================================================
@@ -46,6 +47,11 @@ export class CloudAuthProvider implements vscode.UriHandler, vscode.Disposable {
 	/** The cloud server the in-flight sign-in exchanges its code against —
 	 * captured at signIn() because the callback arrives later. */
 	private pendingCloudUrl: string | null = null;
+	/** Set when the LAST sign-in attempt came back waitlisted (auth fine,
+	 * access not yet granted, no token minted). In-memory only — the
+	 * waitlist is a server fact and must never persist into staleness; the
+	 * panels render it as a friendly banner for this host's lifetime. */
+	private waitlistedName: string | null = null;
 	private pendingGoogleOAuth = new Map<string, (tokens: string, state: string) => void>();
 	private disposables: vscode.Disposable[] = [];
 	private readonly _onDidChange = new EventEmitter();
@@ -215,13 +221,36 @@ export class CloudAuthProvider implements vscode.UriHandler, vscode.Disposable {
 
 			const token = (result as any)?.userToken || '';
 			const displayName = (result as any)?.displayName || '';
+			const waitlisted = Boolean((result as any)?.waitlisted);
 
 			// Disconnect immediately — we only needed the token
 			await tempClient.disconnect();
 
+			// Waitlisted account: authentication SUCCEEDED but access is not
+			// granted yet — the server deliberately returns no token so no
+			// session exists to store. Mirror the browser shell's waitlist
+			// screen: record the state (the Cloud panels render it as a
+			// friendly banner via cloud:status) and toast for surfaces
+			// without a panel, instead of falling through to the generic
+			// "no token received" failure.
+			if (waitlisted) {
+				this.waitlistedName = displayName;
+				this._onDidChange.emit('changed');
+				vscode.window.showInformationMessage(
+					`Thanks for signing up${displayName ? `, ${displayName}` : ''}! Your RocketRide Cloud account is in the access queue — access is rolling out in waves, and we'll email you as soon as your account is activated.`
+				);
+				return;
+			}
+			this.waitlistedName = null;
+
 			if (token) {
 				await this.storeToken(token);
 				await this.storeUserName(displayName);
+				// Record WHICH server minted this session — the token is only
+				// valid there, and surfaces that mix form-target facts with
+				// session facts (CloudPanel's subscribe gate) compare against
+				// this to refuse acting on a mismatched server.
+				await this.storeSignedInUrl(cloudUrl);
 				this._onDidChange.emit('changed');
 				vscode.window.showInformationMessage(`Signed in to RocketRide Cloud as ${displayName || 'user'}`);
 			} else {
@@ -270,13 +299,40 @@ export class CloudAuthProvider implements vscode.UriHandler, vscode.Disposable {
 		}
 	}
 
+	// --- Signed-In Server Storage --------------------------------------------
+
+	/** Records the cloud server the current session's token was minted against. */
+	async storeSignedInUrl(url: string): Promise<void> {
+		if (!this.context) return;
+		await this.context.secrets.store(SECRET_KEY_URL, url);
+	}
+
+	/** The cloud server of the CURRENT session ('' when signed out or unknown —
+	 *  sessions minted before this field existed carry no URL). */
+	async getSignedInUrl(): Promise<string> {
+		if (!this.context) return '';
+		try {
+			return (await this.context.secrets.get(SECRET_KEY_URL)) || '';
+		} catch {
+			return '';
+		}
+	}
+
+	/** The display name of the last WAITLISTED sign-in attempt, or null when
+	 *  the last attempt was not waitlisted (this host's lifetime only). */
+	getWaitlistedName(): string | null {
+		return this.waitlistedName;
+	}
+
 	// --- Sign Out -------------------------------------------------------------
 
 	async signOut(): Promise<void> {
 		if (this.context) {
 			await this.context.secrets.delete(SECRET_KEY_TOKEN);
 			await this.context.secrets.delete(SECRET_KEY_NAME);
+			await this.context.secrets.delete(SECRET_KEY_URL);
 		}
+		this.waitlistedName = null;
 		this._onDidChange.emit('changed');
 	}
 }

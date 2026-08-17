@@ -195,8 +195,11 @@ async def seed_app(account: Any, org_id: str, entry: Dict[str, Any], actor: Dict
 
     The PRIMITIVE: registers the seed artifact (born 'ready') as the next
     registry version and copies the built bundle into the store next to it.
-    Binding the version to an audience is deliberately the CALLER's job —
-    each edition records visibility its own way.
+    An EMPTY copy (no local bundle) re-stamps the row's build FAILED — an
+    empty ``dist/`` must never pass the built gate, so callers withhold the
+    binding and the self-heal path retries the copy on a later run. Binding
+    the version to an audience is deliberately the CALLER's job — each
+    edition records visibility its own way.
 
     Args:
         account: The active Account (either edition).
@@ -205,7 +208,8 @@ async def seed_app(account: Any, org_id: str, entry: Dict[str, Any], actor: Dict
         actor:   Audit actor for the registry rows.
 
     Returns:
-        The new registry entry (version, sha256, artifactPath, ...).
+        The new registry entry (version, sha256, artifactPath, ...) with
+        ``metadata.build`` reflecting the copy outcome.
     """
     app_id = str(entry['id'])
     # The stored manifest carries NO entry URL: serving URLs are constructed
@@ -228,8 +232,30 @@ async def seed_app(account: Any, org_id: str, entry: Dict[str, Any], actor: Dict
     if copied == 0:
         # With the static-entry short-circuit retired, the dist/ copy IS the
         # serving path — an empty copy means this seed cannot serve at all.
-        debug(f'[seed_apps] WARNING: {app_id} seeded with an EMPTY dist/ — the app cannot serve (rebuild the app)')
+        # Re-stamp the build FAILED (visible on the DEPLOY rail) so the
+        # built gate refuses it everywhere and the caller withholds the
+        # binding; a later run's self-heal retries the copy once the built
+        # tree exists.
+        failed = {
+            'status': 'failed',
+            'seeded': True,
+            'errors': ['seed bundle copy found no local files — rebuild the app'],
+            'endedAt': time.time(),
+        }
+        try:
+            await account.deployments_set_build(org_id, app_id, int(registered.get('version', 0)), failed)
+        except Exception as exc:
+            debug(f'[seed_apps] {app_id}: failed-build stamp failed: {exc}')
+        registered.setdefault('metadata', {})['build'] = failed
+        debug(f'[seed_apps] WARNING: {app_id} seeded with an EMPTY dist/ — binding withheld (rebuild the app)')
     return registered
+
+
+def _build_ok(entry: Dict[str, Any]) -> bool:
+    """Whether a registry row's build completed (``metadata.build.status`` ok)."""
+    metadata = entry.get('metadata') if isinstance(entry.get('metadata'), dict) else {}
+    build = metadata.get('build') if isinstance(metadata.get('build'), dict) else {}
+    return str(build.get('status') or '') == 'ok'
 
 
 # =============================================================================
@@ -294,10 +320,32 @@ async def seed_manifest_app(
         pub = await account.publish_get(org_id, 'app', app_id, PUBLIC_AUDIENCE)
         if pub is not None:
             return False  # fully seeded, nothing to do.
-        # Point the public audience at the latest ready version (seeds are
-        # born 'ready'; deployments_versions is newest-first).
+        # Point the public audience at the latest ready AND BUILT version —
+        # binding an unbuilt row would expose a version with no servable
+        # bytes (seeds are born 'ready'; deployments_versions is
+        # newest-first). A ready seed row whose earlier bundle copy failed
+        # gets the copy RETRIED here (idempotent — the dist path derives
+        # from the row's artifactPath), so a rebuilt tree heals on the next
+        # run without minting runaway versions.
         ready = [v for v in existing if v.get('state') == 'ready'] or existing
-        target = ready[0]
+        target = next((row for row in ready if _build_ok(row)), None)
+        if target is None:
+            for row in ready:
+                # Newest SEED row only — user deploys are the worker's job.
+                if str(row.get('comment') or '') != SEED_COMMENT:
+                    continue
+                try:
+                    if await copy_bundle_to_store(app_id, str(row.get('artifactPath') or '')) > 0:
+                        stamp = {'status': 'ok', 'seeded': True, 'endedAt': time.time()}
+                        await account.deployments_set_build(org_id, app_id, int(row.get('version', 0)), stamp)
+                        row.setdefault('metadata', {})['build'] = stamp
+                        target = row
+                except Exception as exc:
+                    debug(f'[seed_apps] {app_id}: bundle-copy retry failed: {exc}')
+                break
+        if target is None:
+            debug(f'[seed_apps] {app_id}: no BUILT ready version — public binding withheld (rebuild the app)')
+            return False
         version = int(target.get('version', 1))
         await account.publish_set(
             org_id, 'app', app_id, PUBLIC_AUDIENCE, version, manifest_snapshot(target, artifact), actor
@@ -308,6 +356,12 @@ async def seed_manifest_app(
     # Step 2: mint the seed version + copy its bundle (the primitive).
     registered = await seed_app(account, org_id, entry, actor)
     version = int(registered.get('version', 1))
+    # The primitive stamps the build FAILED when the copy found no bundle —
+    # never bind (or fleet-repoint!) an empty version: the pointer would
+    # serve nothing, and a fleet bump would walk EVERY pin onto it. The
+    # self-heal path above retries the copy on the next run.
+    if not _build_ok(registered):
+        return False
     snapshot = manifest_snapshot(registered, artifact)
 
     # Step 3: bind the public audience. The deployment was registered 'ready'

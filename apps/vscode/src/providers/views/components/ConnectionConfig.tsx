@@ -56,6 +56,11 @@ export interface ConnectionConfigProps {
 
 	// Cloud
 	cloudSignedIn: boolean;
+	/** The server the session's token was minted against (subscribe gate). */
+	cloudSignedInUrl?: string;
+	/** Last sign-in attempt was waitlisted — CloudPanel shows the queue banner. */
+	cloudWaitlisted?: boolean;
+	cloudWaitlistedName?: string;
 	cloudUserName: string;
 	onCloudSignIn: () => void;
 	onCloudSignOut: () => void;
@@ -217,7 +222,7 @@ export const ConnectionConfig: React.FC<ConnectionConfigProps> = (props) => {
 
 			{/* Mode-specific panel — hidden when no mode selected or mode has a conflict */}
 			{connectionMode && !modeConflict && <div style={{ ...S.modeConfigBox, marginTop: 8 }}>
-				{connectionMode === 'cloud' && <CloudPanel idPrefix={idPrefix} cloudSignedIn={cloudSignedIn} cloudUserName={cloudUserName} onCloudSignIn={onCloudSignIn} onCloudSignOut={onCloudSignOut} simplified={simplified} useCustomServer={groupSettings.useCustomServer} customUrl={groupSettings.cloudUrl} defaultCloudUrl={groupSettings.defaultCloudUrl} onUseCustomServerChange={(v) => changeGroup({ useCustomServer: v })} onCustomUrlChange={(url) => changeGroup({ cloudUrl: url })} isSaas={props.isSaas} onProbeServer={props.onProbeCloudServer} isSubscribed={props.isSubscribed} onFetchPlans={props.onFetchPlans} onCreateCheckout={props.onCreateCheckout} onConfirmPending={props.onConfirmPending} onCheckoutSuccess={props.onCheckoutSuccess} />}
+				{connectionMode === 'cloud' && <CloudPanel idPrefix={idPrefix} cloudSignedIn={cloudSignedIn} cloudUserName={cloudUserName} cloudSignedInUrl={props.cloudSignedInUrl} waitlisted={props.cloudWaitlisted} waitlistedName={props.cloudWaitlistedName} onCloudSignIn={onCloudSignIn} onCloudSignOut={onCloudSignOut} simplified={simplified} useCustomServer={groupSettings.useCustomServer} customUrl={groupSettings.cloudUrl} defaultCloudUrl={groupSettings.defaultCloudUrl} onUseCustomServerChange={(v) => changeGroup({ useCustomServer: v })} onCustomUrlChange={(url) => changeGroup({ cloudUrl: url })} isSaas={props.isSaas} onProbeServer={props.onProbeCloudServer} isSubscribed={props.isSubscribed} onFetchPlans={props.onFetchPlans} onCreateCheckout={props.onCreateCheckout} onConfirmPending={props.onConfirmPending} onCheckoutSuccess={props.onCheckoutSuccess} />}
 
 				{connectionMode === 'onprem' && <OnPremPanel idPrefix={idPrefix} hostUrl={groupSettings.hostUrl} onHostUrlChange={(url) => changeGroup({ hostUrl: url })} apiKey={groupSettings.apiKey} onApiKeyChange={(key) => changeGroup({ apiKey: key, hasApiKey: key.trim().length > 0 })} onClearApiKey={onClearCredentials} onTestConnection={(hostUrl, apiKey) => onTestConnection('onprem', { hostUrl, apiKey })} testMessage={testMessage} />}
 

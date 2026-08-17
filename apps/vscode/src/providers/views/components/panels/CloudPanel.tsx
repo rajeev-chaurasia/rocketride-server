@@ -19,7 +19,7 @@ import { settingsStyles as S } from '../../Settings/SettingsWebview';
 import { useTheme } from '../../hooks/useTheme';
 import { useStripeKey } from '../../hooks/useStripeKey';
 import { CheckoutUnavailableNotice } from '../CheckoutUnavailableNotice';
-import { CheckoutModal } from 'shell';
+import { Banner, CheckoutModal } from 'shell';
 import type { CheckoutPlan } from 'shell';
 
 // =============================================================================
@@ -31,6 +31,15 @@ export interface CloudPanelProps {
 	cloudSignedIn: boolean;
 	/** Display name of the signed-in user. */
 	cloudUserName: string;
+	/** The cloud server the session's token was minted against ('' when
+	 * unknown — sessions minted before this field existed carry no URL). */
+	cloudSignedInUrl?: string;
+	/** Last sign-in attempt came back WAITLISTED: authentication succeeded
+	 * but access is queued, so no session exists — rendered as a friendly
+	 * banner mirroring the browser shell's waitlist screen. */
+	waitlisted?: boolean;
+	/** Display name from the waitlisted attempt (may be empty). */
+	waitlistedName?: string;
 	/** Trigger the OAuth sign-in flow. */
 	onCloudSignIn: () => void;
 	onCloudSignOut: () => void;
@@ -69,7 +78,18 @@ export interface CloudPanelProps {
 // COMPONENT
 // =============================================================================
 
-export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUserName, onCloudSignIn, onCloudSignOut, idPrefix, simplified, useCustomServer, customUrl, defaultCloudUrl, onUseCustomServerChange, onCustomUrlChange, isSaas, onProbeServer, isSubscribed, onFetchPlans, onCreateCheckout, onConfirmPending, onCheckoutSuccess }) => {
+/** Comparable identity of a server URL — origin when parseable, else the
+ *  trimmed string sans trailing slashes (both sides normalize identically). */
+const serverIdentity = (url: string): string => {
+	const trimmed = url.trim().replace(/\/+$/, '');
+	try {
+		return new URL(trimmed).origin.toLowerCase();
+	} catch {
+		return trimmed.toLowerCase();
+	}
+};
+
+export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUserName, cloudSignedInUrl, waitlisted, waitlistedName, onCloudSignIn, onCloudSignOut, idPrefix, simplified, useCustomServer, customUrl, defaultCloudUrl, onUseCustomServerChange, onCustomUrlChange, isSaas, onProbeServer, isSubscribed, onFetchPlans, onCreateCheckout, onConfirmPending, onCheckoutSuccess }) => {
 	const theme = useTheme();
 	const [showCheckout, setShowCheckout] = useState(false);
 
@@ -90,6 +110,17 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 	useEffect(() => {
 		if (onProbeServer && cloudUrl) onProbeServer(cloudUrl);
 	}, [cloudUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
+	// Subscribe gate: the session's facts (signed-in, subscription state) and
+	// the checkout handlers all ride the CURRENT connection — the server the
+	// token was minted against. When the form's target names a DIFFERENT
+	// server, offering Subscribe here would bill the old server while the
+	// panel talks about the new one, so the money path closes until the user
+	// signs in on the selected server. Unknown session URL (a session minted
+	// before it was recorded) stays permissive — the target is unchanged in
+	// the overwhelming case, and sign-out/in refreshes the record.
+	const sessionMatchesTarget =
+		!cloudSignedIn || !cloudSignedInUrl || !cloudUrl || serverIdentity(cloudSignedInUrl) === serverIdentity(cloudUrl);
 
 	return (
 		<>
@@ -156,14 +187,35 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 			)}
 			{isSaas && !cloudSignedIn && (
 				<div style={S.formGroup}>
+					{/* Waitlisted sign-in: auth succeeded, access is queued (the
+					    server minted no token) — the browser shell's friendly
+					    waitlist screen, as the platform's stock Banner. */}
+					{waitlisted && (
+						<div style={{ marginBottom: 10 }}>
+							<Banner variant="info">
+								Thanks for signing up{waitlistedName ? `, ${waitlistedName}` : ''}! Your account is all set — we&#39;re rolling out
+								access in waves and you&#39;re in the queue. We&#39;ll email you as soon as your account is activated.
+							</Banner>
+						</div>
+					)}
 					<button type="button" onClick={onCloudSignIn} style={{ width: 'auto', padding: '10px 24px', fontWeight: 600 }}>
 						Sign In
 					</button>
 				</div>
 			)}
 
-			{/* Subscribe prompt — shown when signed in but not subscribed */}
-			{isSaas && cloudSignedIn && isSubscribed === false && onFetchPlans && (
+			{/* Session/target mismatch — the signed-in session belongs to a
+			    different server than the form now targets; billing surfaces
+			    are withheld until the user signs in on the selected server. */}
+			{isSaas && cloudSignedIn && !sessionMatchesTarget && (
+				<div style={S.modeConfigDesc}>
+					Signed in to {cloudSignedInUrl}. Sign out and sign in again to use {cloudUrl}.
+				</div>
+			)}
+
+			{/* Subscribe prompt — shown when signed in but not subscribed, and
+			    only when the session actually belongs to the targeted server */}
+			{isSaas && cloudSignedIn && sessionMatchesTarget && isSubscribed === false && onFetchPlans && (
 				<div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 16px', borderRadius: 8, border: '1px solid var(--vscode-input-border, #444)', background: 'var(--vscode-editor-background)' }}>
 					<div style={{ flex: 1, fontSize: 13, lineHeight: 1.5, color: 'var(--rr-text-secondary)' }}>
 						You are currently not subscribed to the RocketRide Cloud. You will be able to run all your pipelines locally, but to run them in the cloud, or deploy pipelines to the cloud, requires a subscription.

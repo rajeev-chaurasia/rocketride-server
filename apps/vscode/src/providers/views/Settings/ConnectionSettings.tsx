@@ -53,6 +53,11 @@ interface ConnectionSettingsProps {
 	serverCapabilities: string[];
 	cloudSignedIn?: boolean;
 	cloudUserName?: string;
+	/** The server the session's token was minted against (subscribe gate). */
+	cloudSignedInUrl?: string;
+	/** Last sign-in attempt was waitlisted — CloudPanel shows the queue banner. */
+	cloudWaitlisted?: boolean;
+	cloudWaitlistedName?: string;
 	onCloudSignIn?: () => void;
 	onCloudSignOut?: () => void;
 	onProbeCloudServer?: (cloudUrl: string) => void;
@@ -144,6 +149,9 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = (props) => 
 					onSettingsChange={onSettingsChange}
 					cloudSignedIn={props.cloudSignedIn ?? false}
 					cloudUserName={props.cloudUserName ?? ''}
+					cloudSignedInUrl={props.cloudSignedInUrl}
+					cloudWaitlisted={props.cloudWaitlisted}
+					cloudWaitlistedName={props.cloudWaitlistedName}
 					onCloudSignIn={props.onCloudSignIn!}
 					onCloudSignOut={props.onCloudSignOut!}
 					onProbeCloudServer={props.onProbeCloudServer}

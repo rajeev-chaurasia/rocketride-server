@@ -12,7 +12,7 @@
  * the host-reported StripeKeyUnavailableReason carried by useStripeKey.
  */
 
-import React, { CSSProperties } from 'react';
+import React, { CSSProperties, useEffect, useRef } from 'react';
 import type { StripeKeyUnavailableReason } from '../../types/checkoutTypes';
 
 // =============================================================================
@@ -94,16 +94,41 @@ export interface CheckoutUnavailableNoticeProps {
  * @param props - Reason and dismiss callback.
  * @returns The dialog element.
  */
-export const CheckoutUnavailableNotice: React.FC<CheckoutUnavailableNoticeProps> = ({ reason, onClose }) => (
-	<div style={styles.backdrop} onClick={onClose}>
-		<div style={styles.dialog} role="alertdialog" aria-label="Checkout unavailable" onClick={(e) => e.stopPropagation()}>
-			<h3 style={styles.title}>Checkout unavailable</h3>
-			<p style={styles.message}>{MESSAGES[reason ?? 'pending']}</p>
-			<div style={styles.closeRow}>
-				<button type="button" style={styles.closeButton} onClick={onClose}>
-					Close
-				</button>
+export const CheckoutUnavailableNotice: React.FC<CheckoutUnavailableNoticeProps> = ({ reason, onClose }) => {
+	const closeRef = useRef<HTMLButtonElement>(null);
+
+	// Focus discipline: move focus INTO the dialog on open and hand it back
+	// on close — otherwise the keyboard stays on the control behind the
+	// overlay and can operate the page underneath a modal.
+	useEffect(() => {
+		const previous = document.activeElement as HTMLElement | null;
+		closeRef.current?.focus();
+		return () => previous?.focus?.();
+	}, []);
+
+	/** Escape dismisses; Tab stays on Close — the dialog's ONLY tabbable
+	 *  element, so pinning it there is an exact focus trap. */
+	const onKeyDown = (e: React.KeyboardEvent) => {
+		if (e.key === 'Escape') {
+			e.stopPropagation();
+			onClose();
+		} else if (e.key === 'Tab') {
+			e.preventDefault();
+			closeRef.current?.focus();
+		}
+	};
+
+	return (
+		<div style={styles.backdrop} onClick={onClose} onKeyDown={onKeyDown}>
+			<div style={styles.dialog} role="alertdialog" aria-modal="true" aria-label="Checkout unavailable" onClick={(e) => e.stopPropagation()}>
+				<h3 style={styles.title}>Checkout unavailable</h3>
+				<p style={styles.message}>{MESSAGES[reason ?? 'pending']}</p>
+				<div style={styles.closeRow}>
+					<button ref={closeRef} type="button" style={styles.closeButton} onClick={onClose}>
+						Close
+					</button>
+				</div>
 			</div>
 		</div>
-	</div>
-);
+	);
+};

@@ -305,7 +305,14 @@ export class ConnectionMessageHandler {
 		const cloudAuth = CloudAuthProvider.getInstance();
 		const signedIn = await cloudAuth.isSignedIn();
 		const userName = await cloudAuth.getUserName();
-		webview.postMessage({ type: 'cloud:status', signedIn, userName });
+		// The server the session's token was minted against — CloudPanel's
+		// subscribe gate compares the form's target to it, so checkout can
+		// never bill a different server than the one on screen.
+		const signedInUrl = await cloudAuth.getSignedInUrl();
+		// Last attempt came back waitlisted -> the panel renders the friendly
+		// access-queue banner instead of looking silently signed out.
+		const waitlistedName = cloudAuth.getWaitlistedName();
+		webview.postMessage({ type: 'cloud:status', signedIn, userName, signedInUrl, waitlisted: waitlistedName !== null, waitlistedName: waitlistedName ?? '' });
 	}
 
 	// =========================================================================

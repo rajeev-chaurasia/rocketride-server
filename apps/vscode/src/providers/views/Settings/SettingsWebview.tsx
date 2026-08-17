@@ -510,6 +510,13 @@ export const Settings: React.FC = () => {
 	// Subscription state — defaults to false so the subscribe button shows until the host confirms
 	const [subscribed, setSubscribed] = useState(false);
 	const [cloudUserName, setCloudUserName] = useState('');
+	// The server the session's token was minted against — CloudPanel's
+	// subscribe gate compares the form's target against it.
+	const [cloudSignedInUrl, setCloudSignedInUrl] = useState('');
+	// Last sign-in attempt came back waitlisted (auth fine, access queued) —
+	// CloudPanel renders the friendly access-queue banner.
+	const [cloudWaitlisted, setCloudWaitlisted] = useState(false);
+	const [cloudWaitlistedName, setCloudWaitlistedName] = useState('');
 
 	// Checkout modal state
 	const checkoutResolvers = useRef<{
@@ -579,6 +586,9 @@ export const Settings: React.FC = () => {
 				case 'cloud:status' as any:
 					setCloudSignedIn((message as any).signedIn);
 					setCloudUserName((message as any).userName || '');
+					setCloudSignedInUrl((message as any).signedInUrl || '');
+					setCloudWaitlisted(Boolean((message as any).waitlisted));
+					setCloudWaitlistedName((message as any).waitlistedName || '');
 					break;
 
 				case 'subscriptionStatus':
@@ -941,6 +951,9 @@ export const Settings: React.FC = () => {
 							engineVersionsLoading={engineVersionsLoading}
 							cloudSignedIn={cloudSignedIn}
 							cloudUserName={cloudUserName}
+							cloudSignedInUrl={cloudSignedInUrl}
+							cloudWaitlisted={cloudWaitlisted}
+							cloudWaitlistedName={cloudWaitlistedName}
 							// Sign-in targets the form's CURRENT effective server — the
 							// saved config lags until Save, and exchanging the OAuth code
 							// against the wrong server mints the wrong session.
@@ -1002,6 +1015,9 @@ export const Settings: React.FC = () => {
 							testMessage={testMessage}
 							cloudSignedIn={cloudSignedIn}
 							cloudUserName={cloudUserName}
+							cloudSignedInUrl={cloudSignedInUrl}
+							cloudWaitlisted={cloudWaitlisted}
+							cloudWaitlistedName={cloudWaitlistedName}
 							// Sign-in targets the form's CURRENT effective server — the
 							// saved config lags until Save, and exchanging the OAuth code
 							// against the wrong server mints the wrong session.

@@ -480,7 +480,9 @@ class RocketRideClient(
             if client.did_fail(response):
                 raise RuntimeError(response.get('message', 'Server info request failed'))
 
-            body = response.get('body', {})
+            # `or {}` (not a default) — a present-but-None body must also
+            # normalize, exactly like call() and the TS SDK's `?? {}`.
+            body = response.get('body') or {}
             # Resolve the endpoints HERE, where the probed URI is known, so
             # consumers always receive absolute URLs and never branch on
             # presence — a pre-endpoints server or an 'origin' sentinel both
