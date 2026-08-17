@@ -875,6 +875,75 @@ async def test_submit_flips_the_deployment_into_review(registry, quiet_push):
     assert refused['success'] is False
 
 
+class _EventConn:
+    """Receiving-side connection fake for review-state push targeting."""
+
+    def __init__(self, org_id='', perms=None, auth='rr_session'):
+        self._account_info = SimpleNamespace(
+            userId='u-recv',
+            auth=auth,
+            organization={'id': org_id} if org_id else None,
+            sysPermissions=perms or [],
+        )
+        self.events = []
+
+    async def send_event(self, name, body=None):
+        """Record every push so the test asserts exact delivery."""
+        self.events.append((name, body))
+
+
+@pytest.mark.asyncio
+async def test_review_transitions_push_both_signals(registry, quiet_push):
+    """submit/withdraw push the org-scoped rail invalidation AND the typed
+    app:statusChanged event — delivered to the owning org and to cross-org
+    reviewers (sys.app/sys.admin), never to strangers or task sockets.
+    """
+    registry.add_version(1, '1.0.0', publisher_id='u1', state='private')
+    dev = _FakeConn(teams=_TEAMS, developer_id='acme')
+
+    broadcasts = []
+
+    async def broadcast_server_event(event_type, message, org_id=None, user_id=None):
+        broadcasts.append((message['event'], message['body'], org_id))
+
+    owner = _EventConn(org_id='org1')
+    reviewer = _EventConn(org_id='other-org', perms=['sys.app'])
+    stranger = _EventConn(org_id='other-org')
+    task_socket = _EventConn(org_id='org1', auth='pk_task')
+    dev._server = SimpleNamespace(
+        broadcast_server_event=broadcast_server_event,
+        _connections={'a': owner, 'b': reviewer, 'c': stranger, 'd': task_socket},
+    )
+
+    result = await handle_deploy_app(dev, _request('submit', version=1))
+    assert result['success'] is True
+    # Signal 1: the org-scoped apaevt_deploy invalidation.
+    assert broadcasts == [
+        ('apaevt_deploy', {'orgId': 'org1', 'teamId': '', 'projectId': 'acme.brandy', 'action': 'submit'}, 'org1')
+    ]
+    # Signal 2: the typed status push — owner org + reviewer only.
+    submit_body = {'appId': 'acme.brandy', 'version': 1, 'status': 'submit'}
+    assert owner.events == [('app:statusChanged', submit_body)]
+    assert reviewer.events == [('app:statusChanged', submit_body)]
+    assert stranger.events == []
+    assert task_socket.events == []
+
+    # Withdraw pushes the same pair with the returned-to-draft state.
+    broadcasts.clear()
+    owner.events.clear()
+    reviewer.events.clear()
+    result = await handle_deploy_app(dev, _request('withdraw', version=1))
+    assert result['success'] is True
+    assert broadcasts == [
+        ('apaevt_deploy', {'orgId': 'org1', 'teamId': '', 'projectId': 'acme.brandy', 'action': 'private'}, 'org1')
+    ]
+    withdraw_body = {'appId': 'acme.brandy', 'version': 1, 'status': 'private'}
+    assert owner.events == [('app:statusChanged', withdraw_body)]
+    assert reviewer.events == [('app:statusChanged', withdraw_body)]
+    assert stranger.events == []
+    assert task_socket.events == []
+
+
 @pytest.mark.asyncio
 async def test_publish_blocked_outside_developer_namespace(registry, quiet_push):
     """THE cross-org guarantee: an org can only publish app ids inside its own

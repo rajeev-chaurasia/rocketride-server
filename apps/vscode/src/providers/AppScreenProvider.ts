@@ -647,6 +647,26 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 					});
 				}
 			}
+			// Review-state push (app:statusChanged): a review transition for
+			// one of this org's apps. The open panel re-fetches its org-scoped
+			// data (version rail + Store review state) through the existing
+			// account-changed re-mint; a verdict additionally surfaces as a
+			// toast so the developer hears the decision while working.
+			if (event.event === 'app:statusChanged' && event.body) {
+				const b = event.body as { appId?: string; version?: number; status?: string; notes?: string };
+				if (b.appId && this.panels.has(b.appId)) {
+					this.panels.get(b.appId)?.webview.postMessage({ type: 'appdev:accountChanged' });
+					const version = typeof b.version === 'number' ? ` v${b.version}` : '';
+					if (b.status === 'ready') {
+						void vscode.window.showInformationMessage(
+							`${b.appId}${version} passed store review — publish it to @public to go live.`
+						);
+					} else if (b.status === 'rejected') {
+						const notes = b.notes ? ` Reviewer notes: ${b.notes}` : '';
+						void vscode.window.showWarningMessage(`${b.appId}${version} was rejected in store review.${notes}`);
+					}
+				}
+			}
 			const row = {
 				time: AppScreenProvider.feedTime(),
 				name: String(event.event),

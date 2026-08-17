@@ -47,9 +47,15 @@ filter on ``event``, so neither can be mistaken for the other):
   the detail channel.
 
 One builder per body exists so no shape can drift between producers.
+
+Review-state transitions (submit/withdraw/approve/reject) additionally push
+the typed ``app:statusChanged`` shell event DIRECTLY to the connections that
+care (the owning org + cross-org reviewers) via
+:func:`broadcast_review_state` — see its docstring for why the org-scoped
+subscription above cannot serve the reviewer audience.
 """
 
-from typing import Any, List
+from typing import Any, Dict, List
 
 from rocketlib import error
 
@@ -85,6 +91,63 @@ async def broadcast_deploy_changed(server: Any, org_id: str, team_id: str, proje
         )
     except Exception as e:
         error(f'[DEPLOY] {team_id}/{project_id}: deploy-change broadcast failed: {e}')
+
+
+async def broadcast_review_state(
+    server: Any, org_id: str, app_id: str, version: int, state: str, notes: str = ''
+) -> None:
+    """Push BOTH signals of one review-state transition.
+
+    A review transition (submit/withdraw/approve/reject/failed flip) has two
+    audiences with different reach, served by two existing wire contracts:
+
+    - ``apaevt_deploy`` (org-scoped, via :func:`broadcast_deploy_changed`):
+      cache invalidation for the OWNING org's deploy surfaces — version
+      rails re-fetch and render the new state.
+    - ``app:statusChanged`` (direct, targeted): the typed shell event for
+      the review loop's humans. Sent to every connection of the owning org
+      (developer badges + the verdict toast) AND every connection holding
+      the sys.app/sys.admin reviewer permission in ANY org (the admin
+      queue's live badge). Reviewers are cross-org by design, so the
+      org-scoped subscription above can never reach them — hence the
+      direct send, mirroring push_org_update's connection walk.
+
+    Best-effort by contract, like every deploy event: a failed push must
+    never fail the state transition that triggered it.
+
+    Args:
+        server: The DAP server (connection registry + broadcast provider).
+        org_id: The org OWNING the app (the deployment's home org).
+        app_id: The app whose version transitioned.
+        version: The registry version that transitioned.
+        state: The new review state
+            ('submit'|'private'|'ready'|'rejected'|'failed').
+        notes: Reviewer notes riding a rejection ('' = none).
+    """
+    # ── Rail invalidation: the owning org's deploy surfaces re-fetch ──────
+    await broadcast_deploy_changed(server, org_id, '', app_id, state)
+
+    # ── Typed status push: owning org + cross-org reviewers ──────────────
+    body: Dict[str, Any] = {'appId': app_id, 'version': version, 'status': state}
+    if notes:
+        body['notes'] = notes
+    for conn in list(getattr(server, '_connections', {}).values()):
+        info = getattr(conn, '_account_info', None)
+        if not info:
+            continue
+        # Task-scoped sockets (pk_/tk_) carry the launching user's identity
+        # but never receive user-facing pushes (mirrors push_org_update).
+        if (getattr(info, 'auth', '') or '').startswith(('pk_', 'tk_')):
+            continue
+        org = getattr(info, 'organization', None)
+        conn_org = (org.get('id', '') if isinstance(org, dict) else getattr(org, 'id', '')) if org else ''
+        perms = getattr(info, 'sysPermissions', None) or []
+        if conn_org != org_id and 'sys.app' not in perms and 'sys.admin' not in perms:
+            continue
+        try:
+            await conn.send_event('app:statusChanged', body=body)
+        except Exception as e:
+            error(f'[DEPLOY] {app_id} v{version}: status push failed: {e}')
 
 
 async def broadcast_build_output(

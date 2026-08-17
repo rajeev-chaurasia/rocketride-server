@@ -251,12 +251,16 @@ export interface ShellConnectionEventMap {
 	'shell:manifestRefresh': { source: string };
 
 	/**
-	 * An app's marketplace review status changed (submitted, approved,
-	 * rejected). Pushed to the developer org's connections so App Builder
-	 * surfaces update badges and show the decision toast. Optional `notes`
+	 * An app's marketplace review status changed (submitted, withdrawn,
+	 * approved, rejected). Pushed to the developer org's connections (so App
+	 * Builder surfaces update badges and show the decision toast) and to
+	 * reviewer connections holding sys.app/sys.admin (so the admin queue
+	 * tracks the server live). `status` is the deployment's review state
+	 * ('submit' | 'private' | 'ready' | 'rejected' | 'failed'); optional
+	 * `version` is the registry version that transitioned; optional `notes`
 	 * carries reviewer notes on rejection.
 	 */
-	'app:statusChanged': { appId: string; status: string; notes?: string };
+	'app:statusChanged': { appId: string; version?: number; status: string; notes?: string };
 
 	/**
 	 * Files changed under a watched store prefix (app-dev project sources,

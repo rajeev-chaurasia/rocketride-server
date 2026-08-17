@@ -441,6 +441,12 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
                 pass  # best-effort: the 'failed' state alone gates serving
         try:
             await account.set_artifact_state(org_id, app_id, version, 'failed', _actor_of(conn))
+            # Teammates' rails show the dead version without a manual refresh.
+            fail_server = getattr(conn, '_server', None)
+            if fail_server is not None:
+                from ai.modules.task.deploy_events import broadcast_review_state
+
+                await broadcast_review_state(fail_server, org_id, app_id, version, 'failed')
         except Exception as flip_exc:
             debug(f'[app_deploy] could not flip {app_id} v{version} to failed: {flip_exc}')
         debug(f'[app_deploy] content write failed for {app_id} v{version}: {exc}')
@@ -465,6 +471,12 @@ async def handle_app_add(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
         try:
             await account.set_artifact_state(org_id, app_id, row_version, 'private', _actor_of(conn))
             debug(f'[app_deploy] withdrew stale review of {app_id} v{row_version} (superseded by v{version})')
+            # The stale version left the queue — reviewer badges drop it live.
+            auto_server = getattr(conn, '_server', None)
+            if auto_server is not None:
+                from ai.modules.task.deploy_events import broadcast_review_state
+
+                await broadcast_review_state(auto_server, org_id, app_id, row_version, 'private')
         except Exception as exc:
             debug(f'[app_deploy] could not withdraw {app_id} v{row_version}: {exc}')
 
@@ -795,6 +807,16 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
             updated = await account.set_artifact_state(home, app_id, version, 'submit', _actor_of(conn))
         except Exception as exc:
             return conn.build_error(request, str(exc))
+        # Review-loop liveness: the org's rails invalidate and the typed
+        # status event reaches developer surfaces + reviewer queues live.
+        server = getattr(conn, '_server', None)
+        if server is not None:
+            try:
+                from ai.modules.task.deploy_events import broadcast_review_state
+
+                await broadcast_review_state(server, home, app_id, version, 'submit')
+            except Exception as exc:
+                debug(f'[app_deploy] submit status push failed: {exc}')
         return conn.build_response(request, body={'artifact': _rail_entry(updated, artifact)})
 
     # ── withdraw — cancel a pending review (submit -> private) ────────────
@@ -822,6 +844,15 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
             updated = await account.set_artifact_state(home, app_id, version, 'private', _actor_of(conn))
         except Exception as exc:
             return conn.build_error(request, str(exc))
+        # The version left the queue — reviewer badges drop it live.
+        server = getattr(conn, '_server', None)
+        if server is not None:
+            try:
+                from ai.modules.task.deploy_events import broadcast_review_state
+
+                await broadcast_review_state(server, home, app_id, version, 'private')
+            except Exception as exc:
+                debug(f'[app_deploy] withdraw status push failed: {exc}')
         return conn.build_response(request, body={'artifact': _rail_entry(updated, artifact)})
 
     # ── where — the reverse index (audience → served version) ─────────────
