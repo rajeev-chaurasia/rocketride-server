@@ -112,6 +112,20 @@ _MAX_ERROR_CHARS = 2000
 _MAX_LOG_CAPTURE = 64 * 1024  # per end (head + tail)
 _SUBPROCESS_BUFFER = 16 * 1024 * 1024  # mirrors CONST_SUBPROCESS_BUFFER_LIMIT
 
+# Bounds on the HARVESTED dist/ tree. The source zip is quota'd at receipt,
+# but the bundler's OUTPUT has no natural bound and the raw store write path
+# enforces no quota — a pathological build must fail reasoned at harvest,
+# never fill the store. Generous headroom over any legitimate app bundle.
+_HARVEST_MAX_FILES = 4000
+_HARVEST_MAX_FILE_BYTES = 64 * 1024 * 1024
+_HARVEST_MAX_TOTAL_BYTES = 512 * 1024 * 1024
+
+# Scratch dirs older than this are orphans (a crashed process's leftovers).
+# The startup sweep deletes ONLY past this age: the scratch root is shared
+# host temp, and a second engine process may be mid-build in its own dir —
+# a live job's dir is always younger than the bar.
+_SCRATCH_TTL_SECONDS = 24 * 3600
+
 # The platform toolchain pins — kept in LOCKSTEP with the app scaffold
 # (apps/shared/src/modules/appdev/templates.ts packageJson): the baked env
 # these produce is the bundler the store's artifact contract is built with.
@@ -307,7 +321,11 @@ async def _exec(argv: List[str], cwd: str, timeout: int, on_line: Any = None) ->
             if on_line is not None:
                 await on_line(text.rstrip('\r\n'))
         await asyncio.wait_for(proc.wait(), timeout=max(1.0, deadline - loop.time()))
-    except asyncio.TimeoutError:
+    except BaseException:
+        # EVERY abnormal exit from the read loop kills the tree — not just
+        # the timeout. The reachable non-timeout case is cancellation
+        # (worker shutdown): without the reap the pnpm/rsbuild child keeps
+        # running unawaited while its job directory is torn down under it.
         _kill_tree(proc)
         raise
     return int(proc.returncode or 0), _truncated(''.join(chunks))
@@ -337,6 +355,13 @@ def _env_dir() -> str:
     return os.path.realpath(os.environ.get('RR_BUILD_ENV_DIR') or os.path.join(_engine_dir(), 'cache', 'app-build-env'))
 
 
+# Single-flight for the env bootstrap: with RR_BUILD_CONCURRENCY > 1 two
+# jobs can both miss the .ready marker and run pnpm install into the SAME
+# env dir concurrently — corrupting node_modules. The marker only protects
+# across process restarts; this lock protects within one process.
+_ENV_BOOTSTRAP_LOCK = asyncio.Lock()
+
+
 async def _ensure_toolchain_env(on_line: Any = None) -> str:
     """The installed toolchain env dir, bootstrapping it once when absent.
 
@@ -350,6 +375,17 @@ async def _ensure_toolchain_env(on_line: Any = None) -> str:
 
     Raises:
         BuildInfraFailure: No pnpm to bootstrap with, or the install failed.
+    """
+    async with _ENV_BOOTSTRAP_LOCK:
+        return await _ensure_toolchain_env_locked(on_line)
+
+
+async def _ensure_toolchain_env_locked(on_line: Any = None) -> str:
+    """The bootstrap body — callers hold _ENV_BOOTSTRAP_LOCK (single-flight).
+
+    The marker re-check runs INSIDE the lock: the loser of a concurrent
+    first-build race finds the winner's finished env and returns without a
+    second install.
     """
     env_dir = _env_dir()
     marker = os.path.join(env_dir, '.ready')
@@ -493,16 +529,40 @@ def _patched_workspace_yaml(source_text: Optional[str], app_root: str, include_r
         data = {'packages': packages}
     overrides = data.get('overrides')
     overrides = dict(overrides) if isinstance(overrides, dict) else {}
-    if 'typescript' in overrides:
-        raise BuildFailure(
-            'materialize',
-            'pnpm-workspace.yaml overrides the "typescript" package — the typecheck gate runs the real '
-            'typescript at your locked version; aliasing the name is not supported',
-        )
+    # The alias guard parses each selector the way pnpm does: an override
+    # key may scope by parent (`app>typescript`) and version-qualify the
+    # target (`typescript@5`, `@scope/name@1`), and EVERY spelling whose
+    # target package is `typescript` would swap the binary the typecheck
+    # gate executes — an exact-key check misses all but the bare name.
+    for selector in overrides:
+        if _override_target(str(selector)) == 'typescript':
+            raise BuildFailure(
+                'materialize',
+                f'pnpm-workspace.yaml override {selector!r} targets the "typescript" package — the '
+                'typecheck gate runs the real typescript at your locked version; aliasing the name '
+                'is not supported',
+            )
     overrides['shell'] = f'file:{_SHELL_REL}'
     overrides['rocketride'] = f'file:{_ROCKETRIDE_REL}'
     data['overrides'] = overrides
     return yaml.safe_dump(data, sort_keys=False)
+
+
+def _override_target(selector: str) -> str:
+    """The package NAME a pnpm override selector targets.
+
+    pnpm selectors: an optional ``parent>`` scope (the TARGET is the last
+    ``>`` segment) and an optional version qualifier (``name@range``,
+    ``@scope/name@range``) — the name ends at the qualifier's ``@``, never
+    the scope's leading one.
+    """
+    target = selector.split('>')[-1].strip()
+    if target.startswith('@'):
+        slash = target.find('/')
+        at = target.find('@', slash + 1) if slash >= 0 else -1
+    else:
+        at = target.find('@')
+    return target if at < 0 else target[:at]
 
 
 def _place_platform_tgzs(ws_dir: str) -> None:
@@ -523,6 +583,15 @@ def _place_platform_tgzs(ws_dir: str) -> None:
         raise BuildInfraFailure('materialize', f'platform shell.tgz missing at {shell_src}')
     if not rocketride_matches:
         raise BuildInfraFailure('materialize', f'platform rocketride tgz missing under {static_dir}/typescript')
+    if len(rocketride_matches) > 1:
+        # The static tree ships exactly ONE SDK tgz. Guessing among several
+        # sorts NAMES as text (1.9.0 beats 1.10.0) — refuse a broken tree
+        # rather than compile every app against a stale SDK.
+        names = ', '.join(os.path.basename(m) for m in rocketride_matches)
+        raise BuildInfraFailure(
+            'materialize',
+            f'multiple platform rocketride tgzs under {static_dir}/typescript ({names}) — the static tree must hold exactly one',
+        )
     for rel, src in ((_SHELL_REL, shell_src), (_ROCKETRIDE_REL, rocketride_matches[-1])):
         dest = os.path.join(ws_dir, *rel.split('/'))
         os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -858,8 +927,14 @@ class AppBuildWorker:
             except (asyncio.CancelledError, Exception):
                 pass
             self._loop_task = None
-        for task in list(self._inflight):
+        inflight = list(self._inflight)
+        for task in inflight:
             task.cancel()
+        # AWAIT the cancelled jobs: their finally blocks release the
+        # semaphore, write build.log, and remove the scratch dir — if the
+        # event loop stops right after shutdown returns, none of that runs.
+        if inflight:
+            await asyncio.gather(*inflight, return_exceptions=True)
 
     def enqueue(self, org_id: str, app_id: str, version: int) -> bool:
         """Queue one version's build; False when already queued/in flight."""
@@ -904,13 +979,24 @@ class AppBuildWorker:
             self.enqueue(*key)
 
     async def _startup_sweep(self) -> None:
-        """Requeue interrupted work + delete stale scratch dirs.
+        """Requeue interrupted work + delete AGED scratch dirs.
 
         Builds are reproducible from the retained zip, so anything left
-        'queued'/'building' by a previous process simply runs again. Scratch
-        dirs are pattern-anchored deletes, mirroring the run-log spool sweep.
+        'queued'/'building' by a previous process simply runs again. The
+        scratch root is SHARED host temp: a second engine process may be
+        mid-build in its own dir right now, so the sweep deletes only dirs
+        older than _SCRATCH_TTL_SECONDS — a live job's dir is always
+        younger than the bar; a crashed process's leftovers age past it and
+        collect. (Job dirs carry the owning pid in their name for
+        attribution.)
         """
+        now = time.time()
         for stale in glob.glob(os.path.join(_scratch_root(), 'app-build-*')):
+            try:
+                if now - os.path.getmtime(stale) < _SCRATCH_TTL_SECONDS:
+                    continue
+            except OSError:
+                pass  # vanished or unreadable — attempt the delete
             shutil.rmtree(stale, ignore_errors=True)
         from ai.account import account
 
@@ -970,7 +1056,9 @@ class AppBuildWorker:
             # jobdir makes pnpm's --filter silently match nothing — see
             # _scratch_root. mkdtemp inherits the root's spelling; resolve
             # the final form regardless of how the root was configured.
-            job_dir = os.path.realpath(tempfile.mkdtemp(prefix=f'app-build-{app_id}-v{version}-', dir=_scratch_root()))
+            job_dir = os.path.realpath(
+                tempfile.mkdtemp(prefix=f'app-build-{os.getpid()}-{app_id}-v{version}-', dir=_scratch_root())
+            )
             await self._build(org_id, app_id, version, entry, artifact, content_root, job_dir, build, log_parts, feed)
             build.update({'status': 'ok', 'phase': 'harvest', 'endedAt': time.time()})
             build.pop('errors', None)
@@ -1046,6 +1134,18 @@ class AppBuildWorker:
         metadata = entry.get('metadata') if isinstance(entry.get('metadata'), dict) else {}
         manifest = metadata.get('manifest') if isinstance(metadata.get('manifest'), dict) else {}
         app_root = str(metadata.get('appRoot') or '')
+        # appRoot is the SAME manifest-provenance input as include below —
+        # handle_app_add validates it at receipt, but the shape guard
+        # re-runs here before it becomes a filesystem path, so a later
+        # change to the metadata writer can never turn it into traversal.
+        if app_root and (
+            app_root.startswith('/')
+            or ':' in app_root
+            or '\\' in app_root
+            or '..' in app_root.split('/')
+            or '.' in app_root.split('/')
+        ):
+            raise BuildFailure('materialize', f'appRoot has an unsafe path shape: {app_root!r}')
         # Include roots are manifest input — the same shape guard the pack
         # applies (workspace-relative, no traversal) re-runs here before any
         # of them becomes a filesystem path or an install filter.
@@ -1226,6 +1326,30 @@ class AppBuildWorker:
                 dest = os.path.join(out_dir, *rel.split('/'))
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 shutil.copyfile(src, dest)
+        # Bound the harvest BEFORE reading anything: reject a pathological
+        # output tree reasoned here rather than stream it into the store
+        # (the raw write path enforces no quota).
+        total_bytes = 0
+        total_files = 0
+        for dirpath, _dirs, files in os.walk(out_dir):
+            for filename in files:
+                total_files += 1
+                try:
+                    size = os.path.getsize(os.path.join(dirpath, filename))
+                except OSError:
+                    size = 0
+                if size > _HARVEST_MAX_FILE_BYTES:
+                    raise BuildFailure(
+                        'harvest',
+                        f'build output file {filename!r} is {size} bytes (per-file limit {_HARVEST_MAX_FILE_BYTES})',
+                    )
+                total_bytes += size
+        if total_files > _HARVEST_MAX_FILES or total_bytes > _HARVEST_MAX_TOTAL_BYTES:
+            raise BuildFailure(
+                'harvest',
+                f'build output exceeds limits: {total_files} file(s), {total_bytes} bytes '
+                f'(limits {_HARVEST_MAX_FILES} files / {_HARVEST_MAX_TOTAL_BYTES} bytes)',
+            )
         count = 0
         try:
             for dirpath, _dirs, files in os.walk(out_dir):

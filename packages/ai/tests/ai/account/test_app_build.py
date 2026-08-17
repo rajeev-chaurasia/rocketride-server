@@ -34,6 +34,7 @@ is covered by the e2e deploy flow on dev machines/CI, not here.
 import io
 import json
 import os
+import time
 import zipfile
 from typing import Any, Dict, List
 
@@ -484,8 +485,12 @@ async def test_job_infra_failure_requeues_then_exhausts(monkeypatch, build_store
     monkeypatch.setattr(app_build, '_exec', broken_exec)
     worker = AppBuildWorker(server=None)
 
-    assert await worker._run_job('org1', 'acme.brandy', 1) is True  # requeue
-    assert rail.stamps[-1]['status'] == 'queued'
+    # Drive the loop from the CONSTANT: every attempt but the last requeues,
+    # the last lands the reasoned failure — raising _MAX_ATTEMPTS must not
+    # silently turn this test into a lie about the attempt budget.
+    for _ in range(app_build._MAX_ATTEMPTS - 1):
+        assert await worker._run_job('org1', 'acme.brandy', 1) is True  # requeue
+        assert rail.stamps[-1]['status'] == 'queued'
     assert await worker._run_job('org1', 'acme.brandy', 1) is False  # exhausted
     final = rail.stamps[-1]
     assert final['status'] == 'failed'
@@ -508,12 +513,41 @@ async def test_job_unexpected_exception_never_strands_building(monkeypatch, buil
     monkeypatch.setattr(app_build, '_exec', buggy_exec)
     worker = AppBuildWorker(server=None)
 
-    assert await worker._run_job('org1', 'acme.brandy', 1) is True  # requeue
-    assert rail.stamps[-1]['status'] == 'queued'
+    # Constant-driven like the infra test above — one budget, one truth.
+    for _ in range(app_build._MAX_ATTEMPTS - 1):
+        assert await worker._run_job('org1', 'acme.brandy', 1) is True  # requeue
+        assert rail.stamps[-1]['status'] == 'queued'
     assert await worker._run_job('org1', 'acme.brandy', 1) is False  # exhausted
     final = rail.stamps[-1]
     assert final['status'] == 'failed'
     assert 'unexpected OS quirk' in final['errors'][0]['message']
+
+
+@pytest.mark.asyncio
+async def test_job_rejects_unsafe_zip_entry_at_materialize(monkeypatch, build_store, toolchain):
+    """The worker RE-APPLIES the receipt's path guard while unpacking the
+    retained transport zip: an entry that would escape ws_dir fails the
+    build at 'materialize' and writes nothing outside the workspace. This
+    is the last barrier for a zip that reaches the worker without current
+    receipt validation (e.g. a requeued row recovered after the receipt
+    rules changed).
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as archive:
+        archive.writestr('package.json', '{"name": "x", "private": true}')
+        archive.writestr('../evil.txt', 'outside the workspace')
+    rail = _FakeRail(buf.getvalue(), {'status': 'queued', 'attempt': 0})
+    rail.install(monkeypatch)
+    await _seed_zip(rail.zip_bytes)
+    monkeypatch.setattr(app_build, '_exec', _FakeExec())
+
+    worker = AppBuildWorker(server=None)
+    assert await worker._run_job('org1', 'acme.brandy', 1) is False  # user-flavored: no requeue
+    final = rail.stamps[-1]
+    assert (final['status'], final['phase']) == ('failed', 'materialize')
+    assert 'unsafe path' in final['errors'][0]['message']
+    # Nothing escaped: no evil.txt anywhere under the scratch root.
+    assert not list(toolchain['scratch'].rglob('evil.txt'))
 
 
 @pytest.mark.asyncio
@@ -562,13 +596,21 @@ async def test_toolchain_bootstrap_is_workspace_proof(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_enqueue_dedupes_and_sweep_requeues(monkeypatch, build_store, toolchain):
     """The pending-set guard refuses duplicates; the startup sweep requeues
-    rows left queued/building and clears stale scratch dirs.
+    rows left queued/building and clears ONLY AGED scratch dirs — the
+    scratch root is shared host temp, so a concurrent engine's live job dir
+    (always younger than the TTL bar) must survive the sweep.
     """
     rail = _FakeRail(_app_source_zip(), {'status': 'building', 'attempt': 1})
     rail.install(monkeypatch)
-    stale = toolchain['scratch'] / 'app-build-stale-v1-xyz'
+    # An orphan from a crashed process: aged past the TTL bar.
+    stale = toolchain['scratch'] / 'app-build-1234-stale-v1-xyz'
     stale.mkdir()
     (stale / 'junk.txt').write_text('x')
+    aged = time.time() - app_build._SCRATCH_TTL_SECONDS - 60
+    os.utime(stale, (aged, aged))
+    # A live concurrent build: fresh mtime.
+    live = toolchain['scratch'] / 'app-build-5678-live-v2-abc'
+    live.mkdir()
 
     worker = AppBuildWorker(server=None)
     assert worker.enqueue('org1', 'acme.brandy', 1) is True
@@ -578,6 +620,7 @@ async def test_enqueue_dedupes_and_sweep_requeues(monkeypatch, build_store, tool
     await fresh._startup_sweep()
     assert ('org1', 'acme.brandy', 1) in fresh._pending
     assert not stale.exists()
+    assert live.exists()
 
 
 # =============================================================================
@@ -621,11 +664,12 @@ async def test_build_feed_batches_and_scopes():
     # The card ticker: the phase's DISPLAY word on entry, '' as the clear.
     assert ticks == ['installing', '']
 
+    before = len(events)
     silent = app_build._BuildFeed(None, 'org1', 'acme.brandy', 1)
     await silent.line('x')
     await silent.status('failed')
     await silent.flush()
-    assert len(replayed) == 30  # nothing new happened
+    assert len(events) == before  # the serverless feed touched no wire
 
 
 @pytest.mark.asyncio
