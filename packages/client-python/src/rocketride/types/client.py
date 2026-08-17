@@ -229,6 +229,24 @@ class OrgInfo(TypedDict):
     teams: list[TeamInfo]
 
 
+class DevEntry(TypedDict):
+    """
+    One live dev-server registration in an app's ``devEntries`` list.
+
+    The server emits all three keys on every entry ('' / 0 as the unknown
+    fallbacks), so none is optional.
+
+    Attributes:
+        url (str): The dev server's remoteEntry URL (with its cache-buster).
+        session (str): The owning editor's session nonce ('' when unknown).
+        registeredAt (float): Registration time, epoch seconds (0 when unknown).
+    """
+
+    url: str
+    session: str
+    registeredAt: float
+
+
 class AppManifestEntry(TypedDict, total=False):
     """
     A single app entry in the server-provided manifest.
@@ -249,7 +267,13 @@ class AppManifestEntry(TypedDict, total=False):
             ``contributes.configuration`` shape ({title, properties}). Preserved
             through ConnectResult so permission-gated desktop apps (which never
             appear in the public probe) still deliver their settings schema.
-        entry (str): URL to the app's MF remote entry file.
+        entry (str): URL to the app's MF remote entry file — present ONLY
+            for dev-overlay entries (a localhost dev server is not
+            constructible from a number). Published versions carry
+            ``registryVersion`` and clients construct
+            ``/apps/<appId>/v<N>/remoteEntry.js``.
+        registryVersion (int): Registry version number the entry resolves
+            to (the scope-walk winner).
         version (str): Semver version string.
         ownerType (str): Visibility scope — "public", "org", "team", or "user".
         authenticated (bool): Whether the app UI requires auth to render.
@@ -263,10 +287,9 @@ class AppManifestEntry(TypedDict, total=False):
         features (list[str]): Feature flags enabled by the subscribed plan.
         dev (bool): True when ``entry`` is a dev-overlay override (live
             watch build).
-        devEntries (list[dict]): Every live dev-server registration for
-            this app — one per editor session, newest first, each
-            ``{url, session, registeredAt}``; ``entry`` already carries
-            the newest.
+        devEntries (list[DevEntry]): Every live dev-server registration
+            for this app — one per editor session, newest first; ``entry``
+            already carries the newest.
     """
 
     id: str
@@ -277,6 +300,7 @@ class AppManifestEntry(TypedDict, total=False):
     categories: list[str]
     configuration: dict[str, Any]
     entry: str
+    registryVersion: int
     version: str
     ownerType: str
     authenticated: bool
@@ -289,7 +313,7 @@ class AppManifestEntry(TypedDict, total=False):
     seatsUsed: int
     features: list[str]
     dev: bool
-    devEntries: list[dict]
+    devEntries: list[DevEntry]
 
 
 class ConnectResult(TypedDict, total=False):
