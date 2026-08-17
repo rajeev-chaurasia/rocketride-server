@@ -185,7 +185,6 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 			const version = Number.parseInt(raw, 10);
 			if (version > 0) setAppVersionOverride(fromUrl, { version });
 		}
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- URL is read once on mount
 	}, []);
 
 	// Surface a version pin dropped by the PREVIOUS document: the load
@@ -257,8 +256,13 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 			return da ? { ...a, appStatus: da.appStatus, onDesktop: da.onDesktop } : a;
 		});
 
-		// Register and append apps that were NOT in the probe (e.g. permission-gated)
-		const newApps = identityApps.filter((a) => !probeIds.has(a.id) && a.entry && a.moduleId);
+		// Register and append apps that were NOT in the probe (e.g. permission-gated).
+		// Registrable = anything resolveServerEntry can produce a load URL for:
+		// the wire carries version NUMBERS since the store restructure (entry
+		// URLs exist only on dev-overlay rows), so gating on `a.entry` here
+		// would silently drop every auth-only app from the workspace map —
+		// visible tile, dead click.
+		const newApps = identityApps.filter((a) => !probeIds.has(a.id) && a.moduleId && resolveServerEntry(a) !== null);
 		if (newApps.length > 0) {
 			const registered = registerAndMapApps(newApps);
 			for (const app of registered) {
@@ -370,32 +374,34 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 	// EVENT LISTENERS
 	// =====================================================================
 
-	// Re-register remotes whose RESOLVED entry URL changed and evict their
+	// Repoint remotes whose RESOLVED entry URL changed and evict their
 	// cached descriptors. The apps memo above only registers apps ABSENT from
 	// the probe set — an account push that changes an EXISTING app's
 	// resolution (dev overlay upsert/expiry, a repointed default version)
 	// would otherwise leave the old MF container registered and the stale
 	// descriptor cached. resolveServerEntry is the ONE resolution (dev URL,
-	// or a URL constructed from the tab override / manifest default). Runs
-	// as an effect (not in the memo) because invalidation sets state.
+	// or a URL constructed from the tab override / manifest default), and
+	// the swap goes through repointRemote — which REFUSES dev-owned
+	// containers and containers that have LOADED this document (a loaded
+	// container is committed to its version; force re-registering it
+	// corrupts the shared getters). A refused loaded container simply keeps
+	// running its current code; the next boot registers the new resolution.
+	// Runs as an effect (not in the memo) because invalidation sets state.
 	useEffect(() => {
 		const identityApps = (identity?.apps ?? []) as ServerAppEntry[];
-		const changed = identityApps.filter((a) => {
-			if (!a.moduleId) return false;
-			// Dev-owned containers are exempt: the resolved entry ALWAYS
-			// differs from the injected dev entry, and repointing would swap
-			// the live dev bundle for the server's published one mid-session.
-			if (isDevRemote(a.moduleId)) return false;
+		for (const a of identityApps) {
+			if (!a.moduleId || isDevRemote(a.moduleId)) continue;
 			const target = resolveServerEntry(a);
-			if (!target) return false;
+			if (!target) continue;
 			const registered = getRegisteredEntry(a.moduleId);
-			return registered !== undefined && registered !== target;
-		});
-		if (changed.length === 0) return;
-		// Force re-register the MF containers at their new entry URLs, then
-		// evict descriptors so the next activation loads the new container.
-		registerAndMapApps(changed);
-		for (const a of changed) invalidateAppDescriptor(a.id);
+			if (registered === undefined || registered === target) continue;
+			// Invalidate ONLY when the repoint actually happened — evicting
+			// the descriptor of a still-old container would remount the same
+			// stale code for nothing.
+			if (repointRemote(a.moduleId, target)) {
+				invalidateAppDescriptor(a.id);
+			}
+		}
 	}, [identity?.apps]);
 
 	// Reconcile session version overrides once authenticated. The override's
