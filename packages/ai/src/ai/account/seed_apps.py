@@ -50,9 +50,9 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from rocketlib import debug
 
-# Display semver of bootstrap rows: the seed is the platform BOOTSTRAP, not an
-# app release, so any real deploy's semver is unmistakably newer than it and
-# never collides with the app's own embedded version numbering.
+# Display-semver FALLBACK for an apps.json entry that carries no version of
+# its own — seeded rows normally show the app's real semver (the desktop
+# card's version line), so the fallback only marks a manifest gap.
 SEED_VERSION = '0'
 
 # Registry comment stamped on every seeded version — the marker orchestrators
@@ -125,12 +125,13 @@ def seed_artifact_of(entry: Dict[str, Any]) -> Dict[str, Any]:
     """The kind='app' artifact record derived from one apps.json entry.
 
     Deliberately NO explicit ``entry``: seeded versions serve from their own
-    ``dist/`` tree via minted URLs, exactly like server-built versions — one
-    layout, one serving path, and every seeded VERSION serves its own bytes
-    (the retired static-entry short-circuit always pointed at the CURRENT
-    static tree, so older seeded versions served the wrong bundle). Rows
-    seeded before the retirement still carry their static entry and are
-    grandfathered by the minting path.
+    ``dist/`` tree via constructed versioned URLs, exactly like server-built
+    versions — one layout, one serving path, and every seeded VERSION serves
+    its own bytes (the retired static-entry short-circuit always pointed at
+    the CURRENT static tree, so older seeded versions served the wrong
+    bundle). ``appVersion`` is the app's REAL semver from apps.json — the
+    desktop card's version line — falling back to SEED_VERSION only when the
+    manifest carries none.
     """
     app_id = str(entry['id'])
     return {
@@ -138,7 +139,7 @@ def seed_artifact_of(entry: Dict[str, Any]) -> Dict[str, Any]:
         'appId': app_id,
         'moduleId': str(entry.get('moduleId') or app_id.replace('.', '_')),
         'name': str(entry.get('name') or app_id),
-        'appVersion': SEED_VERSION,
+        'appVersion': str(entry.get('version') or SEED_VERSION),
     }
 
 
@@ -207,6 +208,10 @@ async def seed_app(account: Any, org_id: str, entry: Dict[str, Any], actor: Dict
         The new registry entry (version, sha256, artifactPath, ...).
     """
     app_id = str(entry['id'])
+    # The stored manifest carries NO entry URL: serving URLs are constructed
+    # from version numbers everywhere, so recording apps.json's build-time
+    # static path would only seed a dead field into every new row.
+    manifest = {k: v for k, v in entry.items() if k != 'entry'}
     registered = await account.deployments_publish(
         org_id,
         app_id,
@@ -216,7 +221,7 @@ async def seed_app(account: Any, org_id: str, entry: Dict[str, Any], actor: Dict
         # build.status 'ok': the seed's dist/ is populated by the copy below
         # from an already-built static tree, so seeded versions pass the SAME
         # built gate server builds do (no special-casing anywhere downstream).
-        metadata={'manifest': dict(entry), 'build': {'status': 'ok', 'seeded': True, 'endedAt': time.time()}},
+        metadata={'manifest': manifest, 'build': {'status': 'ok', 'seeded': True, 'endedAt': time.time()}},
         state='ready',
     )
     copied = await copy_bundle_to_store(app_id, str(registered.get('artifactPath') or ''))

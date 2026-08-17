@@ -327,11 +327,15 @@ publishing an app requires the org to have claimed a developer id.
 | Method | Signature | Description |
 | ------ | --------- | ----------- |
 | `deploy.add` | `async def add(self, pipeline=None, *, kind='pipe', data=None, metadata=None, comment=None, deploy_to=None) -> PublishResult` | The ONE rail door (on the `client.deploy` namespace): deploy any kind of object as the next immutable registry version. `kind='pipe'` (default) takes a `pipeline` dict; `kind='app'` takes ONE `data` zip of the built bundle — retained and unpacked at receipt, born deployment-state `private`. The app id must be inside your developer namespace. |
-| `list_deployments` | `async def list_deployments(self, app_id) -> list[dict]` | The version rail, newest first; each entry carries its deployment `state` and the `rungs` naming the audiences bound to it. |
+| `list_deployments` | `async def list_deployments(self, app_id) -> list[dict]` | The version rail, newest first — the developer org sees its FULL rail (published or not), other callers only their visible versions. Each entry carries its deployment `state`, its `buildStatus` ('ok' = servable), and the `rungs` naming the audiences bound to it. |
 | `submit_app` | `async def submit_app(self, app_id, registry_version) -> dict` | Submit a deployed version for review — flips the deployment `private` → `submit`. |
 | `publish_app` | `async def publish_app(self, app_id, registry_version, target) -> dict` | Bind a deployment to '@user', '@team/<name>', or '@public'. The binding is a pure pointer born 'enabled'. '@public' requires the deployment be `ready`; '@user'/'@team' accept any non-`failed` deployment. Pinning ANOTHER org's public app to '@user'/'@team' is the version selector; publishing your own app requires the id to be in your namespace. |
 | `where_app` | `async def where_app(self, app_id) -> list[dict]` | The reverse index: `{rung, handle, version, appVersion, state, deployedAt}` per audience — `state` is the bound deployment's review state. |
-| `app_entry` | `async def app_entry(self, app_id, version) -> dict` | Mint a signed bundle-entry URL for one specific version (registry ints ONLY — semver is display). Entitlement-checked at minting: a binding you can see must serve it (public counts only when the deployment is `ready`), or you deployed it. |
+
+Serving needs no verb: a version's bundle loads from the stable
+`/apps/<app_id>/v<N>/remoteEntry.js` URL constructed from its registry
+version number, with entitlement enforced by the serve route on every
+request (registry ints ONLY — semver is display).
 
 ### App marketplace + developer verbs
 

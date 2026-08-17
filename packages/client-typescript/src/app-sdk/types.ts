@@ -67,7 +67,7 @@ export interface ConnectResult {
 	/** Organizations the user belongs to. */
 	organizations?: { id: string; name: string }[];
 	/** Apps on the user's desktop — full manifest entries with appStatus + onDesktop. */
-	apps?: { id: string; moduleId: string; name: string; entry: string; appStatus?: string; onDesktop?: boolean; [key: string]: unknown }[];
+	apps?: { id: string; moduleId: string; name: string; entry?: string; registryVersion?: number; appStatus?: string; onDesktop?: boolean; [key: string]: unknown }[];
 	/** Open-ended additional fields. */
 	[key: string]: unknown;
 }
@@ -189,6 +189,8 @@ export interface AppManifestEntry {
 	 * a deployed pin's appVersion. Absent when the server sent none.
 	 */
 	version?: string;
+	/** Registry version number the entry resolves to (the scope-walk winner). */
+	registryVersion?: number;
 	/** True when the entry is a dev-overlay override (live watch build). */
 	dev?: boolean;
 	/**

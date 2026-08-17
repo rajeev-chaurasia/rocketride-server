@@ -320,12 +320,16 @@ publishing an app requires the org to have claimed a developer id.
 | Method | Signature | Description |
 | ------ | --------- | ----------- |
 | `deploy.add` | `deploy.add({kind?, pipeline?, data?, metadata?, comment?, deployTo?}): Promise<PublishResult>` | The ONE rail door: deploy any kind of object as the next immutable registry version. `kind:'pipe'` (default) takes a `pipeline` dict; `kind:'app'` takes ONE `data` zip of the app's SOURCE — the server performs the build (client-produced binaries are never trusted); the zip is retained and unpacked at receipt, born deployment-state `private`. The app id must be inside your developer namespace. |
-| `listDeployments` | `listDeployments(appId): Promise<RailEntry[]>` | The version rail, newest first; each entry carries its deployment `state` and the `rungs` naming the audiences bound to it. |
+| `listDeployments` | `listDeployments(appId): Promise<RailEntry[]>` | The version rail, newest first — the developer org sees its FULL rail (published or not), other callers only their visible versions. Each entry carries its deployment `state`, its `buildStatus` ('ok' = servable), and the `rungs` naming the audiences bound to it. |
 | `submitApp` | `submitApp(appId, registryVersion): Promise<{artifact}>` | Submit a deployed version for store review — flips the deployment `private` → `submit` (it enters the admin queue). Developer-org + namespace gated. |
 | `withdrawApp` | `withdrawApp(appId, registryVersion): Promise<{artifact}>` | Withdraw a pending review — the developer's own cancel: flips the deployment `submit` → `private` (leaves the admin queue, back to draft; history records `withdrawn`). Only a version in `submit` withdraws. Developer-org + namespace gated. |
 | `publishApp` | `publishApp(appId, registryVersion, target): Promise<{publish}>` | Bind a deployment to '@user', '@team/<name>', or '@public'. The binding is a pure pointer born 'enabled'. `@public` requires the deployment be `ready` (approved); `@user`/`@team` accept any non-`failed` deployment. Pinning ANOTHER org's public app to '@user'/'@team' is the version selector and is allowed; publishing your own app requires the id to be in your namespace. |
 | `whereApp` | `whereApp(appId): Promise<Pin[]>` | The reverse index: `{rung, handle, version, appVersion, state, deployedAt}` per audience — `state` is the bound DEPLOYMENT's review state. |
-| `appEntry` | `appEntry(appId, version): Promise<{url, moduleId, appVersion, registryVersion}>` | Mint a signed bundle-entry URL for one specific version (registry ints ONLY — semver is display). Entitlement-checked at minting: a binding you can see must serve it (public counts only when the deployment is `ready`), or you deployed it. |
+
+Serving needs no verb: a version's bundle loads from the stable
+`/apps/<appId>/v<N>/remoteEntry.js` URL constructed from its registry
+version number, with entitlement enforced by the serve route on every
+request (registry ints ONLY — semver is display).
 
 ### App marketplace + developer verbs
 

@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV0 — never edit by hand
 // =============================================================================
-// Generated:     2026-08-16T01:09:04.284Z
-// Source commit: bf8253a01efd0aead2e2178dedcbe28f09e74f5a
+// Generated:     2026-08-17T05:10:41.218Z
+// Source commit: 8c90aa2ebe93c48e1fd646f00799f9d9d186af43
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -1825,8 +1825,15 @@ interface AppManifestEntry {
     categories?: string[];
     /** App-specific setting definitions. */
     settings?: unknown[];
-    /** URL to the app's Module Federation remote entry file. */
-    entry: string;
+    /**
+     * URL to the app's Module Federation remote entry file — present ONLY
+     * for dev-overlay entries (a localhost dev server is not constructible
+     * from a number). Published versions carry `registryVersion` instead and
+     * clients construct `/apps/<appId>/v<N>/remoteEntry.js` themselves.
+     */
+    entry?: string;
+    /** Registry version number the entry resolves to (the scope-walk winner). */
+    registryVersion?: number;
     /** App version string (semver). */
     version?: string;
     /** Visibility scope: "public", "org", "team", or "user". */
@@ -1898,6 +1905,23 @@ export interface ServerInfoResult {
      * Absent on servers without billing (OSS).
      */
     stripePublishableKey?: string;
+    /**
+     * The server's public addresses, RESOLVED to absolute URLs.
+     *
+     * `getServerInfo` substitutes the server's `'origin'` sentinel ("the
+     * address you probed me at") with the probed URI before returning, and
+     * manufactures the block when probing a pre-endpoints server — so
+     * consumers ALWAYS receive both keys as absolute URLs and never branch
+     * on presence. `api` is where clients open the WebSocket; `ui` is the
+     * environment's public web address (browser links, OAuth returns).
+     * They differ only on split deployments (e.g. CDN-served UI).
+     */
+    endpoints: {
+        /** Absolute URL clients connect the DAP WebSocket to. */
+        api: string;
+        /** Absolute URL of the environment's web UI. */
+        ui: string;
+    };
 }
 /**
  * MIT License
@@ -4585,6 +4609,21 @@ export declare class RocketRideClient extends DAPClient {
      */
     static getServerInfo(uri: string, timeout?: number): Promise<ServerInfoResult>;
     /**
+     * Resolve a probe's `endpoints` block against the URI that was probed.
+     *
+     * The wire value for each key is an absolute URL or the literal
+     * `'origin'` — the server's way of saying "wherever you reached me"
+     * (a server behind a proxy cannot know its public name). Absent keys
+     * and a missing block (pre-endpoints servers) mean `'origin'` too, so
+     * the ONE conditional in the whole scheme lives here and callers get a
+     * complete `{ api, ui }` of absolute URLs unconditionally.
+     *
+     * @param endpoints - The raw `endpoints` value from the probe body, if any.
+     * @param probedUri - The URI `getServerInfo` attached to.
+     * @returns Both keys resolved to absolute URLs.
+     */
+    static resolveEndpoints(endpoints: Partial<ServerInfoResult["endpoints"]> | undefined, probedUri: string): ServerInfoResult["endpoints"];
+    /**
      * Attach to a RocketRide server (open WebSocket, no auth).
      *
      * If ``uri`` is provided and differs from the current URI, detaches
@@ -5291,22 +5330,6 @@ export declare class RocketRideClient extends DAPClient {
         state: string;
         deployedAt?: number;
     }>>;
-    /**
-     * Mint a signed bundle-entry URL for ONE specific deployed version —
-     * the desktop version selector's launch path. The server enforces
-     * entitlement at minting: a caller-visible publish row must serve the
-     * version (public counts only when live), or the caller deployed it.
-     *
-     * @param appId - App id
-     * @param version - Registry version number (ints ONLY — semver is display)
-     * @returns The signed entry URL plus the resolved version identity
-     */
-    appEntry(appId: string, version: number): Promise<{
-        url: string;
-        moduleId: string;
-        appVersion: string;
-        registryVersion: number;
-    }>;
     /** Read a file as a UTF-8 string. */
     fsReadString(path: string): Promise<string>;
     /** Write a UTF-8 string to a file. */
@@ -5942,6 +5965,13 @@ export interface ShellConfig {
     apps: AppManifestEntry$1[];
     /** Server capability tags: ['oss'] for open-source, ['saas'] for cloud. */
     capabilities?: string[];
+    /**
+     * The server's resolved API address from the pre-auth probe
+     * (endpoints.api). Empty/absent = window.location.origin. Differs from
+     * the page origin only on split deployments where the probe redirects
+     * live traffic off the serving host (e.g. CDN-served UI, direct API).
+     */
+    serverUri?: string;
     /** All RR_* runtime config — passed through to remote apps via useShellApiConfig(). */
     apiConfig: ShellApiConfig;
     /** Branding shown on the loading screen before any app is mounted. */
@@ -11010,20 +11040,32 @@ export interface IToolchainState {
 }
 export declare const DEFAULT_TOOLCHAIN_STATE: IToolchainState;
 /**
+ * The stable serving URL of one registry version's entry.
+ *
+ * Relative — the shell document is served from the same origin, exactly
+ * like the manifest's own entries. Immutable bytes live behind it; the
+ * server enforces entitlement on every request, so constructing a URL the
+ * caller is not entitled to yields a 404 at load, never a leak.
+ *
+ * @param appId - The app id.
+ * @param version - The registry version number (ints only).
+ * @returns The versioned remoteEntry URL.
+ */
+export declare function versionedEntryUrl(appId: string, version: number): string;
+/**
  * One app's session version override.
  *
- * `version` starts as whatever the user expressed (registry version number
- * from the drop list, or a semver string from a deep link) and is
- * normalised to the registry version number once the server mints the
- * entry URL. `url` is absent until minted.
+ * `version` is the registry version number (a `?version=` semver deep link
+ * is resolved to its registry int before it lands here). The record holds
+ * NUMBERS only — the load URL is constructed from `version` at use
+ * (versionedEntryUrl), exactly as manifest defaults are constructed from
+ * `registryVersion`; no URL strings are ever stored.
  */
 export interface AppVersionOverride {
     /** Registry version number — THE wire version identity (ints only). */
     version: number;
     /** The resolved artifact semver — for chip display. */
     appVersion?: string;
-    /** Signed entry URL minted by rrext_deploy_app entry. */
-    url?: string;
 }
 /**
  * Reads one app's session version override.
@@ -11035,23 +11077,24 @@ export declare function getAppVersionOverride(appId: string): AppVersionOverride
 /**
  * Applies (or clears, with null) a version override to a live shell.
  *
- * The caller mints the entry URL first (client.appEntry) and passes the
- * full override; this function only handles the MF mechanics:
+ * The caller passes version NUMBERS only; the load URL is constructed
+ * here (versionedEntryUrl). This function handles the MF mechanics:
  *
- * - Container never loaded this session → force re-register at the new
- *   entry URL + evict the cached descriptor. The next launch loads the
- *   chosen version. Returns 'ready' — the caller may switch immediately.
+ * - Container never loaded this session → force re-register at the
+ *   constructed URL + evict the cached descriptor. The next launch loads
+ *   the chosen version. Returns 'ready' — the caller may switch
+ *   immediately.
  * - Container already loaded (or clearing an applied override) → a loaded
  *   MF container can never be repointed (identity is the NAME; forcing it
  *   corrupts the shared getters). Returns 'reload-required' — the caller
- *   reloads the page; boot then registers the override's URL (or the
+ *   reloads the page; boot then registers the override's version (or the
  *   default, after a clear) before anything loads.
  *
  * Dev-owned containers are never touched — the live dev build always wins.
  *
  * @param appId - The app id.
  * @param moduleId - The app's MF container name.
- * @param override - The minted override, or null to reset to default.
+ * @param override - The override record, or null to reset to default.
  * @returns 'ready' when the switch can proceed in-place, else 'reload-required'.
  */
 export declare function applyAppVersionOverride(appId: string, moduleId: string, override: AppVersionOverride | null): "ready" | "reload-required";
@@ -11669,6 +11712,7 @@ export declare const shellApi: {
     readonly AppLayout: import("react").FC<AppLayoutProps>;
     readonly getAppVersionOverride: typeof getAppVersionOverride;
     readonly applyAppVersionOverride: typeof applyAppVersionOverride;
+    readonly versionedEntryUrl: typeof versionedEntryUrl;
     readonly BxPlusSquare: IconComponent;
     readonly BxPlusSquareSolid: IconComponent;
     readonly BxLock: IconComponent;

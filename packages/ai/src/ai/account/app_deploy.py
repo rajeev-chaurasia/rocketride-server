@@ -53,9 +53,11 @@ concerns: ``versions`` (the rail + the caller's rungs), ``submit`` (flip the
 deployment private → submit for review), ``withdraw`` (the developer's own
 cancel: submit → private), ``publish`` (bind @me/@team/@public —
 update, promote, and rollback are all this one pointer move), ``where`` (the
-reverse index), ``entry`` (mint a signed bundle URL for one registry version —
-the desktop version selector's launch path; entitlement-checked at minting),
-and ``disable``/``remove`` (binding lifecycle).
+reverse index), and ``disable``/``remove`` (binding lifecycle). SERVING is
+not a verb: versions load from stable ``/apps/<appId>/v<N>/`` URLs
+(entitlement enforced per request by the shell route via
+``entitled_version_dirs``); the retired ``entry`` verb's minted bundle URLs
+are gone.
 
 Shared platform infrastructure: works on the OSS local engine (single implicit
 org/user 'local') and SaaS alike — no marketplace dependency.
@@ -70,48 +72,6 @@ from rocketlib import debug
 from ai.account.deployment_backend import DEFAULT_REVIEW_STATE, artifact_content_dir
 
 
-def _serving_dir(artifact: Optional[Dict[str, Any]], artifact_path: str) -> str:
-    """The directory the version's servable bundle lives in.
-
-    Zip-mode artifacts derive it by convention — the ``dist/`` subtree of
-    the registry artifact's content home (the artifact path minus ``.json``,
-    a sibling under ``.deployments``), written by the server build worker
-    and by the platform seeder alike. The subtree is deliberately NOT the
-    content root: the entry token is DIRECTORY-scoped, so serving from the
-    root would also grant ``source/`` and ``bundle/`` (the developer's
-    source) to any URL holder. Legacy binary-mode artifacts stored an
-    explicit bundleDir — honor it.
-    """
-    stored = (artifact or {}).get('bundleDir')
-    if stored:
-        return str(stored)
-    return f'{artifact_content_dir(artifact_path)}/dist'
-
-
-def _entry_url_of(artifact: Optional[Dict[str, Any]], artifact_path: str, sub: str) -> str:
-    """The servable entry URL of one deployed version.
-
-    LEGACY seeded artifacts carry an explicit ``entry`` (the shell's static
-    ``/apps/<dir>/remoteEntry.js`` route — grandfathered; new seeds write
-    the same ``dist/`` layout as server builds and mint like everything
-    else); everything else mints a signed directory-capability URL over the
-    version's built ``dist/`` tree beside the registry JSON.
-
-    Raises:
-        ValueError: When neither an explicit entry nor an artifact path is
-            available (nothing to serve from).
-        Exception:  When minting fails (unsigned static entries never fail).
-    """
-    explicit = (artifact or {}).get('entry')
-    if explicit:
-        return str(explicit)
-    if not artifact_path and not (artifact or {}).get('bundleDir'):
-        raise ValueError('no artifact path — cannot derive the bundle directory')
-    from ai.account.file_store import mint_directory_url
-
-    return mint_directory_url(_serving_dir(artifact, artifact_path), 'remoteEntry.js', sub=sub)
-
-
 def build_of(entry: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """One registry entry's ``metadata.build`` blob ({} when never stamped)."""
     metadata = (entry or {}).get('metadata')
@@ -120,18 +80,14 @@ def build_of(entry: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return build if isinstance(build, dict) else {}
 
 
-def _is_built(entry: Optional[Dict[str, Any]], artifact: Optional[Dict[str, Any]]) -> bool:
+def _is_built(entry: Optional[Dict[str, Any]]) -> bool:
     """Whether a version's servable bytes exist (THE built gate).
 
-    True for a server build that completed (``metadata.build.status ==
-    'ok'``, stamped by the build worker and by the seeder), a legacy seeded
-    artifact with an explicit static ``entry``, or a legacy binary-mode
-    ``bundleDir``. A zip-mode version with no ok build has an EMPTY ``dist/``
-    — minting it would hand out a URL to nothing, so serving, submit, and
-    publish all gate on this.
+    True only for a completed build (``metadata.build.status == 'ok'``,
+    stamped by the build worker and by the seeder — one gate, no legacy
+    arms). A version with no ok build has an EMPTY ``dist/``, so serving,
+    submit, and publish all gate on this.
     """
-    if (artifact or {}).get('entry') or (artifact or {}).get('bundleDir'):
-        return True
     return build_of(entry).get('status') == 'ok'
 
 
@@ -774,7 +730,7 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
         # BUILT gate — a binding must never point at a version whose dist/
         # does not exist yet (still building) or never will (build failed):
         # the pointer would mint URLs to an empty directory.
-        if not _is_built(entry, artifact):
+        if not _is_built(entry):
             return conn.build_error(request, _not_built_error(app_id, version, entry))
 
         row = await account.publish_set(
@@ -833,7 +789,7 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
         # candidate: nothing to review while the build runs, and approving
         # a version that can never serve would strand a broken 'ready'.
         submit_entry = await _registry_entry_of(account, home, app_id, version)
-        if not _is_built(submit_entry, artifact):
+        if not _is_built(submit_entry):
             return conn.build_error(request, _not_built_error(app_id, version, submit_entry))
         try:
             updated = await account.set_artifact_state(home, app_id, version, 'submit', _actor_of(conn))
@@ -889,43 +845,9 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
             return conn.build_error(request, str(exc))
         return conn.build_response(request, body={'publish': row})
 
-    # ── entry — mint a signed bundle URL for ONE specific version ─────────
-    # The desktop version selector's launch path: the client resolved a
-    # version (drop list or ?version= deep link) and needs the entry URL.
-    # This is THE enforcement point — the caller must be entitled to the
-    # version. Registry ints ONLY: semver is developer-controlled display.
-    if sub == 'entry':
-        version = args.get('version')
-        if not isinstance(version, int):
-            return conn.build_error(request, 'version (registry version number) is required')
-        if not await _caller_entitled_to_version(conn, account, org_id, home, app_id, version):
-            return conn.build_error(
-                request,
-                f'Not entitled to version {version} of {app_id} '
-                '(not published to any of your audiences, and you did not deploy it)',
-            )
-        artifact = await _artifact_of(account, home, app_id, {'version': version})
-        if not isinstance(artifact, dict) or artifact.get('kind') != 'app':
-            return conn.build_error(request, f'Registry version {version} of {app_id} is not an app artifact')
-        registry_entry = await _registry_entry_of(account, home, app_id, version)
-        # BUILT gate — minting an unbuilt version's dist/ would hand out a
-        # signed URL to an empty directory; refuse with the build reason.
-        if not _is_built(registry_entry, artifact):
-            return conn.build_error(request, _not_built_error(app_id, version, registry_entry))
-        try:
-            url = _entry_url_of(artifact, str((registry_entry or {}).get('artifactPath') or ''), sub='app-entry')
-        except Exception as exc:
-            return conn.build_error(request, f'Failed to mint bundle URL: {exc}')
-        return conn.build_response(
-            request,
-            body={
-                'url': url,
-                'moduleId': artifact.get('moduleId') or app_id.replace('.', '_'),
-                'appVersion': artifact.get('appVersion', ''),
-                'registryVersion': version,
-            },
-        )
-
+    # (The 'entry' verb is RETIRED: versioned serving replaced minted bundle
+    # URLs — clients construct /apps/<appId>/v<N>/remoteEntry.js and the
+    # serve route enforces entitlement per request.)
     return conn.build_error(request, f'Unknown subcommand: {sub!r}')
 
 
@@ -946,10 +868,7 @@ def _rail_entry(entry: Dict[str, Any], artifact: Optional[Dict[str, Any]]) -> Di
         'publishedAt': entry.get('publishedAt'),
         'author': who.get('display') or who.get('email') or who.get('userId') or '',
         'message': entry.get('comment', ''),
-        'bundleDir': (artifact or {}).get('bundleDir') or '',
         # The build lifecycle (metadata.build) — the DEPLOY view's chips.
-        # Legacy rows (static-entry seeds, bundleDir binaries) predate the
-        # worker: their buildStatus is '' and _is_built treats them as built.
         'buildStatus': str(build.get('status') or ''),
         'buildPhase': str(build.get('phase') or ''),
         'buildErrors': build.get('errors') or [],
@@ -1165,23 +1084,11 @@ async def resolve_app_pins(org_id: str, user_id: Optional[str], team_ids: List[s
         if not isinstance(artifact, dict) or artifact.get('kind') != 'app':
             continue
         # BUILT gate — a pin serves only once the version's servable bytes
-        # exist: a completed server build (artifactBuild 'ok', joined onto
-        # the row by both backends), a legacy static-entry seed, or a legacy
-        # bundleDir binary. An unbuilt pin is silently skipped (the DEPLOY
-        # surfaces show the build status; the desktop just doesn't serve it).
-        if not (artifact.get('entry') or artifact.get('bundleDir') or row.get('artifactBuild') == 'ok'):
-            continue
-        # The file backend joins artifactPath onto the row; a backend that
-        # does not yet (the DB edition until its pair sync) falls back to a
-        # registry read for the one row that needs it.
-        artifact_path = str(row.get('artifactPath') or '')
-        if not artifact_path:
-            reg = await _registry_entry_of(account, row_org, app_id, version)
-            artifact_path = str((reg or {}).get('artifactPath') or '')
-        try:
-            entry_url = _entry_url_of(artifact, artifact_path, sub='app-publish')
-        except Exception as exc:
-            debug(f'[app_deploy] signed entry mint failed for {app_id}: {exc}')
+        # exist: a completed build (artifactBuild 'ok', stamped by the build
+        # worker and the seeder alike, joined onto the row by both backends).
+        # An unbuilt pin is silently skipped (the DEPLOY surfaces show the
+        # build status; the desktop just doesn't serve it).
+        if row.get('artifactBuild') != 'ok':
             continue
         snapshot = row.get('snapshot') or {}
         rung = 'personal' if audience_type == 'user' else audience_type
@@ -1208,7 +1115,10 @@ async def resolve_app_pins(org_id: str, user_id: Optional[str], team_ids: List[s
             'icon': snapshot.get('iconPath') or '',
             'readme': snapshot.get('readmePath') or '',
             'categories': snapshot.get('categories') or [],
-            'entry': entry_url,
+            # NO entry URL — the wire carries the version NUMBER and clients
+            # construct /apps/<appId>/v<N>/remoteEntry.js themselves. The dev
+            # overlay is the one thing that adds an `entry` (a localhost dev
+            # server is not constructible from a number).
             'version': artifact.get('appVersion', ''),
             'registryVersion': version,
             'mode': mode,
@@ -1229,3 +1139,118 @@ async def resolve_app_pins(org_id: str, user_id: Optional[str], team_ids: List[s
             entry['configuration'] = snapshot.get('configuration')
         resolved[app_id] = entry
     return list(resolved.values())
+
+
+# =============================================================================
+# VERSIONED SERVING — the /apps/<appId>/v<N>/ route's entitlement resolvers
+# =============================================================================
+
+
+def _dist_dir_of(artifact_path: str) -> str:
+    """The servable dist tree of one registry entry (the build's output)."""
+    return f'{artifact_content_dir(artifact_path)}/dist'
+
+
+async def entitled_version_dirs(info: Optional[Any], app_id: str) -> Dict[int, str]:
+    """Registry version -> store ``dist/`` dir the caller may FETCH (SaaS).
+
+    The versioned serving route's request-time gate (cached by the shell
+    with a HARD expiry). The rules mirror ``_caller_entitled_to_version``,
+    evaluated over the whole version set at once:
+
+    - An ENABLED caller-visible binding entitles its version — the
+      caller's own user row, rows of teams they belong to, and public
+      rows (public only when the deployment is 'ready').
+    - The caller ORG's own rail entitles its built versions (the developer
+      flow — the version picker lists the rail published or not, and any
+      org member who can browse the DEPLOY rail can fetch its bytes; rail
+      rows only ever exist inside the owning developer namespace).
+    - The BUILT gate applies everywhere: an unbuilt version has no
+      servable bytes.
+
+    ``info`` None = anonymous: public rows only (the pre-auth landing).
+    """
+    from ai.account import account
+
+    user_id = str(getattr(info, 'userId', '') or '') if info is not None else ''
+    org = getattr(info, 'organization', None) if info is not None else None
+    org_id = ''
+    team_ids: List[str] = []
+    if org is not None:
+        org_id = str((org.get('id') if isinstance(org, dict) else getattr(org, 'id', '')) or '')
+        teams = (org.get('teams') if isinstance(org, dict) else getattr(org, 'teams', None)) or []
+        for team in teams:
+            tid = team.get('id') if isinstance(team, dict) else getattr(team, 'id', None)
+            if tid:
+                team_ids.append(str(tid))
+
+    audiences: List[Dict[str, str]] = [{'type': 'public', 'id': ''}]
+    audiences += [{'type': 'team', 'id': tid} for tid in team_ids]
+    if user_id:
+        audiences.append({'type': 'user', 'id': user_id})
+
+    dirs: Dict[int, str] = {}
+    try:
+        rows = await account.publish_list(org_id, 'app', audiences)
+    except Exception as exc:
+        debug(f'[app_deploy] entitled_version_dirs publish_list failed: {exc}')
+        rows = []
+    for row in rows:
+        if row.get('appId') != app_id or row.get('state') != 'enabled':
+            continue
+        if (row.get('audience') or {}).get('type') == 'public' and row.get('artifactState') != 'ready':
+            continue
+        if row.get('artifactBuild') != 'ok':
+            continue
+        version = row.get('version')
+        artifact_path = str(row.get('artifactPath') or '')
+        if isinstance(version, int) and artifact_path:
+            dirs[version] = _dist_dir_of(artifact_path)
+
+    # Developer-org entitlement: the caller org's OWN rail (rail rows exist
+    # only inside the owning developer namespace), built versions only —
+    # published or not. Org-scoped, not deployer-scoped: the DEPLOY view
+    # already shows every org member the whole rail, so serving parity
+    # follows visibility parity.
+    if user_id and org_id:
+        try:
+            entries = await account.deployments_versions(org_id, app_id)
+        except Exception:
+            entries = []
+        for entry in entries:
+            if _build_status_of_entry(entry) != 'ok':
+                continue
+            version = int(entry.get('version', 0))
+            artifact_path = str(entry.get('artifactPath') or '')
+            if version and artifact_path:
+                dirs[version] = _dist_dir_of(artifact_path)
+    return dirs
+
+
+async def open_version_dirs(app_id: str) -> Dict[int, str]:
+    """Registry version -> ``dist/`` dir, EVERY built version (OSS).
+
+    OSS serving is OPEN (a localhost single-tenant server gains nothing
+    from the gate — Rod's call), so the resolver is just "what exists and
+    is built" on the single implicit 'local' org.
+    """
+    from ai.account import account
+
+    dirs: Dict[int, str] = {}
+    try:
+        entries = await account.deployments_versions('local', app_id)
+    except Exception:
+        entries = []
+    for entry in entries:
+        if _build_status_of_entry(entry) != 'ok':
+            continue
+        version = int(entry.get('version', 0))
+        artifact_path = str(entry.get('artifactPath') or '')
+        if version and artifact_path:
+            dirs[version] = _dist_dir_of(artifact_path)
+    return dirs
+
+
+def _build_status_of_entry(entry: Dict[str, Any]) -> str:
+    """One registry entry's build status ('' when never stamped)."""
+    return str(build_of(entry).get('status') or '')

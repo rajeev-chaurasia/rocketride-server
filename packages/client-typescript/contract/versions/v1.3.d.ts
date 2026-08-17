@@ -24,7 +24,7 @@
 // FROZEN rocketride SDK contract — floor v1.3 — never edit by hand
 // =============================================================================
 // Floor key:     1.3 (MAJOR.MINOR of packages/client-typescript/package.json)
-// Source commit: bf8253a01efd0aead2e2178dedcbe28f09e74f5a
+// Source commit: 8c90aa2ebe93c48e1fd646f00799f9d9d186af43
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder client-typescript:freeze
 //
@@ -1802,8 +1802,15 @@ export interface AppManifestEntry {
     categories?: string[];
     /** App-specific setting definitions. */
     settings?: unknown[];
-    /** URL to the app's Module Federation remote entry file. */
-    entry: string;
+    /**
+     * URL to the app's Module Federation remote entry file — present ONLY
+     * for dev-overlay entries (a localhost dev server is not constructible
+     * from a number). Published versions carry `registryVersion` instead and
+     * clients construct `/apps/<appId>/v<N>/remoteEntry.js` themselves.
+     */
+    entry?: string;
+    /** Registry version number the entry resolves to (the scope-walk winner). */
+    registryVersion?: number;
     /** App version string (semver). */
     version?: string;
     /** Visibility scope: "public", "org", "team", or "user". */
@@ -1875,6 +1882,23 @@ export interface ServerInfoResult {
      * Absent on servers without billing (OSS).
      */
     stripePublishableKey?: string;
+    /**
+     * The server's public addresses, RESOLVED to absolute URLs.
+     *
+     * `getServerInfo` substitutes the server's `'origin'` sentinel ("the
+     * address you probed me at") with the probed URI before returning, and
+     * manufactures the block when probing a pre-endpoints server — so
+     * consumers ALWAYS receive both keys as absolute URLs and never branch
+     * on presence. `api` is where clients open the WebSocket; `ui` is the
+     * environment's public web address (browser links, OAuth returns).
+     * They differ only on split deployments (e.g. CDN-served UI).
+     */
+    endpoints: {
+        /** Absolute URL clients connect the DAP WebSocket to. */
+        api: string;
+        /** Absolute URL of the environment's web UI. */
+        ui: string;
+    };
 }
 /**
  * MIT License
@@ -4529,6 +4553,21 @@ export declare class RocketRideClient extends DAPClient {
      */
     static getServerInfo(uri: string, timeout?: number): Promise<ServerInfoResult>;
     /**
+     * Resolve a probe's `endpoints` block against the URI that was probed.
+     *
+     * The wire value for each key is an absolute URL or the literal
+     * `'origin'` — the server's way of saying "wherever you reached me"
+     * (a server behind a proxy cannot know its public name). Absent keys
+     * and a missing block (pre-endpoints servers) mean `'origin'` too, so
+     * the ONE conditional in the whole scheme lives here and callers get a
+     * complete `{ api, ui }` of absolute URLs unconditionally.
+     *
+     * @param endpoints - The raw `endpoints` value from the probe body, if any.
+     * @param probedUri - The URI `getServerInfo` attached to.
+     * @returns Both keys resolved to absolute URLs.
+     */
+    static resolveEndpoints(endpoints: Partial<ServerInfoResult["endpoints"]> | undefined, probedUri: string): ServerInfoResult["endpoints"];
+    /**
      * Attach to a RocketRide server (open WebSocket, no auth).
      *
      * If ``uri`` is provided and differs from the current URI, detaches
@@ -5156,8 +5195,14 @@ export declare class RocketRideClient extends DAPClient {
     /**
      * List an app's deployed versions, newest first (the version rail).
      *
+     * Answered by role: the developer org sees its FULL rail (published or
+     * not); other callers see only the versions serving on rows visible to
+     * them. Each entry carries its deployment `state`, its `buildStatus`
+     * ('ok' = servable bytes exist), and the `rungs` naming the audiences
+     * serving it.
+     *
      * @param appId - App id
-     * @returns Rail entries; each carries its deployment `state` and the `rungs` naming the audiences serving it
+     * @returns Rail entries, newest first
      */
     listDeployments(appId: string): Promise<Array<{
         registryVersion: number;
@@ -5167,6 +5212,7 @@ export declare class RocketRideClient extends DAPClient {
         author: string;
         message: string;
         state: string;
+        buildStatus: string;
         rungs: string[];
     }>>;
     /**
@@ -5235,22 +5281,6 @@ export declare class RocketRideClient extends DAPClient {
         state: string;
         deployedAt?: number;
     }>>;
-    /**
-     * Mint a signed bundle-entry URL for ONE specific deployed version —
-     * the desktop version selector's launch path. The server enforces
-     * entitlement at minting: a caller-visible publish row must serve the
-     * version (public counts only when live), or the caller deployed it.
-     *
-     * @param appId - App id
-     * @param version - Registry version number (ints ONLY — semver is display)
-     * @returns The signed entry URL plus the resolved version identity
-     */
-    appEntry(appId: string, version: number): Promise<{
-        url: string;
-        moduleId: string;
-        appVersion: string;
-        registryVersion: number;
-    }>;
     /** Read a file as a UTF-8 string. */
     fsReadString(path: string): Promise<string>;
     /** Write a UTF-8 string to a file. */

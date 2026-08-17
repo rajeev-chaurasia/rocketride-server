@@ -2698,10 +2698,16 @@ export class RocketRideClient extends DAPClient {
 	/**
 	 * List an app's deployed versions, newest first (the version rail).
 	 *
+	 * Answered by role: the developer org sees its FULL rail (published or
+	 * not); other callers see only the versions serving on rows visible to
+	 * them. Each entry carries its deployment `state`, its `buildStatus`
+	 * ('ok' = servable bytes exist), and the `rungs` naming the audiences
+	 * serving it.
+	 *
 	 * @param appId - App id
-	 * @returns Rail entries; each carries its deployment `state` and the `rungs` naming the audiences serving it
+	 * @returns Rail entries, newest first
 	 */
-	async listDeployments(appId: string): Promise<Array<{ registryVersion: number; appVersion: string; sha256: string; publishedAt: number; author: string; message: string; state: string; rungs: string[] }>> {
+	async listDeployments(appId: string): Promise<Array<{ registryVersion: number; appVersion: string; sha256: string; publishedAt: number; author: string; message: string; state: string; buildStatus: string; rungs: string[] }>> {
 		const body = await this.call('rrext_deploy_app', { subcommand: 'versions', appId });
 		return (body as any)?.versions ?? [];
 	}
@@ -2773,19 +2779,9 @@ export class RocketRideClient extends DAPClient {
 		return (body as any)?.pins ?? [];
 	}
 
-	/**
-	 * Mint a signed bundle-entry URL for ONE specific deployed version —
-	 * the desktop version selector's launch path. The server enforces
-	 * entitlement at minting: a caller-visible publish row must serve the
-	 * version (public counts only when live), or the caller deployed it.
-	 *
-	 * @param appId - App id
-	 * @param version - Registry version number (ints ONLY — semver is display)
-	 * @returns The signed entry URL plus the resolved version identity
-	 */
-	async appEntry(appId: string, version: number): Promise<{ url: string; moduleId: string; appVersion: string; registryVersion: number }> {
-		return (await this.call('rrext_deploy_app', { subcommand: 'entry', appId, version })) as any;
-	}
+	// (appEntry is RETIRED: versions serve from stable constructed URLs —
+	// /apps/<appId>/v<N>/remoteEntry.js — with entitlement enforced per
+	// request by the serve route, so there is nothing to mint.)
 
 	// ============================================================================
 	// CONVENIENCE WRAPPERS (text/JSON over binary, handle open/close internally)

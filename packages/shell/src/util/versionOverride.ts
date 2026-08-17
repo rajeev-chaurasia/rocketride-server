@@ -33,12 +33,16 @@
  * URL parsing simply seeds/replaces the session override at boot, so the
  * rest of the shell only ever consults ONE place.
  *
- * The override's minted entry URL is applied to the MF container either
- * synchronously at registration time (registerAndMapApps substitutes it —
- * the boot path, race-free) or via applyAppVersionOverride() when the user
- * picks a version mid-session (repoint when the container has not loaded
- * yet; reload otherwise — a loaded container can never be repointed, see
- * the MF one-document-one-version rule).
+ * Entry URLs are CONSTRUCTED, never minted: every version serves from the
+ * stable immutable `/apps/<appId>/v<N>/remoteEntry.js` route, entitlement
+ * enforced by the server per request — switching needs zero round trips
+ * (the retired `entry` verb's signed URLs are gone). The override is
+ * applied to the MF container either synchronously at registration time
+ * (registerAndMapApps constructs and substitutes the URL — the boot path,
+ * race-free) or via applyAppVersionOverride() when the user picks a
+ * version mid-session (repoint when the container has not loaded yet;
+ * reload otherwise — a loaded container can never be repointed, see the
+ * MF one-document-one-version rule).
  */
 
 import { repointRemote, isRemoteLoaded, invalidateAppDescriptor, isDevRemote } from './appLoader';
@@ -51,20 +55,35 @@ import { repointRemote, isRemoteLoaded, invalidateAppDescriptor, isDevRemote } f
 const SS_OVERRIDES_KEY = 'rr:appVersionOverrides';
 
 /**
+ * The stable serving URL of one registry version's entry.
+ *
+ * Relative — the shell document is served from the same origin, exactly
+ * like the manifest's own entries. Immutable bytes live behind it; the
+ * server enforces entitlement on every request, so constructing a URL the
+ * caller is not entitled to yields a 404 at load, never a leak.
+ *
+ * @param appId - The app id.
+ * @param version - The registry version number (ints only).
+ * @returns The versioned remoteEntry URL.
+ */
+export function versionedEntryUrl(appId: string, version: number): string {
+	return `/apps/${appId}/v${version}/remoteEntry.js`;
+}
+
+/**
  * One app's session version override.
  *
- * `version` starts as whatever the user expressed (registry version number
- * from the drop list, or a semver string from a deep link) and is
- * normalised to the registry version number once the server mints the
- * entry URL. `url` is absent until minted.
+ * `version` is the registry version number (a `?version=` semver deep link
+ * is resolved to its registry int before it lands here). The record holds
+ * NUMBERS only — the load URL is constructed from `version` at use
+ * (versionedEntryUrl), exactly as manifest defaults are constructed from
+ * `registryVersion`; no URL strings are ever stored.
  */
 export interface AppVersionOverride {
 	/** Registry version number — THE wire version identity (ints only). */
 	version: number;
 	/** The resolved artifact semver — for chip display. */
 	appVersion?: string;
-	/** Signed entry URL minted by rrext_deploy_app entry. */
-	url?: string;
 }
 
 /**
@@ -124,23 +143,24 @@ export function clearAppVersionOverride(appId: string): void {
 /**
  * Applies (or clears, with null) a version override to a live shell.
  *
- * The caller mints the entry URL first (client.appEntry) and passes the
- * full override; this function only handles the MF mechanics:
+ * The caller passes version NUMBERS only; the load URL is constructed
+ * here (versionedEntryUrl). This function handles the MF mechanics:
  *
- * - Container never loaded this session → force re-register at the new
- *   entry URL + evict the cached descriptor. The next launch loads the
- *   chosen version. Returns 'ready' — the caller may switch immediately.
+ * - Container never loaded this session → force re-register at the
+ *   constructed URL + evict the cached descriptor. The next launch loads
+ *   the chosen version. Returns 'ready' — the caller may switch
+ *   immediately.
  * - Container already loaded (or clearing an applied override) → a loaded
  *   MF container can never be repointed (identity is the NAME; forcing it
  *   corrupts the shared getters). Returns 'reload-required' — the caller
- *   reloads the page; boot then registers the override's URL (or the
+ *   reloads the page; boot then registers the override's version (or the
  *   default, after a clear) before anything loads.
  *
  * Dev-owned containers are never touched — the live dev build always wins.
  *
  * @param appId - The app id.
  * @param moduleId - The app's MF container name.
- * @param override - The minted override, or null to reset to default.
+ * @param override - The override record, or null to reset to default.
  * @returns 'ready' when the switch can proceed in-place, else 'reload-required'.
  */
 export function applyAppVersionOverride(
@@ -157,21 +177,19 @@ export function applyAppVersionOverride(
 	}
 
 	if (override === null) {
-		// Reset to default resolution. If an override was ever applied this
+		// Reset to default resolution. If an override was ever stored this
 		// session the container may sit at the overridden URL — only a fresh
 		// boot deterministically restores the manifest default.
 		const had = getAppVersionOverride(appId);
 		clearAppVersionOverride(appId);
-		return had?.url ? 'reload-required' : 'ready';
+		return had ? 'reload-required' : 'ready';
 	}
 
 	setAppVersionOverride(appId, override);
 	// A loaded container is committed to its version for this document
 	if (isRemoteLoaded(moduleId)) return 'reload-required';
 	// Not loaded yet — repoint the registration and evict the descriptor
-	if (override.url) {
-		repointRemote(moduleId, override.url);
-		invalidateAppDescriptor(appId);
-	}
+	repointRemote(moduleId, versionedEntryUrl(appId, override.version));
+	invalidateAppDescriptor(appId);
 	return 'ready';
 }

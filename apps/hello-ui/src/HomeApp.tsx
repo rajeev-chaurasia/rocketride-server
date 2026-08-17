@@ -63,6 +63,31 @@ const CATEGORY_LABELS: Record<string, string> = {
 	ai: 'AI',
 };
 
+/** Rail rung audience types -> the display handles the drop list shows. */
+const RUNG_LABEL: Record<string, string> = { user: '@me', team: '@team', public: '@public' };
+
+// The org's developer id — fetched ONCE per document and shared by every
+// card (mirrors home-ui's DesktopAppCard): the version chip's developer
+// affordance keys off namespace ownership (app id inside the org's
+// developer namespace), the same rule the server enforces.
+let developerIdPromise: Promise<string> | null = null;
+
+/**
+ * The caller org's developer id ('' when none is claimed).
+ *
+ * @param client - Connected RocketRide client.
+ * @returns The developer id slug, cached for the document's lifetime.
+ */
+function developerIdOf(client: { call: (command: string, args: Record<string, unknown>) => Promise<unknown> }): Promise<string> {
+	if (!developerIdPromise) {
+		developerIdPromise = client
+			.call('rrext_deploy_app', { subcommand: 'developer_status' })
+			.then((res) => String((res as { developerId?: string | null })?.developerId ?? ''))
+			.catch(() => '');
+	}
+	return developerIdPromise;
+}
+
 /**
  * Format a manifest category id for display (mirrors home-ui's formatter so
  * OSS and SaaS desktops label categories identically).
@@ -427,6 +452,23 @@ const styles = {
 		cursor: 'pointer',
 	} as CSSProperties,
 
+	/** Developer variant: BUTTON-shaped — the chip is the org's rail door. */
+	versionChipDeveloper: {
+		display: 'inline-flex',
+		alignItems: 'center',
+		gap: 4,
+		padding: '3px 9px',
+		borderRadius: 6,
+		border: '1px solid var(--rr-border)',
+		backgroundColor: 'transparent',
+		color: 'var(--rr-text-secondary)',
+		opacity: 1,
+		fontSize: 11,
+		fontWeight: 500,
+		fontFamily: 'inherit',
+		cursor: 'pointer',
+	} as CSSProperties,
+
 	/** Version drop list — popover anchored above the chip. */
 	versionPopover: {
 		position: 'absolute' as const,
@@ -634,10 +676,11 @@ interface VersionRow {
  * state lives locally in each card (not in the parent grid), the arrangement
  * proven stable on the SaaS desktop. The whole card is the launch target.
  *
- * A faint version chip sits bottom-left; clicking it opens a drop list of
- * every version the user is entitled to (their rungs, deduplicated by
- * registry version). Picking one is a SESSION override: minted entry URL +
- * repoint when the container has not loaded yet, full reload otherwise.
+ * A version chip sits bottom-left (BUTTON-shaped for the app's developer
+ * org — the chip is their rail door); clicking it opens a drop list of the
+ * servable versions the rail verb answers by role. Picking one is a
+ * SESSION override (numbers only — the load URL is constructed): repoint
+ * when the container has not loaded yet, full reload otherwise.
  *
  * @param props.app - Manifest entry to render.
  * @param props.onLaunch - Invoked with the app when the card is activated.
@@ -658,10 +701,29 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 	// First manifest category, formatted for display (may be absent)
 	const category = app.categories?.[0] ? formatCategory(app.categories[0]) : null;
 
-	// Effective version label — live dev build > session override > manifest
+	// Effective version label — live dev build > session override > manifest.
+	// Bare semver by default; an override shows the OVERRIDDEN version's
+	// semver plus its registry number ("0.1.0 v6").
 	// eslint-disable-next-line react-hooks/exhaustive-deps -- overrideSeq forces the re-read after select/reset
 	const override = React.useMemo(() => getAppVersionOverride(app.id), [app.id, overrideSeq]);
-	const versionLabel = app.dev ? 'dev' : (override?.appVersion ?? app.version);
+	const versionLabel = app.dev
+		? 'dev'
+		: override
+			? `${override.appVersion ? `${override.appVersion} ` : ''}v${override.version}`
+			: (app.version ?? '');
+
+	// Developer affordance: when the app id lives inside the caller org's
+	// developer namespace, the chip renders as a button and the drop list is
+	// the org's rail door (the server answers the rail verb by role).
+	const [developerId, setDeveloperId] = React.useState('');
+	React.useEffect(() => {
+		let alive = true;
+		const client = ConnectionManager.getInstance().getClient();
+		if (!client) return;
+		void developerIdOf(client).then((id) => { if (alive) setDeveloperId(id); });
+		return () => { alive = false; };
+	}, []);
+	const isDeveloper = !!developerId && app.id.startsWith(`${developerId}.`);
 
 	// Close the drop list on outside click (mirrors home-ui's popover)
 	React.useEffect(() => {
@@ -675,7 +737,9 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 		return () => document.removeEventListener('mousedown', handler);
 	}, [versionsOpen]);
 
-	/** Toggle the drop list; fetch + dedupe the entitled versions on first open. */
+	/** Toggle the drop list; fetch the servable versions on first open. The
+	 * rail verb answers by role — the developer org sees its FULL rail
+	 * (published or not), everyone else their caller-visible versions. */
 	const toggleVersions = async (e: React.SyntheticEvent) => {
 		e.stopPropagation();
 		setVersionsOpen((v) => !v);
@@ -684,48 +748,40 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 		try {
 			const client = ConnectionManager.getInstance().getClient();
 			if (!client) { setVersionRows([]); return; }
-			const pins = await client.whereApp(app.id);
-			// Dedupe by registry version — one row per version, all rungs listed.
-			// Non-serving rows carry their state so the label can say so
-			// (e.g. the org's own store submission shows "(in review)").
-			const byVersion = new Map<number, VersionRow>();
-			for (const pin of pins) {
-				const row = byVersion.get(pin.version) ?? { registryVersion: pin.version, appVersion: pin.appVersion, handles: [] };
-				row.handles.push(pin.state === 'submit' ? `${pin.handle} (in review)` : pin.handle);
-				byVersion.set(pin.version, row);
-			}
-			setVersionRows([...byVersion.values()].sort((a, b) => b.registryVersion - a.registryVersion));
+			const rail = await client.listDeployments(app.id);
+			// Built versions only — an unbuilt row has no servable bytes.
+			const rows = rail
+				.filter((r) => r.buildStatus === 'ok')
+				.map((r) => ({
+					registryVersion: r.registryVersion,
+					appVersion: r.appVersion,
+					handles: r.rungs?.length
+						? [...new Set(r.rungs.map((rung) => RUNG_LABEL[rung] ?? rung))].concat(r.state === 'submit' ? ['in review'] : [])
+						: [r.state === 'submit' ? 'in review' : 'unpublished'],
+				}))
+				.sort((a, b) => b.registryVersion - a.registryVersion);
+			setVersionRows(rows);
 		} catch {
 			// Unauthenticated or no registry — the chip still shows the current version
 			setVersionRows([]);
 		}
 	};
 
-	/** Launch a specific version: mint its entry URL, apply the session override. */
-	const selectVersion = async (e: React.SyntheticEvent, row: VersionRow) => {
+	/** Launch a specific version: apply the session override (numbers only —
+	 * the load URL is constructed client-side; entitlement is enforced by
+	 * the serve route at fetch time, so there is nothing to mint or await). */
+	const selectVersion = (e: React.SyntheticEvent, row: VersionRow) => {
 		e.stopPropagation();
-		try {
-			const client = ConnectionManager.getInstance().getClient();
-			if (!client) return;
-			const minted = await client.appEntry(app.id, row.registryVersion);
-			const result = applyAppVersionOverride(app.id, app.moduleId, {
-				version: minted.registryVersion,
-				appVersion: minted.appVersion,
-				url: minted.url,
-			});
-			setVersionsOpen(false);
-			setOverrideSeq((n) => n + 1);
-			// A loaded container cannot be repointed — reboot registers the
-			// override before anything loads; otherwise launch right away.
-			if (result === 'reload-required') { window.location.reload(); return; }
-			onLaunch(app);
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			console.log(`[hello] version select failed for ${app.id}: ${message}`);
-			// Keep the popover open and say what happened — closing silently
-			// leaves the user with a click that visibly did nothing.
-			setVersionError(`Could not switch: ${message}`);
-		}
+		const result = applyAppVersionOverride(app.id, app.moduleId, {
+			version: row.registryVersion,
+			appVersion: row.appVersion,
+		});
+		setVersionsOpen(false);
+		setOverrideSeq((n) => n + 1);
+		// A loaded container cannot be repointed — reboot registers the
+		// override before anything loads; otherwise launch right away.
+		if (result === 'reload-required') { window.location.reload(); return; }
+		onLaunch(app);
 	};
 
 	/** Drop the session override — back to the server's default resolution. */
@@ -771,15 +827,14 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 				<div style={styles.versionRow}>
 					<button
 						type="button"
-						style={styles.versionChip}
+						style={isDeveloper ? styles.versionChipDeveloper : styles.versionChip}
 						title="Switch version"
 						aria-haspopup="listbox"
 						aria-expanded={versionsOpen}
 						onClick={toggleVersions}
 						onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
 					>
-						v{versionLabel.replace(/^v/i, '')}
-						{override && ' (session)'}
+						{versionLabel}
 					</button>
 				</div>
 			)}
@@ -795,11 +850,10 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 					{versionRows !== null && versionRows.map((row) => {
 						// Match on the registry version (the wire identity), never
 						// the display semver — two registry records can share one
-						// appVersion, which would light both rows as current. With no
-						// session override the manifest exposes only the semver (no
-						// registry version), so the default resolution can't be pinned
-						// to a specific row: mark nothing current rather than guess.
-						const isCurrent = override != null && override.version === row.registryVersion;
+						// appVersion, which would light both rows as current. The
+						// manifest carries the resolved default's registry number,
+						// so the current row is knowable with or without an override.
+						const isCurrent = row.registryVersion === (override?.version ?? app.registryVersion);
 						return (
 							<button
 								key={row.registryVersion}
@@ -809,7 +863,7 @@ const AppCard: React.FC<{ app: AppManifestEntry; onLaunch: (app: AppManifestEntr
 								style={styles.versionItem}
 								onClick={(e) => selectVersion(e, row)}
 							>
-								v{row.appVersion.replace(/^v/i, '')}
+								{row.appVersion ? `${row.appVersion} ` : ''}v{row.registryVersion}
 								<span style={styles.versionItemRung}>{row.handles.join(' · ')}</span>
 								{isCurrent && <span style={styles.versionItemMark}>current</span>}
 							</button>

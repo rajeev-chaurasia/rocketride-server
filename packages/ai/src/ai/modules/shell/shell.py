@@ -41,13 +41,15 @@ Routes:
 """
 
 import hashlib
+import mimetypes
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 from fastapi import HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from ai.web import Request
 
@@ -241,6 +243,95 @@ async def _authorize_app(token: str, app_id: str) -> bool:
     return auth
 
 
+# =============================================================================
+# VERSIONED APP SERVING — store-backed, immutable per version
+# =============================================================================
+# /apps/<appId>/v<N>/<rest> streams the registry version's built dist/ tree
+# from the STORE (deployed and seeded apps alike — bundles serve versioned
+# ONLY; the static tree below is for app ASSETS like icons/readmes). Bytes
+# are IMMUTABLE per version, so caching is aggressive; the entitlement
+# VERDICT is cached with a HARD expiry — deliberately never slid — so a
+# pulled publish stops serving within minutes no matter how hot the traffic
+# is.
+
+_VERSION_SEG = re.compile(r'^v(\d{1,9})$')
+_APP_ID_SEG = re.compile(r'^[A-Za-z0-9_][A-Za-z0-9_.\-]*$')
+_IMMUTABLE_CACHE = 'private, max-age=31536000, immutable'
+# sha256('<token>.<app_id>') -> {'dirs': {version: dist_dir}, 'expiry'} —
+# HARD expiry (contrast _app_auth_cache's sliding window).
+_version_dir_cache: dict = {}
+
+
+async def _version_dirs_for(token: str, app_id: str) -> dict:
+    """Hard-expiry cached: registry version -> servable dist dir for a caller.
+
+    SaaS resolves the caller's entitled set (anonymous = public only);
+    OSS resolves every built version (open serving — single-tenant).
+    """
+    key = hashlib.sha256(f'{token}.{app_id}'.encode('utf-8')).hexdigest()
+    now = time.time()
+    hit = _version_dir_cache.get(key)
+    if hit is not None and hit['expiry'] > now:  # no slide — HARD expiry
+        return hit['dirs']
+
+    from ai.account import account
+    from ai.account.app_deploy import entitled_version_dirs, open_version_dirs
+
+    if _is_saas():
+        info = None
+        if token:
+            try:
+                info = await account.authenticate(token)
+            except Exception:
+                info = None
+        if info is not None and not hasattr(info, 'userId'):
+            info = None  # authenticate() returns an error tuple on failure
+        dirs = await entitled_version_dirs(info, app_id)
+    else:
+        dirs = await open_version_dirs(app_id)
+
+    _version_dir_cache[key] = {'dirs': dirs, 'expiry': now + _APP_AUTH_TTL}
+    # Bounded like _app_auth_cache: expired first, then soonest-to-expire.
+    if len(_version_dir_cache) > 4096:
+        for k in [k for k, v in _version_dir_cache.items() if v['expiry'] <= now]:
+            _version_dir_cache.pop(k, None)
+        if len(_version_dir_cache) > 4096:
+            overflow = len(_version_dir_cache) - 4096
+            for k in sorted(_version_dir_cache, key=lambda k: _version_dir_cache[k]['expiry'])[:overflow]:
+                _version_dir_cache.pop(k, None)
+    return dirs
+
+
+async def _serve_versioned(request: Request, app_id: str, version: int, rest: list) -> Response:
+    """Stream one immutable file of a version's built dist tree.
+
+    ONE answer (404) for unauthorized, unbuilt, and absent alike — the
+    route must not be an existence oracle for private versions. The dist
+    mapping is the only store surface reachable here: ``source/`` and
+    ``bundle/`` live outside every dir this resolver returns.
+    """
+    # Path discipline: these segments become STORE paths.
+    if not _APP_ID_SEG.match(app_id):
+        raise HTTPException(status_code=404, detail='Not found')
+    for seg in rest:
+        if not seg or seg in ('.', '..') or '\\' in seg or ':' in seg:
+            raise HTTPException(status_code=404, detail='Not found')
+
+    dirs = await _version_dirs_for(request.cookies.get(_APP_COOKIE, ''), app_id)
+    dist_dir = dirs.get(version)
+    if not dist_dir:
+        raise HTTPException(status_code=404, detail='Not found')
+
+    from ai.account.store import Store
+
+    try:
+        data = await Store.instance()._store.read_bytes(f'{dist_dir}/{"/".join(rest)}')
+    except Exception:
+        raise HTTPException(status_code=404, detail='Not found')
+    media_type = mimetypes.guess_type(rest[-1])[0] or 'application/octet-stream'
+    return Response(content=data, media_type=media_type, headers={'Cache-Control': _IMMUTABLE_CACHE})
+
+
 async def apps_session(request: Request):
     """Mint the /apps auth cookie from the caller's Authorization header.
 
@@ -290,16 +381,18 @@ async def apps_session(request: Request):
 
 async def apps_static(request: Request):
     """
-    Serve MF remote app bundles from ``dist/server/static/apps/``.
+    Serve MF remote app bundles (versioned, store-backed) + app assets.
 
-    Handles ``GET /apps/{path}`` — resolves the path within the apps root
-    and returns the file directly. No SPA fallback (these are JS/CSS assets).
+    Handles ``GET /apps/{path}``. Two shapes:
 
-    Args:
-        request: Incoming HTTP request.
-
-    Returns:
-        FileResponse for the matched file.
+    - ``<appId>/v<N>/<rest>`` — VERSIONED serving, the ONLY bundle path:
+      the registry version's built ``dist/`` tree streamed from the STORE,
+      immutable per version. Entitlement enforced per request (SaaS; OSS is
+      open) through a HARD-expiry verdict cache. There is no unversioned
+      bundle serving of any kind — clients construct versioned URLs from
+      the version numbers the wire carries.
+    - anything else — the static assets tree on disk: the icons/readmes the
+      app manifests point at (``/apps/<dir>/icon.svg``).
 
     Raises:
         HTTPException: 404 if file not found, 503 if apps dir missing.
@@ -311,6 +404,14 @@ async def apps_static(request: Request):
 
     if not raw_path:
         raise HTTPException(status_code=404, detail='Not found')
+
+    # Versioned store-backed serving — takes the path BEFORE any disk
+    # resolution: /apps/<appId>/v<N>/... never maps to the static tree.
+    parts = [p for p in raw_path.split('/') if p]
+    if len(parts) >= 3:
+        version_seg = _VERSION_SEG.match(parts[1])
+        if version_seg:
+            return await _serve_versioned(request, parts[0], int(version_seg.group(1)), parts[2:])
 
     # Apps haven't been built/copied yet — surface a clearer signal.
     if not os.path.isdir(_apps_root):

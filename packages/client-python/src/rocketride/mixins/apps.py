@@ -25,10 +25,11 @@ App publish ladder for RocketRide Client.
 
 Typed wrappers over the ``rrext_deploy_app`` DAP command: list the version
 rail, publish a deployment to an audience (one verb covers update, promote,
-and rollback), read the reverse index (where), and mint a version's signed
-entry URL.
+and rollback), and read the reverse index (where). Serving needs no verb:
+versions load from stable ``/apps/<appId>/v<N>/`` URLs constructed from the
+version number, entitlement enforced per request by the serve route.
 Uploading is the generic rail door — see :meth:`DeployApi.add` (``client.deploy.add``).
-Mirrors the TypeScript client's listDeployments / publishApp / whereApp / appEntry.
+Mirrors the TypeScript client's listDeployments / publishApp / whereApp.
 """
 
 from typing import Any, Dict, List
@@ -43,12 +44,17 @@ class AppsMixin(DAPClient):
         """
         List the app's deployed versions, newest first (the rail).
 
+        Answered by role: the developer org sees its FULL rail (published or
+        not); other callers see only the versions serving on rows visible to
+        them. Mirrors the TypeScript client's ``listDeployments``.
+
         Args:
             app_id: App id.
 
         Returns:
-            Rail entries, each with a ``rungs`` list naming the audiences
-            currently serving that version.
+            Rail entries, each with its deployment ``state``, its
+            ``buildStatus`` ('ok' = servable bytes exist), and a ``rungs``
+            list naming the audiences currently serving that version.
         """
         body = await self.call('rrext_deploy_app', subcommand='versions', appId=app_id)
         return body.get('versions', [])
@@ -156,21 +162,6 @@ class AppsMixin(DAPClient):
         body = await self.call('rrext_deploy_app', subcommand='where', appId=app_id)
         return body.get('pins', [])
 
-    async def app_entry(self, app_id: str, version: int) -> Dict[str, Any]:
-        """
-        Mint a signed bundle-entry URL for one specific deployed version.
-
-        The desktop version selector's launch path. The server enforces
-        entitlement at minting: a caller-visible publish row must serve the
-        version (public counts only when live), or the caller deployed it.
-        Mirrors the TypeScript client's ``appEntry``.
-
-        Args:
-            app_id:  App id.
-            version: Registry version number (ints ONLY — semver is display).
-
-        Returns:
-            Dict with ``url``, ``moduleId``, ``appVersion``, and
-            ``registryVersion``.
-        """
-        return await self.call('rrext_deploy_app', subcommand='entry', appId=app_id, version=version)
+    # (app_entry is RETIRED: versions serve from stable constructed URLs —
+    # /apps/<appId>/v<N>/remoteEntry.js — with entitlement enforced per
+    # request by the serve route, so there is nothing to mint.)

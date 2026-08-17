@@ -50,8 +50,8 @@ import { CheckoutFlow } from './CheckoutFlow';
 import { ApiKeyLogin } from './ApiKeyLogin';
 import LoadingScreen from './LoadingScreen';
 import { SS_PENDING_APP_ID, getHomeAppId } from '../../constants';
-import { registerAndMapApps, getRegisteredEntry, invalidateAppDescriptor, getLocalAppEntries, setLocalAppsListener, isDevRemote, repointRemote } from '../../util/appLoader';
-import { getAppVersionOverrides, setAppVersionOverride, clearAppVersionOverride } from '../../util/versionOverride';
+import { registerAndMapApps, resolveServerEntry, getRegisteredEntry, invalidateAppDescriptor, getLocalAppEntries, setLocalAppsListener, isDevRemote, repointRemote } from '../../util/appLoader';
+import { getAppVersionOverrides, setAppVersionOverride, versionedEntryUrl } from '../../util/versionOverride';
 import type { ServerAppEntry } from '../../util/appLoader';
 import { waitForEmbeddedSession } from '../../util/devMode';
 
@@ -136,31 +136,6 @@ const styles = {
 type RenderPhase = 'loading' | 'shell' | 'error' | 'goodbye' | 'waitlisted';
 
 // =============================================================================
-// VERSION-OVERRIDE ERROR CLASSIFICATION
-// =============================================================================
-
-/**
- * Whether an appEntry mint failure is a DEFINITIVE server rejection — the
- * pinned version can never be launched by this user (withdrawn from the
- * registry, entitlement lost, permission denied) — as opposed to a transient
- * transport failure (timeout, dropped socket, server briefly unreachable).
- *
- * Only a definitive rejection should drop the user's session version override;
- * a transport failure keeps it so a later boot can re-mint the URL. The server
- * raises these as PermissionError / ValueError / StorageError whose messages
- * carry the signals matched below; anything unrecognised is treated as
- * transient (conservative — a flaky socket must never silently discard a
- * deep-linked or pinned version).
- *
- * @param err - The error thrown by client.appEntry.
- * @returns True when the override should be dropped.
- */
-function isDefinitiveOverrideRejection(err: unknown): boolean {
-	const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-	return /not in the registry|not published|no publish|not entitled|entitlement|permission|privilege|forbidden|denied|not found|unknown app|no such/.test(msg);
-}
-
-// =============================================================================
 // SHELL COMPONENT
 // =============================================================================
 
@@ -200,8 +175,8 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 	// fire the write twice under StrictMode. REGISTRY INTS ONLY (semver is
 	// developer-controlled display, never a wire identity); a value with any
 	// trailing non-digit (?version=7abc) is REJECTED outright rather than
-	// silently pinned to 7 by parseInt's prefix parsing. The post-auth mint
-	// effect below resolves the int to a signed entry URL.
+	// silently pinned to 7 by parseInt's prefix parsing. The int IS the whole
+	// identity — registration constructs the versioned URL from it directly.
 	useEffect(() => {
 		const params = new URLSearchParams(window.location.search);
 		const fromUrl = params.get('appId') || params.get('appid') || '';
@@ -211,6 +186,19 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 			if (version > 0) setAppVersionOverride(fromUrl, { version });
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- URL is read once on mount
+	}, []);
+
+	// Surface a version pin dropped by the PREVIOUS document: the load
+	// failure path clears the override and reloads, so the notice has to
+	// survive that reload via sessionStorage.
+	useEffect(() => {
+		try {
+			const dropped = sessionStorage.getItem('rr:droppedOverride');
+			if (dropped) {
+				sessionStorage.removeItem('rr:droppedOverride');
+				console.warn(`[shell] pinned version ${dropped} could not be loaded — reverted to the default version`);
+			}
+		} catch { /* storage unavailable */ }
 	}, []);
 
 	// ── Derived flags ─────────────────────────────────────────────────────
@@ -382,22 +370,26 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 	// EVENT LISTENERS
 	// =====================================================================
 
-	// Re-register remotes whose entry URL changed and evict their cached
-	// descriptors. The apps memo above only registers apps ABSENT from the
-	// probe set — an account push that repoints an EXISTING app's entry (dev
-	// overlay upsert/expiry, a newly published version) would otherwise leave
-	// the old MF container registered and the stale descriptor cached. Runs
+	// Re-register remotes whose RESOLVED entry URL changed and evict their
+	// cached descriptors. The apps memo above only registers apps ABSENT from
+	// the probe set — an account push that changes an EXISTING app's
+	// resolution (dev overlay upsert/expiry, a repointed default version)
+	// would otherwise leave the old MF container registered and the stale
+	// descriptor cached. resolveServerEntry is the ONE resolution (dev URL,
+	// or a URL constructed from the tab override / manifest default). Runs
 	// as an effect (not in the memo) because invalidation sets state.
 	useEffect(() => {
 		const identityApps = (identity?.apps ?? []) as ServerAppEntry[];
 		const changed = identityApps.filter((a) => {
-			if (!a.entry || !a.moduleId) return false;
-			// Dev-owned containers are exempt: the manifest entry ALWAYS
+			if (!a.moduleId) return false;
+			// Dev-owned containers are exempt: the resolved entry ALWAYS
 			// differs from the injected dev entry, and repointing would swap
 			// the live dev bundle for the server's published one mid-session.
 			if (isDevRemote(a.moduleId)) return false;
+			const target = resolveServerEntry(a);
+			if (!target) return false;
 			const registered = getRegisteredEntry(a.moduleId);
-			return registered !== undefined && registered !== a.entry;
+			return registered !== undefined && registered !== target;
 		});
 		if (changed.length === 0) return;
 		// Force re-register the MF containers at their new entry URLs, then
@@ -406,70 +398,37 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 		for (const a of changed) invalidateAppDescriptor(a.id);
 	}, [identity?.apps]);
 
-	// Re-mint session version overrides once authenticated. Every boot mints
-	// fresh signed entry URLs for the overridden apps (URLs expire; deep-link
-	// overrides start with no URL at all) and repoints containers whose
-	// registered entry differs — the same reconciliation the entry-change
-	// effect above performs for server-side repoints. An override the server
-	// rejects (entitlement lost, version gone) is dropped so the app falls
-	// back to default resolution instead of failing to load.
+	// Reconcile session version overrides once authenticated. The override's
+	// version number constructs its stable URL directly (versionedEntryUrl —
+	// zero server round trips; entitlement is enforced by the serve route at
+	// fetch time), and containers registered elsewhere are repointed — the
+	// same reconciliation the entry-change effect above performs for
+	// server-side resolution changes. Overrides for apps not (yet) in the
+	// manifest stay dormant; an override the serve route refuses simply 404s
+	// at load, where the load-failure path drops it.
 	useEffect(() => {
 		const overrides = getAppVersionOverrides();
 		const appIds = Object.keys(overrides);
 		if (!identity || appIds.length === 0) return;
-		const client = cm.getClient();
-		if (!client) return;
-		let cancelled = false;
-		(async () => {
-			for (const appId of appIds) {
-				const app = apps.find((a) => a.id === appId);
-				// Dev-owned containers keep the live build; unknown apps keep
-				// their override dormant until the app appears in the manifest.
-				if (!app || isDevRemote(app.moduleId)) continue;
-				// Already minted this session and the container is registered at
-				// that URL — nothing to reconcile. Skips a redundant appEntry
-				// round trip every time the `apps` memo yields a new array
-				// identity (identity.apps / config.apps / localAppsSeq change).
-				const current = overrides[appId];
-				if (current.url && getRegisteredEntry(app.moduleId) === current.url) continue;
-				try {
-					const minted = await client.appEntry(appId, current.version);
-					if (cancelled) return;
-					setAppVersionOverride(appId, {
-						version: minted.registryVersion,
-						appVersion: minted.appVersion,
-						url: minted.url,
-					});
-					if (getRegisteredEntry(app.moduleId) !== minted.url) {
-						// repointRemote refuses a container that already loaded
-						// this document (repointing corrupts its shared getters);
-						// a full reload re-registers the minted URL at boot,
-						// before anything loads.
-						if (repointRemote(app.moduleId, minted.url)) {
-							invalidateAppDescriptor(appId);
-						} else {
-							window.location.reload();
-							return;
-						}
-					}
-				} catch (err) {
-					if (cancelled) return;
-					// Only DROP the pin on a definitive server rejection (the
-					// version is gone or the user lost entitlement). A transient
-					// transport failure (timeout, dropped socket) keeps it so the
-					// next boot can re-mint — losing a deep-linked or pinned
-					// version to a flaky socket would silently strand the user.
-					if (isDefinitiveOverrideRejection(err)) {
-						console.log(`[shell] dropping version override for ${appId}: ${err instanceof Error ? err.message : String(err)}`);
-						clearAppVersionOverride(appId);
-					} else {
-						console.log(`[shell] keeping version override for ${appId} after transient mint failure: ${err instanceof Error ? err.message : String(err)}`);
-					}
-				}
+		for (const appId of appIds) {
+			const app = apps.find((a) => a.id === appId);
+			// Dev-owned containers keep the live build; unknown apps keep
+			// their override dormant until the app appears in the manifest.
+			if (!app || isDevRemote(app.moduleId)) continue;
+			const url = versionedEntryUrl(appId, overrides[appId].version);
+			if (getRegisteredEntry(app.moduleId) === url) continue;
+			// repointRemote refuses a container that already loaded this
+			// document (repointing corrupts its shared getters); a full
+			// reload re-registers the override's URL at boot, before
+			// anything loads.
+			if (repointRemote(app.moduleId, url)) {
+				invalidateAppDescriptor(appId);
+			} else {
+				window.location.reload();
+				return;
 			}
-		})();
-		return () => { cancelled = true; };
-	}, [identity, apps, cm]);
+		}
+	}, [identity, apps]);
 
 	// Refresh identity on account update
 	useEffect(() => {

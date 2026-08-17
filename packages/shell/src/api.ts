@@ -275,7 +275,7 @@ import { applyTheme } from './themes';
 import { isInVSCode } from './themes/vscode';
 import { OAUTH_ROOT_URL } from './auth/oauth';
 import { ITaskState, IServiceCapabilities, DEFAULT_TOOLCHAIN_STATE } from './types/project';
-import { getAppVersionOverride, applyAppVersionOverride } from './util/versionOverride';
+import { getAppVersionOverride, applyAppVersionOverride, versionedEntryUrl } from './util/versionOverride';
 export type { AppVersionOverride } from './util/versionOverride';
 
 export {
@@ -515,6 +515,9 @@ export const shellApi = {
 	// Desktop version selector — session override read + apply/clear
 	get getAppVersionOverride() { return getAppVersionOverride; },
 	get applyAppVersionOverride() { return applyAppVersionOverride; },
+	// Stable versioned entry URL (constructed, never minted — the server
+	// enforces entitlement per request on the /apps/<id>/v<N>/ route)
+	get versionedEntryUrl() { return versionedEntryUrl; },
 } as const;
 
 // =============================================================================
@@ -556,7 +559,7 @@ export {
 	// The one app-root layout
 	AppLayout,
 	// Desktop version selector — session override read + apply/clear
-	getAppVersionOverride, applyAppVersionOverride,
+	getAppVersionOverride, applyAppVersionOverride, versionedEntryUrl,
 };
 
 /**

@@ -34,7 +34,7 @@ import type { AppManifestEntry, AppDescriptor, AppConfiguration } from '../compo
 // substitution); the write side lives in versionOverride.ts. The two
 // modules reference each other strictly through function calls at runtime,
 // so the import cycle carries no module-evaluation (TDZ) risk.
-import { getAppVersionOverrides } from './versionOverride';
+import { getAppVersionOverrides, versionedEntryUrl } from './versionOverride';
 
 /**
  * Shape of an app entry from the server (rrext_public_probe or ConnectResult).
@@ -57,8 +57,15 @@ export interface ServerAppEntry {
 	configuration?: unknown;
 	/** @deprecated Legacy flat settings list from pre-configuration servers. */
 	settings?: unknown[];
-	/** URL to the MF remote entry file. */
-	entry: string;
+	/**
+	 * URL to the MF remote entry file — present ONLY on dev-overlay entries
+	 * (a localhost dev server is not constructible from a number). Published
+	 * versions carry `registryVersion` and the shell constructs the stable
+	 * `/apps/<appId>/v<N>/remoteEntry.js` URL itself (versionedEntryUrl).
+	 */
+	entry?: string;
+	/** Registry version number the entry resolves to (the scope-walk winner). */
+	registryVersion?: number;
 	/** Whether the app UI requires auth to render. */
 	authenticated?: boolean;
 	/** Whether the app is visible to unauthenticated users. */
@@ -497,44 +504,61 @@ export function resetRemote(moduleId: string): void {
 	registerRemotes([{ name: moduleId, entry }], { force: true });
 }
 
-export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEntry[] {
-	// Drop entries missing a remoteEntry URL — the server may include
-	// apps that have no built UI yet (e.g. server-only nodes).
-	// Without this guard, MF's normalizeRemote crashes on undefined.
-	const validApps = serverApps.filter((a) => a.entry);
-
-	// Session version overrides (desktop version selector / ?version= deep
-	// link) with a minted URL substitute the manifest default SYNCHRONOUSLY
-	// at registration time — the boot path can then never race a load with
-	// an async repoint. Dev-overlay entries are exempt: the live build wins.
-	const overrides = getAppVersionOverrides();
-	const overrideOf = (a: ServerAppEntry): { url: string; appVersion?: string } | null => {
-		const o = overrides[a.id];
-		return o?.url && !a.dev ? { url: o.url, appVersion: o.appVersion } : null;
-	};
-
-	// Session-affine dev entry: a page launched from a specific editor
-	// carries that editor's session nonce and prefers ITS dev server over
-	// the newest-registration default the server pre-picked into `entry` —
-	// two editors dev-serving one app each preview their own build. The
-	// nonce persists per tab because the OAuth redirect strips the query.
-	const sessionNonce = ((): string => {
-		try {
-			const fromUrl = new URLSearchParams(window.location.search).get('rrsession') ?? '';
-			if (fromUrl) {
-				sessionStorage.setItem('rr:devSession', fromUrl);
-				return fromUrl;
-			}
-			return sessionStorage.getItem('rr:devSession') ?? '';
-		} catch {
-			return '';
+// Session-affine dev entry: a page launched from a specific editor
+// carries that editor's session nonce and prefers ITS dev server over
+// the newest-registration default the server pre-picked into `entry` —
+// two editors dev-serving one app each preview their own build. The
+// nonce persists per tab because the OAuth redirect strips the query.
+function sessionNonce(): string {
+	try {
+		const fromUrl = new URLSearchParams(window.location.search).get('rrsession') ?? '';
+		if (fromUrl) {
+			sessionStorage.setItem('rr:devSession', fromUrl);
+			return fromUrl;
 		}
-	})();
-	const devEntryOf = (a: ServerAppEntry): string | null => {
-		if (!sessionNonce || !a.devEntries?.length) return null;
-		return a.devEntries.find((d) => d.session === sessionNonce)?.url ?? null;
+		return sessionStorage.getItem('rr:devSession') ?? '';
+	} catch {
+		return '';
+	}
+}
+
+/**
+ * The COMPLETE load-URL resolution for one server app entry.
+ *
+ * The wire carries version NUMBERS, never URL strings: only dev entries
+ * ship a URL (a localhost dev server is not constructible from a number);
+ * everything else constructs the stable versioned URL from the tab's
+ * session override or the manifest's resolved default. Session version
+ * overrides (desktop version selector / `?version=` deep link) substitute
+ * the default SYNCHRONOUSLY at registration time — the boot path can then
+ * never race a load with an async repoint. Dev entries are exempt from
+ * overrides: the live build wins.
+ *
+ * @param a - The server app entry.
+ * @returns The load URL, or null when nothing resolves (no built UI yet).
+ */
+export function resolveServerEntry(a: ServerAppEntry): string | null {
+	const nonce = sessionNonce();
+	const sessionDev = nonce && a.devEntries?.length ? a.devEntries.find((d) => d.session === nonce)?.url : undefined;
+	if (sessionDev) return sessionDev;
+	if (a.dev) return a.entry ?? null;
+	const o = getAppVersionOverrides()[a.id];
+	if (o) return versionedEntryUrl(a.id, o.version);
+	return typeof a.registryVersion === 'number' ? versionedEntryUrl(a.id, a.registryVersion) : null;
+}
+
+export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEntry[] {
+	const overrides = getAppVersionOverrides();
+	const overrideOf = (a: ServerAppEntry): { version: number; appVersion?: string } | null => {
+		const o = overrides[a.id];
+		return o && !a.dev ? o : null;
 	};
-	const resolvedEntry = (a: ServerAppEntry): string => devEntryOf(a) ?? overrideOf(a)?.url ?? a.entry;
+	const resolvedEntry = resolveServerEntry;
+
+	// Drop entries that resolve to no load URL — the server may include
+	// apps that have no built UI yet (e.g. server-only nodes). Without this
+	// guard, MF's normalizeRemote crashes on undefined.
+	const validApps = serverApps.filter((a) => resolvedEntry(a) !== null);
 
 	// Register all MF remotes so loadRemote() can resolve them.
 	// force: true overwrites any previously registered remotes (e.g. from
@@ -542,12 +566,12 @@ export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEnt
 	// NEVER (re)registered from the manifest — the dev entry stays live.
 	const registrable = validApps.filter((a) => !devRemoteModules.has(a.moduleId));
 	registerRemotes(
-		registrable.map((a) => ({ name: a.moduleId, entry: resolvedEntry(a) })),
+		registrable.map((a) => ({ name: a.moduleId, entry: resolvedEntry(a) as string })),
 		{ force: true },
 	);
 
 	// Record the registered URLs so resetRemote() can rebuild a container.
-	for (const a of registrable) registeredEntries.set(a.moduleId, resolvedEntry(a));
+	for (const a of registrable) registeredEntries.set(a.moduleId, resolvedEntry(a) as string);
 
 	// Map server entries to runtime AppManifestEntry objects with lazy loaders
 	return validApps.map((a) => ({
@@ -563,8 +587,9 @@ export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEnt
 		configuration: a.configuration as AppConfiguration | undefined,
 		authenticated: a.authenticated,
 		public:        a.public,
-		// Version chip data — an applied override's semver wins the display
+		// Version chip data — an applied override wins the display
 		version:       overrideOf(a)?.appVersion ?? a.version,
+		registryVersion: overrideOf(a)?.version ?? a.registryVersion,
 		dev:           a.dev,
 		load: () => {
 			// Local override wins over the MF remote — checked per CALL so a

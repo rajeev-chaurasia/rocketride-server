@@ -46,8 +46,14 @@ from types import SimpleNamespace
 import pytest
 
 from ai.account import account as account_singleton
-from ai.account import dev_overlay, file_store
-from ai.account.app_deploy import handle_app_add, handle_deploy_app, resolve_app_pins
+from ai.account import dev_overlay
+from ai.account.app_deploy import (
+    entitled_version_dirs,
+    handle_app_add,
+    handle_deploy_app,
+    open_version_dirs,
+    resolve_app_pins,
+)
 from ai.account.store import Store
 
 
@@ -107,7 +113,7 @@ class _FakeRegistry:
         ``build`` is the version's metadata.build.status — 'ok' by default
         (a servable version is the normal case; the worker stamps it after
         compiling); pass 'queued'/'building'/'failed' to exercise the built
-        gates, or None for a pre-worker legacy row with no build blob.
+        gates, or None to omit the build blob entirely (an unbuilt row).
         """
         metadata = {'manifest': manifest or {'name': 'Brandy', 'version': app_version}}
         if build is not None:
@@ -122,7 +128,7 @@ class _FakeRegistry:
                 'publishedBy': {'userId': publisher_id, 'display': 'Dev', 'email': 'dev@example.com'},
                 'comment': f'v{app_version}',
                 # Same shape the real backend records — the content home (and
-                # therefore entry minting) derives from this path.
+                # therefore the servable dist/ dir) derives from this path.
                 'artifactPath': f'orgs/org1/files/.deployments/acme.brandy/v{version:06d}-fakesha{version}.json',
             }
         )
@@ -164,7 +170,9 @@ class _FakeRegistry:
         """Patch the account singleton's rail + publish methods."""
 
         async def deployments_versions(org_id, project_id):
-            return list(self.versions)
+            # The rail is ORG-scoped (every fake row belongs to org1) — the
+            # serving resolvers' developer-org arm depends on this scoping.
+            return list(self.versions) if org_id in ('org1', 'local') else []
 
         async def deployments_artifact(org_id, project_id, version):
             return self.artifacts[version]
@@ -231,14 +239,23 @@ class _FakeRegistry:
             self.set_calls.append({'audience': dict(audience), 'version': version, 'snapshot': snapshot})
             return row
 
+        def _art_path(version):
+            """The deployment's registry JSON path, for publish rows."""
+            for v in self.versions:
+                if int(v.get('version', 0)) == int(version):
+                    return str(v.get('artifactPath') or '')
+            return ''
+
         def _with_state(row):
-            """Refresh the joined artifactState/artifactBuild (the deployment
-            may have moved) — the same join both real backends perform.
+            """Refresh the joined artifactState/artifactBuild/artifactPath
+            (the deployment may have moved) — the same join both real
+            backends perform.
             """
             return {
                 **row,
                 'artifactState': _art_state(row.get('version')),
                 'artifactBuild': _art_build(row.get('version')),
+                'artifactPath': _art_path(row.get('version')),
             }
 
         async def publish_get(org_id, kind, app_id, audience):
@@ -310,17 +327,6 @@ def content_store(monkeypatch, tmp_path):
 def _written(root):
     """Physical files under the temp store root: relative posix path -> bytes."""
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob('*') if p.is_file()}
-
-
-@pytest.fixture
-def mint(monkeypatch):
-    """Deterministic signed-URL minter; records nothing, raises never."""
-
-    def mint_directory_url(bundle_dir, name, sub=None):
-        return f'https://signed/{bundle_dir}/{name}?sub={sub}'
-
-    monkeypatch.setattr(file_store, 'mint_directory_url', mint_directory_url)
-    return mint_directory_url
 
 
 @pytest.fixture
@@ -958,76 +964,66 @@ async def test_disable_flips_the_audience_row(registry):
 
 
 # =============================================================================
-# ENTRY — mint a signed URL for ONE version, entitlement-checked, int-only
+# SERVING RESOLVERS — the /apps/<appId>/v<N>/ route's entitlement backing
 # =============================================================================
+# The `entry` verb is retired: nothing is minted. Clients construct the
+# stable versioned URL from a version number, and the serve route asks
+# these resolvers which versions the caller may fetch.
 
 
-@pytest.mark.asyncio
-async def test_entry_is_registry_int_only(registry, mint):
-    """Semver strings are display-only — entry refuses them."""
-    registry.add_version(1, '1.0.0')
-    registry.seed_publish(AUD_TEAM, 1)
-    conn = _FakeConn(teams=_TEAMS)
-    result = await handle_deploy_app(conn, _request('entry', version='1.0.0'))
-    assert result['success'] is False
-    assert 'registry version number' in result['message']
-
-
-@pytest.mark.asyncio
-async def test_entry_mints_for_visible_publishes(registry, mint):
-    """A version served by a caller-visible row mints the signed entry URL."""
-    registry.add_version(1, '1.0.0')
-    registry.seed_publish(AUD_TEAM, 1)
-
-    conn = _FakeConn(teams=_TEAMS)
-    result = await handle_deploy_app(conn, _request('entry', version=1))
-
-    body = result['body']
-    # Zip-mode artifacts derive the serving dir by convention — the dist/
-    # subtree of the artifact's .deployments sibling directory (written by
-    # the build worker; the seeder writes the same layout)
-    assert (
-        body['url']
-        == 'https://signed/orgs/org1/files/.deployments/acme.brandy/v000001-fakesha1/dist/remoteEntry.js?sub=app-entry'
+def _info(user_id='u1', org_id='org1', teams=None):
+    """The AccountInfo stand-in the serve-route resolvers receive."""
+    return SimpleNamespace(
+        userId=user_id,
+        organization={'id': org_id, 'teams': _TEAMS if teams is None else teams},
     )
-    assert body['moduleId'] == 'acme_brandy'
-    assert (body['appVersion'], body['registryVersion']) == ('1.0.0', 1)
+
+
+# The dist/ dir the fake's v1 artifactPath maps to — the .json sibling's
+# content dir (the layout both the build worker and the seeder write).
+_V1_DIST = 'orgs/org1/files/.deployments/acme.brandy/v000001-fakesha1/dist'
 
 
 @pytest.mark.asyncio
-async def test_entry_public_counts_only_when_deployment_ready(registry, mint):
+async def test_entitled_dirs_from_visible_publishes(registry):
+    """An enabled caller-visible binding entitles its version's dist tree."""
+    registry.add_version(1, '1.0.0')
+    registry.seed_publish(AUD_TEAM, 1)
+
+    assert await entitled_version_dirs(_info(), 'acme.brandy') == {1: _V1_DIST}
+    # A caller outside the team AND outside the developer org has no road
+    # to it (org2 has no rail for the app; the binding is team-scoped).
+    assert await entitled_version_dirs(_info(user_id='u2', org_id='org2', teams=[]), 'acme.brandy') == {}
+
+
+@pytest.mark.asyncio
+async def test_entitled_public_counts_only_when_deployment_ready(registry):
     """A public binding on an un-approved deployment grants nothing; once the
-    DEPLOYMENT is 'ready' it serves everyone.
+    DEPLOYMENT is 'ready' it serves everyone — anonymous callers included.
     """
     registry.add_version(1, '1.0.0', publisher_id='someone-else', state='submit')
     registry.seed_publish(AUD_PUBLIC, 1)
 
-    conn = _FakeConn(teams=_TEAMS)
-    blocked = await handle_deploy_app(conn, _request('entry', version=1))
-    assert blocked['success'] is False
+    assert await entitled_version_dirs(None, 'acme.brandy') == {}
 
     registry.versions[0]['state'] = 'ready'
-    served = await handle_deploy_app(conn, _request('entry', version=1))
-    assert served['success'] is True
+    assert await entitled_version_dirs(None, 'acme.brandy') == {1: _V1_DIST}
 
 
 @pytest.mark.asyncio
-async def test_entry_deployer_is_entitled(registry, mint):
-    """The deployer of a version may mint it before any publish exists."""
+async def test_entitled_developer_org_before_any_publish(registry):
+    """The developer ORG's own built rail is entitled with no binding at all
+    (the developer flow — the version picker lists the rail published or
+    not). Org-scoped: every org member gets serving parity with the DEPLOY
+    view's rail visibility; a caller from another org gets nothing.
+    """
     registry.add_version(1, '1.0.0', publisher_id='u1')
-    conn = _FakeConn(teams=_TEAMS)
-    result = await handle_deploy_app(conn, _request('entry', version=1))
-    assert result['success'] is True
 
-
-@pytest.mark.asyncio
-async def test_entry_rejects_non_app_artifacts(registry, mint):
-    """Pipeline deployments share the registry — entry only mints app artifacts."""
-    registry.add_version(1, '1.0.0', publisher_id='u1', kind='pipeline')
-    conn = _FakeConn(teams=_TEAMS)
-    result = await handle_deploy_app(conn, _request('entry', version=1))
-    assert result['success'] is False
-    assert 'not an app artifact' in result['message']
+    assert await entitled_version_dirs(_info(), 'acme.brandy') == {1: _V1_DIST}
+    # Same org, different user — the rail is the ORG's, not the deployer's.
+    assert await entitled_version_dirs(_info(user_id='u2', teams=[]), 'acme.brandy') == {1: _V1_DIST}
+    # Another org entirely: no rail, no binding, no road.
+    assert await entitled_version_dirs(_info(user_id='u3', org_id='org2', teams=[]), 'acme.brandy') == {}
 
 
 # =============================================================================
@@ -1036,21 +1032,22 @@ async def test_entry_rejects_non_app_artifacts(registry, mint):
 
 
 @pytest.mark.asyncio
-async def test_entry_refuses_unbuilt_and_failed_builds(registry, mint):
-    """Minting an unbuilt version would sign a URL to an empty dist/ —
-    refused with the build reason (still building vs build failed).
-    """
+async def test_entitled_excludes_unbuilt_and_failed_builds(registry):
+    """An unbuilt version has an empty dist/ — never entitled, bound or not."""
     registry.add_version(1, '1.0.0', publisher_id='u1', build='building')
     registry.add_version(2, '1.0.1', publisher_id='u1', build='failed')
-    conn = _FakeConn(teams=_TEAMS)
+    registry.seed_publish(AUD_TEAM, 1)
 
-    building = await handle_deploy_app(conn, _request('entry', version=1))
-    assert building['success'] is False
-    assert 'still building' in building['message']
+    assert await entitled_version_dirs(_info(), 'acme.brandy') == {}
 
-    failed = await handle_deploy_app(conn, _request('entry', version=2))
-    assert failed['success'] is False
-    assert 'failed its server build' in failed['message']
+
+@pytest.mark.asyncio
+async def test_open_dirs_serve_every_built_version(registry):
+    """OSS serving is open: every BUILT version resolves, unbuilt never."""
+    registry.add_version(1, '1.0.0')
+    registry.add_version(2, '1.1.0', build='building')
+
+    assert await open_version_dirs('acme.brandy') == {1: _V1_DIST}
 
 
 @pytest.mark.asyncio
@@ -1084,7 +1081,7 @@ async def test_publish_refuses_unbuilt_version(registry, quiet_push):
 
 
 @pytest.mark.asyncio
-async def test_resolve_app_pins_skips_unbuilt_versions(registry, mint):
+async def test_resolve_app_pins_skips_unbuilt_versions(registry):
     """The scope walk serves a pin only once its version's build is ok —
     an unbuilt pin is silently absent from the manifest until then.
     """
@@ -1106,7 +1103,7 @@ async def test_resolve_app_pins_skips_unbuilt_versions(registry, mint):
 
 
 @pytest.mark.asyncio
-async def test_resolve_app_pins_most_specific_audience_wins(registry, mint):
+async def test_resolve_app_pins_most_specific_audience_wins(registry):
     """On id collisions the user binding beats team, team beats public."""
     registry.add_version(1, '1.0.0', state='ready')
     registry.add_version(2, '1.1.0', state='private')
@@ -1119,10 +1116,14 @@ async def test_resolve_app_pins_most_specific_audience_wins(registry, mint):
     assert resolved[0]['id'] == 'acme.brandy'
     assert resolved[0]['version'] == '1.1.0'
     assert resolved[0]['public'] is False
+    # The wire carries the version NUMBER, never a URL — clients construct
+    # /apps/<appId>/v<N>/remoteEntry.js from registryVersion themselves.
+    assert resolved[0]['registryVersion'] == 2
+    assert 'entry' not in resolved[0]
 
 
 @pytest.mark.asyncio
-async def test_resolve_public_serves_only_ready_deployments(registry, mint):
+async def test_resolve_public_serves_only_ready_deployments(registry):
     """A public binding whose deployment is not 'ready' never reaches the store;
     a disabled binding never serves.
     """
@@ -1140,7 +1141,7 @@ async def test_resolve_public_serves_only_ready_deployments(registry, mint):
 
 
 @pytest.mark.asyncio
-async def test_resolve_internal_serves_unapproved_but_not_failed(registry, mint):
+async def test_resolve_internal_serves_unapproved_but_not_failed(registry):
     """Internal (team/user) bindings serve any internal-eligible deployment
     ('private'/'submit'/'ready') but never a 'failed' one.
     """

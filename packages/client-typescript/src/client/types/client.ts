@@ -454,8 +454,16 @@ export interface AppManifestEntry {
 	/** App-specific setting definitions. */
 	settings?: unknown[];
 
-	/** URL to the app's Module Federation remote entry file. */
-	entry: string;
+	/**
+	 * URL to the app's Module Federation remote entry file — present ONLY
+	 * for dev-overlay entries (a localhost dev server is not constructible
+	 * from a number). Published versions carry `registryVersion` instead and
+	 * clients construct `/apps/<appId>/v<N>/remoteEntry.js` themselves.
+	 */
+	entry?: string;
+
+	/** Registry version number the entry resolves to (the scope-walk winner). */
+	registryVersion?: number;
 
 	/** App version string (semver). */
 	version?: string;
