@@ -531,8 +531,15 @@ function sessionNonce(): string {
  * session override or the manifest's resolved default. Session version
  * overrides (desktop version selector / `?version=` deep link) substitute
  * the default SYNCHRONOUSLY at registration time — the boot path can then
- * never race a load with an async repoint. Dev entries are exempt from
- * overrides: the live build wins.
+ * never race a load with an async repoint.
+ *
+ * Precedence: App Builder preview session (nonce) > explicit version
+ * override > dev overlay > published default. An explicit override
+ * outranks the dev overlay on purpose — the user picked a SERVER version
+ * from the desktop selector, so the tile serves (and presents as) that
+ * version even while an editor keeps a live registration. The App Builder
+ * preview is unaffected: its session nonce always wins, so the editor's
+ * own preview never loses its live build.
  *
  * @param a - The server app entry.
  * @returns The load URL, or null when nothing resolves (no built UI yet).
@@ -541,17 +548,19 @@ export function resolveServerEntry(a: ServerAppEntry): string | null {
 	const nonce = sessionNonce();
 	const sessionDev = nonce && a.devEntries?.length ? a.devEntries.find((d) => d.session === nonce)?.url : undefined;
 	if (sessionDev) return sessionDev;
-	if (a.dev) return a.entry ?? null;
 	const o = getAppVersionOverrides()[a.id];
 	if (o) return versionedEntryUrl(a.id, o.version);
+	if (a.dev) return a.entry ?? null;
 	return typeof a.registryVersion === 'number' ? versionedEntryUrl(a.id, a.registryVersion) : null;
 }
 
 export function registerAndMapApps(serverApps: ServerAppEntry[]): AppManifestEntry[] {
 	const overrides = getAppVersionOverrides();
+	// An explicit override applies to dev-flagged entries too — it outranks
+	// the dev overlay (see resolveServerEntry's precedence), so the mapped
+	// entry's version chip must reflect the overridden server version.
 	const overrideOf = (a: ServerAppEntry): { version: number; appVersion?: string } | null => {
-		const o = overrides[a.id];
-		return o && !a.dev ? o : null;
+		return overrides[a.id] ?? null;
 	};
 	const resolvedEntry = resolveServerEntry;
 
