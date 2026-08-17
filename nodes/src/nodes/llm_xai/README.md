@@ -50,7 +50,9 @@ Default: **Grok 3** (`grok-3`).
 
 </details>
 
-The `grok-4-20` profiles use OpenRouter-style model IDs and expose the API key field for that source.
+The `grok-3-beta`, `grok-3-mini-beta`, `grok-4-fast`, `grok-4-1-fast`,
+`grok-4-20`, and `grok-4-20-multi-agent` profiles use OpenRouter-style model
+IDs and expose the API key field for that source.
 
 ## Configuration
 
@@ -62,7 +64,7 @@ For `custom`, enter an xAI model ID and a positive context limit. The initial co
 
 ## Authentication
 
-Provide an xAI API key in the `apikey` field. The key is validated at pipeline start: it must begin with the `xai-` prefix, otherwise the node raises `Invalid XAI API key format, please check your API key.`
+For xAI-hosted profiles, provide an xAI API key in the `apikey` field. The key is validated at pipeline start: it must begin with the `xai-` prefix, otherwise the node raises `Invalid XAI API key format, please check your API key.` OpenRouter-sourced profiles use the key field exposed for that source instead.
 
 The key is also checked at save time with a minimal probe request, so invalid keys, unknown models, or network problems surface as warnings in the UI before the pipeline runs.
 
