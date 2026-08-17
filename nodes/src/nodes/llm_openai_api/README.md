@@ -28,7 +28,8 @@ and message, truncated to 500 characters.
 
 ## Profiles
 
-Default: **Custom OpenAI-compatible endpoint** (`custom`).
+Generic endpoint default: **Custom OpenAI-compatible endpoint** (`custom`).
+Nebius preset default: **Llama 3.3 70B** (`llama-3-3-70b`).
 
 The directory documents the generic endpoint and the Nebius branded preset in one
 combined profile table.
@@ -62,8 +63,9 @@ combined table require no model or endpoint edits.
 Nebius profiles default the API key to the `${ROCKETRIDE_NEBIUS_KEY}` environment
 substitution, so no per-node key entry is needed when that variable is set. The Nebius
 service also exposes its own `custom` option for another Token Factory model, retaining
-the pinned endpoint and environment-backed key. The combined table represents the
-duplicate `custom` key once, using the generic service's merged 32,768-token default.
+the pinned endpoint, environment-backed key, and 131,072-token context limit. The
+combined table represents the duplicate `custom` key once, using the generic service's
+merged 32,768-token default.
 
 ## Authentication
 
