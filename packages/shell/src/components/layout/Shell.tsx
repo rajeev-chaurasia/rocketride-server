@@ -430,6 +430,9 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 			if (repointRemote(app.moduleId, url)) {
 				invalidateAppDescriptor(appId);
 			} else {
+				// EVERY automatic reload names itself — a silent reload turns
+				// the next loop regression into an afternoon of inference.
+				console.warn(`[shell] reloading: version override for ${appId} needs ${url} but its container already loaded`);
 				window.location.reload();
 				return;
 			}
@@ -456,6 +459,7 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 	// user's current default org.
 	useEffect(() => {
 		return cm.on('shell:orgChanged', () => {
+			console.warn('[shell] reloading: default org changed — re-authenticating under the new org');
 			window.location.reload();
 		});
 	}, [cm]);
@@ -495,6 +499,7 @@ const Shell: React.FC<ShellProps> = ({ config }) => {
 			const data = e.data as { type?: string; token?: string } | undefined;
 			if (data?.type === 'login' && data.token) {
 				cm.saveToken(data.token);
+				console.warn('[shell] reloading: auth popup delivered a session over rr:auth');
 				window.location.reload();
 			}
 		};

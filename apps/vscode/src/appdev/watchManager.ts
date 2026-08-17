@@ -21,6 +21,8 @@
  */
 
 import * as vscode from 'vscode';
+import * as path from 'path';
+import { existsSync } from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 import { ConnectionManager } from '../connection/connection';
 import { extractInstallCause, isTransientLockError, setWorkspaceInstallDelegate } from './appTypes';
@@ -322,8 +324,10 @@ export class WatchManager {
 			// Never allocate a console window for the guard or its tree.
 			windowsHide: true,
 			// POSIX: make the guard its own process GROUP (rsbuild joins it)
-			// so stop() can signal the whole tree (kill(-pid)); Windows uses
-			// taskkill /T for the same whole-tree guarantee.
+			// so the guard's die() can fell the whole tree with one group
+			// signal. On Windows the guard kills its subtree itself via
+			// direct syscalls (see devServerGuard.cjs) — stop() only closes
+			// the guard's stdin, on both platforms.
 			detached: process.platform !== 'win32',
 		});
 
@@ -476,38 +480,44 @@ export class WatchManager {
 		if (session.pkgTimer) clearTimeout(session.pkgTimer);
 		session.pkgWatcher?.dispose();
 		try {
-			// Windows: kill() only reaches the immediate process — rsbuild's
-			// children (the dev server) survive and squat the port across
-			// reloads. taskkill /T fells the whole tree — and it must be
-			// AWAITED: restart() runs stop()→start() back-to-back, and a
-			// fire-and-forget kill races the new spawn. The old server still
-			// holds the configured port, rsbuild silently bumps the new one
-			// to the next free port, and the preview's registration keeps
-			// pointing at the ZOMBIE's stale bundle — an unkillable reload
-			// loop that survives every watch restart.
-			if (process.platform === 'win32' && session.proc.pid) {
-				const pid = session.proc.pid;
-				await new Promise<void>((resolve) => {
-					const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
-					killer.on('exit', () => resolve());
-					killer.on('error', () => resolve());
-					// Never hang stop() on a wedged taskkill.
-					setTimeout(resolve, 3000);
+			// The tether IS the stop verb: closing the guard's stdin tells it
+			// to fell its own tree — the guard owns every process below
+			// itself, and this watcher performs NO tree logic (Windows tree
+			// walks from out here were exactly what leaked orphans). AWAITED:
+			// restart() runs stop()→start() back-to-back, and the guard's
+			// verified cleanup must release the port before the new spawn
+			// probes it — otherwise rsbuild silently bumps to the next free
+			// port and the preview's registration points at a zombie (the
+			// unkillable reload loop).
+			if (session.proc.pid) {
+				const exited = new Promise<boolean>((resolve) => {
+					session.proc.once('exit', () => resolve(true));
 				});
-			} else if (session.proc.pid) {
-				// POSIX: signal the process GROUP (negative pid — the spawn is
-				// detached, so the tree is its own group), then escalate. A
-				// bare proc.kill() would orphan the rsbuild grandchild.
-				const pid = session.proc.pid;
 				try {
-					process.kill(-pid, 'SIGTERM');
-				} catch {
-					session.proc.kill();
+					session.proc.stdin?.destroy();
+				} catch { /* pipe already closed — the guard is reacting */ }
+				const finished = await Promise.race([
+					exited,
+					new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000)),
+				]);
+				if (!finished) {
+					// A wedged guard is the ONLY case the watcher touches the
+					// tree, and only as a last resort (best-effort by nature).
+					this.logger.output(`[appdev] watch stop: guard for ${appId} ignored stdin close — escalating`);
+					const pid = session.proc.pid;
+					if (process.platform === 'win32') {
+						await new Promise<void>((resolve) => {
+							const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+							killer.on('exit', () => resolve());
+							killer.on('error', () => resolve());
+							setTimeout(resolve, 3000);
+						});
+					} else {
+						try {
+							process.kill(-pid, 'SIGKILL');
+						} catch { /* group already gone */ }
+					}
 				}
-				await new Promise<void>((resolve) => setTimeout(resolve, 1500));
-				try {
-					process.kill(-pid, 'SIGKILL');
-				} catch { /* group already gone — the normal case */ }
 			} else {
 				session.proc.kill();
 			}
@@ -663,7 +673,9 @@ export class WatchManager {
 				// shim leaves them alive on the shared store, and the chained
 				// next-generation install then starts a SECOND pnpm on the same
 				// root — the store-corrupting overlap this module forbids.
-				// Matches doStart/doStop; Windows uses taskkill /T instead.
+				// Windows uses taskkill /T (the install is a short-lived
+				// extension-owned child — unlike the dev server, it runs
+				// without a guard).
 				detached: process.platform !== 'win32',
 			});
 			// Mirror installer output into every open panel's Console, and
@@ -921,15 +933,28 @@ export class WatchManager {
  * @param appRoot - The app's absolute folder path.
  */
 export function resolveRsbuildInvocation(appRoot: string): { cmd: string; args: string[]; shell: boolean } {
-	try {
-		const binPath = require.resolve('@rsbuild/core/bin/rsbuild.js', { paths: [appRoot] });
-		return { cmd: process.execPath, args: [binPath], shell: false };
-	} catch {
-		// --ignore-workspace keeps the exec scoped to the app folder — inside
-		// an enclosing pnpm workspace a bare exec goes recursive across ITS
-		// projects (ERR_PNPM_RECURSIVE_EXEC) instead of running the app's bin.
-		return { cmd: 'pnpm', args: ['--ignore-workspace', 'exec', 'rsbuild'], shell: process.platform === 'win32' };
+	// HAND-ROLLED resolution, never require.resolve: inside the esbuild-
+	// bundled extension the bundler's require shim cannot do real
+	// filesystem resolution, so the resolve always threw and silently
+	// forced EVERY dev server onto the pnpm-exec fallback — a
+	// guard->cmd->pnpm->cmd->rsbuild chain whose depth is exactly what let
+	// kills leak orphans on Windows (no parent-death cascade there). The
+	// walk mirrors Node's own: the app's node_modules first, then hoisted
+	// parents up the tree.
+	let current = appRoot;
+	for (let hop = 0; hop < 6; hop++) {
+		const candidate = path.join(current, 'node_modules', '@rsbuild', 'core', 'bin', 'rsbuild.js');
+		if (existsSync(candidate)) {
+			return { cmd: process.execPath, args: [candidate], shell: false };
+		}
+		const parent = path.dirname(current);
+		if (parent === current) break;
+		current = parent;
 	}
+	// --ignore-workspace keeps the exec scoped to the app folder — inside
+	// an enclosing pnpm workspace a bare exec goes recursive across ITS
+	// projects (ERR_PNPM_RECURSIVE_EXEC) instead of running the app's bin.
+	return { cmd: 'pnpm', args: ['--ignore-workspace', 'exec', 'rsbuild'], shell: process.platform === 'win32' };
 }
 
 /** Module-level accessor wiring (set once in extension activation). */

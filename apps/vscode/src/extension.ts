@@ -33,7 +33,7 @@ import { getLogger } from './shared/util/output';
 import { icons } from './shared/util/icons';
 
 // import { registerDebugger } from './debugger/adapter'; // Disabled: debugger removed from package.json
-import { ConnectionManager } from './connection/connection';
+import { ConnectionManager, disconnectCloudConnections } from './connection/connection';
 import { DeployManager } from './connection/deploy-manager';
 import { ConfigManager } from './config';
 import { savePipelineDocument } from './shared/util/pipelineSave';
@@ -474,14 +474,27 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 			vscode.env.openExternal(vscode.Uri.parse('https://docs.rocketride.org/'));
 		}),
 		vscode.commands.registerCommand('rocketride.sidebar.connection.connect', async () => {
-			await connectionManager?.connect();
+			try {
+				await connectionManager?.connect();
+			} catch (error) {
+				// Surface the failure as a readable notification instead of the
+				// raw command-error toast; connect() has already published the
+				// DISCONNECTED/AUTH_FAILED state to the status surfaces.
+				const msg = error instanceof Error ? error.message : String(error);
+				vscode.window.showErrorMessage(`RocketRide: failed to connect: ${msg}`);
+			}
 		}),
 		vscode.commands.registerCommand('rocketride.sidebar.connection.disconnect', async () => {
 			await connectionManager?.disconnect();
 		}),
 		vscode.commands.registerCommand('rocketride.sidebar.connection.reconnect', async () => {
-			await connectionManager?.disconnect();
-			await connectionManager?.connect();
+			try {
+				await connectionManager?.disconnect();
+				await connectionManager?.connect();
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				vscode.window.showErrorMessage(`RocketRide: failed to reconnect: ${msg}`);
+			}
 		}),
 		vscode.commands.registerCommand('rocketride.page.status.open', (projectId: string, sourceId: string, displayName: string) => {
 			status?.show(projectId, sourceId, displayName);
@@ -579,6 +592,10 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand('rocketride.cloud.logout', async () => {
 			const cloudAuth = CloudAuthProvider.getInstance();
 			await cloudAuth.signOut();
+			// A direct sign-out applies immediately — take the live cloud
+			// connection down with the credential so no surface keeps showing
+			// a connected session that storage no longer backs.
+			await disconnectCloudConnections();
 		}),
 
 		// Stub commands — run/stop/open are handled via webview messages now,

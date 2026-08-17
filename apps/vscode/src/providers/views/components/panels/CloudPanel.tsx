@@ -43,6 +43,12 @@ export interface CloudPanelProps {
 	/** Trigger the OAuth sign-in flow. */
 	onCloudSignIn: () => void;
 	onCloudSignOut: () => void;
+	/** Staged (uncommitted) auth change — a completed sign-in or a requested
+	 * sign-out that applies only when the user saves. Rendered as a pending
+	 * row with an Undo action. */
+	pending?: { signIn: boolean; signOut: boolean; userName: string; url: string };
+	/** Discard the staged auth change (the pending row's Undo). */
+	onUndoPending?: () => void;
 	/** Unique prefix for HTML element IDs. */
 	idPrefix: string;
 	/** When true, hides advanced fields (used on Welcome page). */
@@ -63,6 +69,9 @@ export interface CloudPanelProps {
 	 * undefined = probing in progress, false = incompatible server.
 	 */
 	isSaas?: boolean;
+	/** The probe could not REACH the server (transport failure) — distinct
+	 * from a reachable server that does not support RocketRide Cloud. */
+	probeUnreachable?: boolean;
 	/** Called on mount to probe the cloud server. Receives the cloud endpoint URL. */
 	onProbeServer?: (cloudUrl: string) => void;
 	/** Whether the user has an active subscription. When false, shows a subscribe button. */
@@ -89,7 +98,7 @@ const serverIdentity = (url: string): string => {
 	}
 };
 
-export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUserName, cloudSignedInUrl, waitlisted, waitlistedName, onCloudSignIn, onCloudSignOut, idPrefix, simplified, useCustomServer, customUrl, defaultCloudUrl, onUseCustomServerChange, onCustomUrlChange, isSaas, onProbeServer, isSubscribed, onFetchPlans, onCreateCheckout, onConfirmPending, onCheckoutSuccess }) => {
+export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUserName, cloudSignedInUrl, waitlisted, waitlistedName, onCloudSignIn, onCloudSignOut, pending, onUndoPending, idPrefix, simplified, useCustomServer, customUrl, defaultCloudUrl, onUseCustomServerChange, onCustomUrlChange, isSaas, probeUnreachable, onProbeServer, isSubscribed, onFetchPlans, onCreateCheckout, onConfirmPending, onCheckoutSuccess }) => {
 	const theme = useTheme();
 	const [showCheckout, setShowCheckout] = useState(false);
 
@@ -156,14 +165,73 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 				</div>
 			)}
 
-			{/* Probing server... */}
-			{isSaas === undefined && <div style={S.modeConfigDesc}>Checking server compatibility...</div>}
+			{/* Probing server... (only before the FIRST result — a re-probe keeps
+			    showing the last result instead of flickering back to this) */}
+			{!probeUnreachable && isSaas === undefined && <div style={S.modeConfigDesc}>Checking server compatibility...</div>}
 
-			{/* Server does not support cloud/OAuth */}
-			{isSaas === false && <div style={{ padding: '12px 16px', borderRadius: 4, backgroundColor: 'var(--vscode-inputValidation-warningBackground, #4d3a00)', border: '1px solid var(--vscode-inputValidation-warningBorder, #f0c000)', color: 'var(--rr-text-primary)', fontSize: 13, lineHeight: 1.5 }}>The configured server does not support RocketRide Cloud. Cloud mode requires a RocketRide Cloud server. Please use a different connection mode.</div>}
+			{/* Server cannot be reached (transport failure) — distinct from a
+			    reachable server that lacks cloud support */}
+			{probeUnreachable && <div style={{ padding: '12px 16px', borderRadius: 4, backgroundColor: 'var(--vscode-inputValidation-warningBackground, #4d3a00)', border: '1px solid var(--vscode-inputValidation-warningBorder, #f0c000)', color: 'var(--rr-text-primary)', fontSize: 13, lineHeight: 1.5 }}>The server at {cloudUrl || 'the configured address'} cannot be reached. Check the address and that the server is running.</div>}
 
-			{/* Sign-in status — only when server supports cloud */}
-			{isSaas && cloudSignedIn && (
+			{/* Server answered but does not support cloud/OAuth */}
+			{!probeUnreachable && isSaas === false && <div style={{ padding: '12px 16px', borderRadius: 4, backgroundColor: 'var(--vscode-inputValidation-warningBackground, #4d3a00)', border: '1px solid var(--vscode-inputValidation-warningBorder, #f0c000)', color: 'var(--rr-text-primary)', fontSize: 13, lineHeight: 1.5 }}>The configured server does not support RocketRide Cloud. Cloud mode requires a RocketRide Cloud server. Please use a different connection mode.</div>}
+
+			{/* Staged sign-in — a completed browser sign-in that applies when the
+			    user saves. Rendered regardless of the probe state (it is a fact
+			    about the sign-in, not about the form's current target). */}
+			{pending?.signIn && (
+				<div style={S.formGroup}>
+					<div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
+						<span style={{ fontSize: 20, color: 'var(--vscode-editorWarning-foreground, #e2b93d)' }}>&#10003;</span>
+						<div>
+							<div style={{ fontWeight: 600, color: 'var(--rr-text-primary)' }}>{pending.userName || 'Signed in'}</div>
+							<div style={S.modeConfigDesc}>Sign-in staged. Save settings to apply.</div>
+						</div>
+					</div>
+					<button
+						type="button"
+						onClick={onUndoPending}
+						style={{
+							width: 'auto',
+							marginTop: 8,
+							backgroundColor: 'var(--vscode-button-secondaryBackground)',
+							color: 'var(--vscode-button-secondaryForeground)',
+						}}
+					>
+						Undo
+					</button>
+				</div>
+			)}
+
+			{/* Staged sign-out — the stored session is deleted when the user saves. */}
+			{!pending?.signIn && pending?.signOut && (
+				<div style={S.formGroup}>
+					<div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
+						<span style={{ fontSize: 20, color: 'var(--rr-text-secondary)' }}>&#10005;</span>
+						<div>
+							<div style={{ fontWeight: 600, color: 'var(--rr-text-secondary)', textDecoration: 'line-through' }}>{cloudUserName || 'Signed in'}</div>
+							<div style={S.modeConfigDesc}>Sign-out staged. Save settings to apply.</div>
+						</div>
+					</div>
+					<button
+						type="button"
+						onClick={onUndoPending}
+						style={{
+							width: 'auto',
+							marginTop: 8,
+							backgroundColor: 'var(--vscode-button-secondaryBackground)',
+							color: 'var(--vscode-button-secondaryForeground)',
+						}}
+					>
+						Undo
+					</button>
+				</div>
+			)}
+
+			{/* Sign-in status. Deliberately NOT gated on the probe: a signed-in
+			    user must always be able to sign out, even when the configured
+			    server is unreachable or fails the compatibility check. */}
+			{cloudSignedIn && !pending?.signIn && !pending?.signOut && (
 				<div style={S.formGroup}>
 					<div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0' }}>
 						<span style={{ fontSize: 20, color: 'var(--vscode-testing-iconPassed, #22c55e)' }}>&#10003;</span>
@@ -185,7 +253,7 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 					</button>
 				</div>
 			)}
-			{isSaas && !cloudSignedIn && (
+			{isSaas && !cloudSignedIn && !pending?.signIn && (
 				<div style={S.formGroup}>
 					{/* Waitlisted sign-in: auth succeeded, access is queued (the
 					    server minted no token) — the browser shell's friendly
@@ -207,15 +275,17 @@ export const CloudPanel: React.FC<CloudPanelProps> = ({ cloudSignedIn, cloudUser
 			{/* Session/target mismatch — the signed-in session belongs to a
 			    different server than the form now targets; billing surfaces
 			    are withheld until the user signs in on the selected server. */}
-			{isSaas && cloudSignedIn && !sessionMatchesTarget && (
+			{isSaas && cloudSignedIn && !pending?.signIn && !pending?.signOut && !sessionMatchesTarget && (
 				<div style={S.modeConfigDesc}>
 					Signed in to {cloudSignedInUrl}. Sign out and sign in again to use {cloudUrl}.
 				</div>
 			)}
 
 			{/* Subscribe prompt — shown when signed in but not subscribed, and
-			    only when the session actually belongs to the targeted server */}
-			{isSaas && cloudSignedIn && sessionMatchesTarget && isSubscribed === false && onFetchPlans && (
+			    only when the session actually belongs to the targeted server.
+			    Hidden while an auth change is staged: the money path rides the
+			    SAVED session, which is about to change. */}
+			{isSaas && cloudSignedIn && !pending?.signIn && !pending?.signOut && sessionMatchesTarget && isSubscribed === false && onFetchPlans && (
 				<div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 16px', borderRadius: 8, border: '1px solid var(--vscode-input-border, #444)', background: 'var(--vscode-editor-background)' }}>
 					<div style={{ flex: 1, fontSize: 13, lineHeight: 1.5, color: 'var(--rr-text-secondary)' }}>
 						You are currently not subscribed to the RocketRide Cloud. You will be able to run all your pipelines locally, but to run them in the cloud, or deploy pipelines to the cloud, requires a subscription.

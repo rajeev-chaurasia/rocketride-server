@@ -150,18 +150,10 @@ export type SettingsOutgoingMessage =
 			settings: SettingsData;
 	  }
 	| {
-			type: 'testConnection';
-			hostUrl: string;
-			apiKey: string;
-	  }
-	| {
 			type: 'clearCredentials';
 	  }
 	| {
 			type: 'fetchVersions';
-	  }
-	| {
-			type: 'openSubscribe';
 	  }
 	| {
 			/** Ask the host for the current cloud auth state (a cloud:status reply). */
@@ -180,6 +172,10 @@ export type SettingsOutgoingMessage =
 	  }
 	| {
 			type: 'cloud:signOut';
+	  }
+	| {
+			/** Discard any staged (uncommitted) cloud sign-in/sign-out. */
+			type: 'cloud:clearPending';
 	  };
 
 // ============================================================================
@@ -287,38 +283,6 @@ export const settingsStyles = {
 		gap: 16,
 	} as CSSProperties,
 };
-
-// ============================================================================
-// SUBSCRIBE BANNER STYLES
-// ============================================================================
-
-const subscribeBannerStyles = {
-	container: {
-		background: 'var(--rr-color-warning-bg, rgba(255, 193, 7, 0.1))',
-		borderBottom: '1px solid var(--rr-color-warning, #ffc107)',
-		padding: '10px 16px',
-	} as CSSProperties,
-	content: {
-		display: 'flex',
-		alignItems: 'center',
-		justifyContent: 'space-between',
-		gap: 12,
-	} as CSSProperties,
-	text: {
-		fontSize: 13,
-		color: 'var(--rr-text-primary)',
-		flex: 1,
-	} as CSSProperties,
-	button: {
-		...commonStyles.buttonPrimary,
-		whiteSpace: 'nowrap',
-		flexShrink: 0,
-	} as CSSProperties,
-};
-
-// ============================================================================
-// AUTH ERROR BANNER STYLES
-// ============================================================================
 
 // ============================================================================
 // PAGE BODY STYLE
@@ -519,9 +483,15 @@ export const Settings: React.FC = () => {
 	const [engineVersions, setEngineVersions] = useState<EngineVersionItem[]>([]);
 	const [engineVersionsLoading, setEngineVersionsLoading] = useState(false);
 
-	// Server capabilities (from probe)
-	const [serverCapabilities, setServerCapabilities] = useState<string[]>([]);
-	const [isSaasProbed, setIsSaasProbed] = useState<boolean | undefined>(undefined);
+	// Per-group cloud probe results. `isSaas` keeps its LAST value while a
+	// re-probe is in flight so the auth UI doesn't flicker away on every
+	// keystroke in the URL field; undefined = never probed ("Checking...").
+	// Each result is routed by the echoed hostUrl, so the dev and deploy
+	// panels can probe different targets without clobbering each other.
+	const [devProbe, setDevProbe] = useState<{ isSaas?: boolean; unreachable: boolean }>({ unreachable: false });
+	const [deployProbe, setDeployProbe] = useState<{ isSaas?: boolean; unreachable: boolean }>({ unreachable: false });
+	/** The URL each group's panel most recently asked to probe. */
+	const probeUrlRef = useRef<{ development?: string; deployment?: string }>({});
 
 	// Cloud auth state
 	const [cloudSignedIn, setCloudSignedIn] = useState(false);
@@ -535,6 +505,9 @@ export const Settings: React.FC = () => {
 	// CloudPanel renders the friendly access-queue banner.
 	const [cloudWaitlisted, setCloudWaitlisted] = useState(false);
 	const [cloudWaitlistedName, setCloudWaitlistedName] = useState('');
+	// Staged (uncommitted) cloud auth change — sign-in/sign-out from the Cloud
+	// panel applies only on Save, so it participates in dirty tracking.
+	const [cloudPending, setCloudPending] = useState<{ signIn: boolean; signOut: boolean; userName: string; url: string }>({ signIn: false, signOut: false, userName: '', url: '' });
 
 	// Checkout modal state
 	const checkoutResolvers = useRef<{
@@ -601,13 +574,20 @@ export const Settings: React.FC = () => {
 					setEngineVersionsLoading(false);
 					break;
 
-				case 'cloud:status' as any:
+				case 'cloud:status' as any: {
 					setCloudSignedIn((message as any).signedIn);
 					setCloudUserName((message as any).userName || '');
 					setCloudSignedInUrl((message as any).signedInUrl || '');
 					setCloudWaitlisted(Boolean((message as any).waitlisted));
 					setCloudWaitlistedName((message as any).waitlistedName || '');
+					const pendingSignIn = Boolean((message as any).pendingSignIn);
+					const pendingSignOut = Boolean((message as any).pendingSignOut);
+					setCloudPending({ signIn: pendingSignIn, signOut: pendingSignOut, userName: (message as any).pendingUserName || '', url: (message as any).pendingUrl || '' });
+					// A staged auth change is an unsaved edit — surface the
+					// Save/Cancel footer so the user can commit or revert it.
+					if (pendingSignIn || pendingSignOut) setDirty(true);
 					break;
+				}
 
 				case 'subscriptionStatus':
 					setSubscribed(message.isSubscribed);
@@ -651,9 +631,13 @@ export const Settings: React.FC = () => {
 					break;
 
 				case 'serverInfo' as any: {
-					const caps = (message as any).capabilities || [];
-					setServerCapabilities(caps);
-					setIsSaasProbed(caps.includes('saas'));
+					const caps: string[] = (message as any).capabilities || [];
+					const unreachable = Boolean((message as any).unreachable);
+					const url = (message as any).hostUrl as string | undefined;
+					const next = { isSaas: unreachable ? undefined : caps.includes('saas'), unreachable };
+					// Route by the echoed URL to the group(s) that probed it.
+					if (probeUrlRef.current.development === url) setDevProbe(next);
+					if (probeUrlRef.current.deployment === url) setDeployProbe(next);
 					break;
 				}
 
@@ -763,13 +747,15 @@ export const Settings: React.FC = () => {
 		sendMessage({ type: 'saveSettings', settings: snapshot });
 	};
 
-	/** Revert to last-saved settings and clear dirty state. */
+	/** Revert to last-saved settings and clear dirty state — including any
+	 *  staged cloud sign-in/sign-out held on the host side. */
 	const handleCancelSettings = useCallback((): void => {
 		if (savedSettingsRef.current) {
 			setSettings(JSON.parse(JSON.stringify(savedSettingsRef.current)));
 		}
+		sendMessage({ type: 'cloud:clearPending' });
 		setDirty(false);
-	}, []);
+	}, [sendMessage]);
 
 	/**
 	 * Test connection via ioControl. On-prem passes hostUrl/apiKey as params;
@@ -781,10 +767,11 @@ export const Settings: React.FC = () => {
 	};
 
 	/**
-	 * Probe cloud server to check SaaS compatibility
+	 * Probe a group's cloud target for SaaS compatibility. The previous
+	 * result stays on screen until the fresh one arrives (no flicker).
 	 */
-	const handleProbeCloudServer = (cloudUrl: string): void => {
-		setIsSaasProbed(undefined); // reset to loading
+	const handleProbeCloudServer = (group: 'development' | 'deployment', cloudUrl: string): void => {
+		probeUrlRef.current[group] = cloudUrl;
 		sendMessage({ type: 'probeServerInfo', hostUrl: cloudUrl } as any);
 	};
 
@@ -963,7 +950,6 @@ export const Settings: React.FC = () => {
 							onSettingsChange={handleSettingsChange}
 							onClearCredentials={handleClearCredentials}
 							onTestConnection={handleTestConnection}
-							serverCapabilities={serverCapabilities}
 							testMessage={testMessage}
 							engineVersions={engineVersions}
 							engineVersionsLoading={engineVersionsLoading}
@@ -977,8 +963,11 @@ export const Settings: React.FC = () => {
 							// against the wrong server mints the wrong session.
 							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.development.useCustomServer && settings.development.cloudUrl) || settings.development.defaultCloudUrl })}
 							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' })}
-							onProbeCloudServer={handleProbeCloudServer}
-							isSaas={isSaasProbed}
+							cloudPending={cloudPending}
+							onCloudUndoPending={() => sendMessage({ type: 'cloud:clearPending' })}
+							onProbeCloudServer={(url) => handleProbeCloudServer('development', url)}
+							isSaas={devProbe.isSaas}
+							probeUnreachable={devProbe.unreachable}
 							dockerStatus={dockerStatus}
 							dockerProgress={dockerProgress}
 							dockerError={dockerError}
@@ -1025,7 +1014,6 @@ export const Settings: React.FC = () => {
 						<DeploySettings
 							settings={settings}
 							onSettingsChange={handleSettingsChange}
-							serverCapabilities={serverCapabilities}
 							engineVersions={engineVersions}
 							engineVersionsLoading={engineVersionsLoading}
 							onClearCredentials={handleClearCredentials}
@@ -1041,8 +1029,11 @@ export const Settings: React.FC = () => {
 							// against the wrong server mints the wrong session.
 							onCloudSignIn={() => sendMessage({ type: 'cloud:signIn', cloudUrl: (settings.deployment.useCustomServer && settings.deployment.cloudUrl) || settings.deployment.defaultCloudUrl })}
 							onCloudSignOut={() => sendMessage({ type: 'cloud:signOut' })}
-							onProbeCloudServer={handleProbeCloudServer}
-							isSaas={isSaasProbed}
+							cloudPending={cloudPending}
+							onCloudUndoPending={() => sendMessage({ type: 'cloud:clearPending' })}
+							onProbeCloudServer={(url) => handleProbeCloudServer('deployment', url)}
+							isSaas={deployProbe.isSaas}
+							probeUnreachable={deployProbe.unreachable}
 							dockerStatus={dockerStatus}
 							dockerProgress={dockerProgress}
 							dockerError={dockerError}
@@ -1099,7 +1090,7 @@ export const Settings: React.FC = () => {
 				),
 			},
 		}),
-		[settings, message, testMessage, engineVersions, engineVersionsLoading, serverCapabilities, cloudSignedIn, cloudUserName, dockerStatus, dockerProgress, dockerError, dockerBusy, dockerAction, dockerVersionOptions, dockerSelectedVersion, serviceStatus, serviceProgress, serviceError, serviceBusy, serviceAction, serviceVersionOptions, serviceSelectedVersion, sudoPromptVisible, sudoPasswordInput]
+		[settings, message, testMessage, engineVersions, engineVersionsLoading, devProbe, deployProbe, cloudSignedIn, cloudUserName, cloudSignedInUrl, cloudWaitlisted, cloudWaitlistedName, cloudPending, dockerStatus, dockerProgress, dockerError, dockerBusy, dockerAction, dockerVersionOptions, dockerSelectedVersion, serviceStatus, serviceProgress, serviceError, serviceBusy, serviceAction, serviceVersionOptions, serviceSelectedVersion, sudoPromptVisible, sudoPasswordInput]
 	);
 
 	return (

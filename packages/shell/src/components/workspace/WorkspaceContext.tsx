@@ -434,6 +434,7 @@ export const WorkspaceProvider: React.FC<IWorkspaceProviderProps> = ({ apps, wor
 				try {
 					sessionStorage.setItem('rr:droppedOverride', `${appId} v${dropped?.version ?? '?'}`);
 				} catch { /* storage unavailable — the reload still restores the default */ }
+				console.warn(`[shell] reloading: dropped failing version override for ${appId} (v${dropped?.version ?? '?'}) — rebooting onto the default resolution`);
 				window.location.reload();
 				return false;
 			}

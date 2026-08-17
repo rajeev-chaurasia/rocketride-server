@@ -468,6 +468,7 @@ export class ConnectionManager implements IConnectionManager {
 							lastError: undefined,
 							progressMessage: undefined,
 						});
+						console.warn('[shell] reloading: session token cleared by another same-origin context (storage event)');
 						window.location.reload();
 						return;
 					}
@@ -478,6 +479,7 @@ export class ConnectionManager implements IConnectionManager {
 						currentUserToken: this.accountInfo?.userToken,
 						hasAccountInfo: Boolean(this.accountInfo),
 					})) {
+						console.warn('[shell] reloading: session token replaced by another same-origin context (storage event)');
 						window.location.reload();
 					}
 				} catch {

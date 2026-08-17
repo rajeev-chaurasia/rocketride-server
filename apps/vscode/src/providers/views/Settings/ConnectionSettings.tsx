@@ -49,8 +49,6 @@ interface ConnectionSettingsProps {
 	/** Available engine versions fetched from GitHub releases. */
 	engineVersions: EngineVersionItem[];
 	engineVersionsLoading: boolean;
-	/** Server capabilities from probe (e.g. ['saas']) — controls which modes are available. */
-	serverCapabilities: string[];
 	cloudSignedIn?: boolean;
 	cloudUserName?: string;
 	/** The server the session's token was minted against (subscribe gate). */
@@ -60,9 +58,15 @@ interface ConnectionSettingsProps {
 	cloudWaitlistedName?: string;
 	onCloudSignIn?: () => void;
 	onCloudSignOut?: () => void;
+	/** Staged (uncommitted) cloud auth change — CloudPanel renders it as pending. */
+	cloudPending?: { signIn: boolean; signOut: boolean; userName: string; url: string };
+	/** Discard the staged cloud auth change. */
+	onCloudUndoPending?: () => void;
 	onProbeCloudServer?: (cloudUrl: string) => void;
 	/** Whether the probed server supports SaaS/OAuth. */
 	isSaas?: boolean;
+	/** The probe could not reach the server (transport failure). */
+	probeUnreachable?: boolean;
 	/** Whether the user has an active subscription. */
 	isSubscribed?: boolean;
 	/** Checkout callbacks for CloudPanel's embedded CheckoutModal. */
@@ -143,7 +147,6 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = (props) => 
 					idPrefix="dev"
 					group="development"
 					otherGroupMode={settings.deployment.connectionMode}
-					serverCapabilities={props.serverCapabilities}
 					onConnectionModeChange={handleConnectionModeChange}
 					settings={settings}
 					onSettingsChange={onSettingsChange}
@@ -154,8 +157,11 @@ export const ConnectionSettings: React.FC<ConnectionSettingsProps> = (props) => 
 					cloudWaitlistedName={props.cloudWaitlistedName}
 					onCloudSignIn={props.onCloudSignIn!}
 					onCloudSignOut={props.onCloudSignOut!}
+					cloudPending={props.cloudPending}
+					onCloudUndoPending={props.onCloudUndoPending}
 					onProbeCloudServer={props.onProbeCloudServer}
 					isSaas={props.isSaas}
+					probeUnreachable={props.probeUnreachable}
 					onClearCredentials={props.onClearCredentials}
 					onTestConnection={props.onTestConnection}
 					testMessage={props.testMessage}

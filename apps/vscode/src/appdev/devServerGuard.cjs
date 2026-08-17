@@ -75,6 +75,67 @@ const child = spawn(cmd, args, {
 
 let dying = false;
 
+// =============================================================================
+// TREE CLEANUP — the guard owns EVERYTHING below itself
+// =============================================================================
+// The watcher's whole stop contract is "close the guard's stdin (or, last
+// resort, kill the guard)"; every process below the guard is the guard's own
+// responsibility. Windows has NO parent-death cascade and closing stdio kills
+// nobody — the cascade here is built from direct TerminateProcess syscalls,
+// never from a spawned taskkill (a spawned killer is exactly as mortal as
+// the guard and reproducibly died mid-walk during editor-exit sweeps,
+// leaking the pnpm->cmd->rsbuild chain).
+
+/**
+ * Snapshots the descendant pids of `rootPid`, LEAF-FIRST, via one CIM query.
+ * Calls back [] on any failure — by then the caller's direct child kill has
+ * already covered the flattened primary spawn (node -> rsbuild.js).
+ *
+ * @param rootPid - Subtree root (the walk excludes the root itself).
+ * @param callback - Receives the ordered pid list (children before parents).
+ */
+function enumerateDescendants(rootPid, callback) {
+	const ps = spawn(
+		'powershell',
+		[
+			'-NoProfile',
+			'-NonInteractive',
+			'-Command',
+			'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }',
+		],
+		{ windowsHide: true }
+	);
+	let out = '';
+	let done = false;
+	const finish = () => {
+		if (done) return;
+		done = true;
+		const children = new Map();
+		for (const line of out.split(/\r?\n/)) {
+			const parts = line.trim().split(/\s+/);
+			if (parts.length !== 2) continue;
+			const pid = Number(parts[0]);
+			const ppid = Number(parts[1]);
+			if (!Number.isFinite(pid) || !Number.isFinite(ppid)) continue;
+			if (!children.has(ppid)) children.set(ppid, []);
+			children.get(ppid).push(pid);
+		}
+		const ordered = [];
+		const walk = (pid) => {
+			for (const c of children.get(pid) || []) {
+				walk(c);
+				ordered.push(c); // children before parents — leaf-first
+			}
+		};
+		walk(rootPid);
+		callback(ordered);
+	};
+	ps.stdout.on('data', (chunk) => { out += chunk; });
+	ps.on('exit', finish);
+	ps.on('error', finish);
+	setTimeout(finish, 2000);
+}
+
 /**
  * Fells the guard's own process tree, guard included — total by design:
  * the tether dropped, so nothing here may survive.
@@ -83,25 +144,37 @@ function die() {
 	if (dying) return;
 	dying = true;
 	if (process.platform === 'win32') {
-		// Target the CHILD's tree, never our own: /T on the guard's pid puts
-		// the spawned taskkill (and the shell-path cmd.exe) inside the tree
-		// being killed, and Windows fells tree members in UNSPECIFIED order —
-		// the killer or the guard can die before the dev server is signalled,
-		// leaving exactly the orphan this file exists to prevent. The child
-		// pid roots the whole server tree (cmd.exe -> rsbuild -> workers).
+		// STEP 1 — the syscall, before anything mortal: process.kill() is
+		// TerminateProcess, a few microseconds, no subprocess. During an
+		// editor-exit sweep the guard may only get microseconds — and on
+		// the flattened primary spawn the child IS the dev server, so this
+		// single syscall completes the tether even mid-slaughter.
+		try { if (child.pid) process.kill(child.pid); } catch { /* already gone */ }
 		if (!child.pid) {
 			process.exit(1);
 		}
-		const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
-		killer.on('exit', () => process.exit(1));
-		killer.on('error', () => process.exit(1));
-		// Never linger if taskkill wedges — exit; the poll backstop of a
-		// sibling guard cannot help us, but an exited guard at least
-		// releases the pipes.
-		setTimeout(() => process.exit(1), 3000);
+		// STEP 2 — verified sweep of the subtree for the pnpm-exec fallback
+		// chain (cmd -> pnpm -> cmd -> rsbuild), whose grandchildren the
+		// direct kill cannot reach. Enumerate from the CHILD (the powershell
+		// helper is OUR child, never inside that subtree), kill leaf-first
+		// via direct syscalls, re-enumerate for stragglers, then exit.
+		const killAll = (pids) => {
+			for (const pid of pids) {
+				try { process.kill(pid); } catch { /* already dead */ }
+			}
+		};
+		enumerateDescendants(child.pid, (pids) => {
+			killAll(pids);
+			enumerateDescendants(child.pid, (rest) => {
+				killAll(rest);
+				process.exit(1);
+			});
+		});
+		// Hard bound — an exited guard at least releases the pipes.
+		setTimeout(() => process.exit(1), 5000);
 	} else {
 		// Group signal: the guard is the group leader, the child is in the
-		// group — one SIGKILL fells both.
+		// group — one SIGKILL fells both (kernel-atomic, no walk needed).
 		try { process.kill(-process.pid, 'SIGKILL'); } catch { /* raced our own death */ }
 		process.exit(1);
 	}

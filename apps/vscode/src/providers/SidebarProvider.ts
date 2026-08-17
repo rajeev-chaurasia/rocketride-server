@@ -188,15 +188,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 						await this.deployManager.initialize();
 						this.sendFullUpdate();
 						break;
-					case 'cloudSignIn': {
-						const auth = CloudAuthProvider.getInstance();
-						await auth.signIn(
-							process.env.RR_ZITADEL_URL || '',
-							process.env.RR_ZITADEL_VSCODE_CLIENT_ID || '',
-							ConfigManager.getInstance().getEffectiveCloudUrl()
-						);
-						break;
-					}
 				}
 			} catch (error) {
 				console.error('[SidebarProvider] Message handling error:', error);

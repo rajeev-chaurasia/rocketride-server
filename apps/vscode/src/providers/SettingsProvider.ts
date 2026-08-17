@@ -38,6 +38,8 @@ import { ConfigManager, SettingsSnapshot } from '../config';
 import { getConnectionManager, getEngineRegistry } from '../extension';
 import { AgentManager } from '../agents/agent-manager';
 import { DeployManager } from '../connection/deploy-manager';
+import { commitStagedCloudCredentials } from '../connection/connection';
+import { CloudAuthProvider } from '../auth/CloudAuthProvider';
 import { ConnectionMessageHandler } from './shared/connection-message-handler';
 import { getStripePublishableKey } from './shared/stripe-key';
 import type { StripeKeyUnavailableReason } from './types/checkoutTypes';
@@ -258,6 +260,9 @@ export class SettingsProvider {
 		// Clean up when panel is disposed
 		panel.onDidDispose(() => {
 			cleanupCloudAuth();
+			// Closing the page without saving discards any staged sign-in or
+			// sign-out — nothing uncommitted survives the settings surface.
+			CloudAuthProvider.getInstance().clearPendingChanges();
 			this.panel = undefined;
 			this.activeWebviews.delete(panelWebview);
 			this.connHandler.stopStatusPolling();
@@ -368,6 +373,14 @@ export class SettingsProvider {
 			// intermediate config-change listeners during the batch so no CM reacts
 			// to half-written state (e.g., new API key without new host URL).
 			await this.configManager.applyAllSettings(snapshot);
+
+			// Step 1b: Commit any STAGED cloud auth change (sign-in/sign-out from
+			// the Cloud panel) — the settings page is transactional, so the
+			// credential lands in SecretStorage only here, together with the form
+			// it belongs to. When the stored session changed, live cloud
+			// connections are torn down so the reconcile below reconnects them
+			// with the fresh credential state.
+			await commitStagedCloudCredentials();
 
 			// Mark welcome as dismissed — user has configured settings
 			await vscode.workspace.getConfiguration('rocketride').update('welcomeDismissed', true, vscode.ConfigurationTarget.Global);

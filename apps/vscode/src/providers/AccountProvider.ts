@@ -17,7 +17,7 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import { readFileSync } from 'fs';
-import { ConnectionManager } from '../connection/connection';
+import { ConnectionManager, disconnectCloudConnections } from '../connection/connection';
 import { DeployManager } from '../connection/deploy-manager';
 import { ConfigManager } from '../config';
 import { ConnectionState } from '../shared/types';
@@ -810,6 +810,10 @@ export class AccountProvider {
 	private async handleLogout(): Promise<void> {
 		const cloudAuth = CloudAuthProvider.getInstance();
 		await cloudAuth.signOut();
+		// A direct sign-out applies immediately — drop the live cloud
+		// connection so no surface keeps showing a session that storage no
+		// longer backs.
+		await disconnectCloudConnections();
 	}
 
 	/**
