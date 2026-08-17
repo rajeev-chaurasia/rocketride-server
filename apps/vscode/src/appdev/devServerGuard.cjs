@@ -83,8 +83,16 @@ function die() {
 	if (dying) return;
 	dying = true;
 	if (process.platform === 'win32') {
-		// taskkill /T on our own pid takes the child down with us.
-		const killer = spawn('taskkill', ['/PID', String(process.pid), '/T', '/F'], { windowsHide: true });
+		// Target the CHILD's tree, never our own: /T on the guard's pid puts
+		// the spawned taskkill (and the shell-path cmd.exe) inside the tree
+		// being killed, and Windows fells tree members in UNSPECIFIED order —
+		// the killer or the guard can die before the dev server is signalled,
+		// leaving exactly the orphan this file exists to prevent. The child
+		// pid roots the whole server tree (cmd.exe -> rsbuild -> workers).
+		if (!child.pid) {
+			process.exit(1);
+		}
+		const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
 		killer.on('exit', () => process.exit(1));
 		killer.on('error', () => process.exit(1));
 		// Never linger if taskkill wedges — exit; the poll backstop of a

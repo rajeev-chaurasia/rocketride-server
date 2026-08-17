@@ -205,11 +205,14 @@ function makeStageFilesAction() {
 			// The dev-server guard wrapper — spawned as a real file by the
 			// watch manager (it cannot live inside the esbuild bundle), so it
 			// ships beside the bundle. Sourced under src/ so the source-hash
-			// change detection restages it on edit.
+			// change detection restages it on edit. FUNCTIONAL, unlike the
+			// cosmetic icons around it: a missing guard fails every dev-server
+			// start with ENOENT at runtime — fail the STAGE instead.
 			const guardSrc = path.join(SRC_DIR, 'appdev', 'devServerGuard.cjs');
-			if (await exists(guardSrc)) {
-				await copyFile(guardSrc, path.join(BUILD_DIR, 'devServerGuard.cjs'));
+			if (!(await exists(guardSrc))) {
+				throw new Error(`devServerGuard.cjs missing at ${guardSrc} — the dev-server tether cannot ship`);
 			}
+			await copyFile(guardSrc, path.join(BUILD_DIR, 'devServerGuard.cjs'));
 			const dockerSvg = path.join(APP_ROOT, 'docker.svg');
 			const onpremSvg = path.join(APP_ROOT, 'onprem.svg');
 			if (await exists(dockerSvg)) {
