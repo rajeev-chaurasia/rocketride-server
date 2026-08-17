@@ -287,18 +287,62 @@ const SidebarProvider: React.FC = () => {
 	// --- Callbacks -----------------------------------------------------------
 
 	/**
+	 * Prompts for a .rrc capsule and installs it through the engine airlock.
+	 * Web counterpart of the VS Code `rocketride.node.installCapsule` command:
+	 * HTML file picker -> base64 -> rrext_install_node.
+	 */
+	const installCapsule = useCallback(() => {
+		if (!client || !isConnected) {
+			window.alert('Not connected to a RocketRide engine. Connect first.');
+			return;
+		}
+		const input = document.createElement('input');
+		input.type = 'file';
+		input.accept = '.rrc';
+		input.onchange = async () => {
+			const file = input.files?.[0];
+			if (!file) return;
+			try {
+				// readAsDataURL yields "data:...;base64,XXXX" — keep the payload after the comma.
+				const capsule = await new Promise<string>((resolve, reject) => {
+					const reader = new FileReader();
+					reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
+					reader.onerror = () => reject(reader.error);
+					reader.readAsDataURL(file);
+				});
+				const res = await client.call<{ ok?: boolean; installed?: string; violations?: string[] }>('rrext_install_node', {
+					capsule,
+				});
+				if (res?.ok) {
+					window.alert(`Node capsule installed: ${res.installed}`);
+				} else {
+					window.alert(`Airlock rejected the capsule: ${(res?.violations ?? ['unknown reason']).join('; ')}`);
+				}
+			} catch (err) {
+				window.alert(`Failed to install node capsule: ${err}`);
+			}
+		};
+		input.click();
+	}, [client, isConnected]);
+
+	/**
 	 * Handles navigation button clicks.
 	 */
-	const handleNavigate = useCallback((target: string) => {
-		// getDocs() is null until RocketApp creates the Documents singleton.
-		const docs = getDocs();
-		if (!docs) return;
-		if (target === 'new') {
-			docs.createDocument(undefined, { project_id: crypto.randomUUID(), components: [] });
-		} else if (target === 'monitor') {
-			docs.openStaticDocument('monitor', 'Monitor');
-		}
-	}, []);
+	const handleNavigate = useCallback(
+		(target: string) => {
+			// getDocs() is null until RocketApp creates the Documents singleton.
+			const docs = getDocs();
+			if (!docs) return;
+			if (target === 'new') {
+				docs.createDocument(undefined, { project_id: crypto.randomUUID(), components: [] });
+			} else if (target === 'monitor') {
+				docs.openStaticDocument('monitor', 'Monitor');
+			} else if (target === 'installCapsule') {
+				installCapsule();
+			}
+		},
+		[installCapsule]
+	);
 
 	/**
 	 * Opens a file in the Documents singleton.

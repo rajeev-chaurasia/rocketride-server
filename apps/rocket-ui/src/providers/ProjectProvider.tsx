@@ -888,6 +888,15 @@ const ProjectProvider: React.FC<ProjectPageProps> = ({ uri, pipeline, isDirty, i
 					onOpenLink={handleOpenLink}
 					onSave={handleSave}
 					onExport={handleExport}
+					onUninstallNode={async (name: string) => {
+						if (!client) return;
+						try {
+							const res = await client.call<{ ok?: boolean; uninstalled?: string; error?: string }>('rrext_uninstall_node', { node: name });
+							window.alert(res?.ok ? `Node capsule uninstalled: ${res.uninstalled ?? name}. Reopen the pipeline to refresh the catalog.` : `Uninstall failed: ${res?.error ?? 'unknown error'}`);
+						} catch (err) {
+							window.alert(`Uninstall failed: ${err}`);
+						}
+					}}
 					envKeys={envKeys}
 				/>
 				{/* Deployment record drawer — keyed by identity so switching teams
