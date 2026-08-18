@@ -39,7 +39,6 @@ import { Banner } from 'shell';
 import { Button } from 'shell';
 import { Card } from 'shell';
 import { EmptyState } from 'shell';
-import { InputField } from 'shell';
 import { StatusBadge } from 'shell';
 import { commonStyles } from 'shell';
 import { PlanPanel } from './PlanPanel';
@@ -122,19 +121,6 @@ const styles: Record<string, React.CSSProperties> = {
 		fontSize: 12.5,
 		color: 'var(--rr-text-primary)',
 		width: '100%',
-	},
-	formArea: {
-		background: 'var(--rr-bg-input)',
-		border: '1px solid var(--rr-border)',
-		borderRadius: 3,
-		padding: '6px 10px',
-		fontSize: 12.5,
-		color: 'var(--rr-text-primary)',
-		width: '100%',
-		minHeight: 64,
-		lineHeight: 1.5,
-		resize: 'vertical',
-		fontFamily: 'inherit',
 	},
 	form2col: {
 		display: 'grid',
@@ -411,7 +397,7 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 			<div style={styles.wrap}>
 				<div style={styles.head}>
 					<div style={styles.h1}>{app.name}</div>
-					<div style={styles.sub}>Store — the public listing, pre-flight checks, and platform review. Only needed to distribute on the App Store; @me and @team deploys skip all of this.</div>
+					<div style={styles.sub}>Store — the commerce posture and the public rung: pricing mode, plans, submission, and platform review. Only needed to distribute on the App Store; @me and @team deploys skip all of this.</div>
 				</div>
 				<div style={styles.emptyWrap}>
 					<EmptyState title="Store publishing is not wired up yet" description="Once the marketplace flows land, the listing form, pre-flight checks, and the per-version review timeline appear here." />
@@ -420,7 +406,11 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 		);
 	}
 
+	// Submit gates on EVERY tier (the server would refuse a broken package
+	// too); the card renders only the store-tier rows.
 	const canSubmit = checks.length > 0 && !checks.some((c) => c.state === 'fail');
+	const storeChecks = checks.filter((c) => c.tier === 'store');
+	const packageFails = checks.filter((c) => (c.tier ?? 'package') === 'package' && c.state === 'fail').length;
 	// The version a submit would address: the newest non-'failed' rail row.
 	// Its registry int is the wire identity actually submitted — the button
 	// labels by it, not by the working copy's repeatable display semver.
@@ -431,7 +421,7 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 			{/* View header — title + one-line purpose */}
 			<div style={styles.head}>
 				<div style={styles.h1}>{app.name}</div>
-				<div style={styles.sub}>Store — the public listing, pre-flight checks, and platform review. Only needed to distribute on the App Store; @me and @team deploys skip all of this. Every public version is reviewed.</div>
+				<div style={styles.sub}>Store — the commerce posture and the public rung: pricing mode, plans, submission, and platform review. Only needed to distribute on the App Store; @me and @team deploys skip all of this. Every public version is reviewed.</div>
 			</div>
 
 			<div style={styles.grid}>
@@ -451,14 +441,8 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 							</select>
 						</div>
 					</div>
-					<div style={styles.formRow}>
-						<div style={styles.formLabel}>Display name</div>
-						<InputField value={draft?.name ?? ''} disabled={readOnly} onChange={(e) => setDraft((d) => (d ? { ...d, name: e.target.value } : d))} />
-					</div>
-					<div style={styles.formRow}>
-						<div style={styles.formLabel}>Description</div>
-						<textarea style={styles.formArea} value={draft?.description ?? ''} disabled={readOnly} onChange={(e) => setDraft((d) => (d ? { ...d, description: e.target.value } : d))} />
-					</div>
+					{/* Identity (name/description/icon/readme) lives on the
+					    PACKAGE tab — this card is the commerce posture only. */}
 					{(draft?.mode ?? 'free') !== 'free' && (
 						<div style={styles.formRow}>
 							<div style={styles.formLabel}>Pricing (proposal — live on approval)</div>
@@ -511,12 +495,15 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 
 				{/* ── Right: pre-flight + review history ─────────────────── */}
 				<div style={styles.rightCol}>
-					<Card header="Pre-flight & submission">
+					<Card header="Store requirements & submission">
 						{checks.length === 0 ? (
-							<EmptyState title="No pre-flight results" description="Build the app once, then the bundle, contract, listing, and Stripe checks run here." />
+							<EmptyState title="No checks yet" description="The store requirements run against the app's manifest once it loads." />
 						) : (
 							<>
-								{checks.map((c, i) => (
+								{/* Store-tier rows only — the complete-app bar lives on
+								    the PACKAGE tab; a failure there still gates Submit
+								    and is called out below by name. */}
+								{storeChecks.map((c, i) => (
 									<div key={c.id} style={i === 0 ? { ...styles.checkRow, ...styles.checkRowFirst } : styles.checkRow}>
 										<div style={{ ...styles.checkMark, background: CHECK_PALETTE[c.state].bg, color: CHECK_PALETTE[c.state].fg }}>{CHECK_PALETTE[c.state].glyph}</div>
 										<div style={styles.checkText}>{c.label}</div>
@@ -531,6 +518,11 @@ export const StoreView: React.FC<IStoreViewProps> = ({ host, app, readOnly }) =>
 											</Button>
 											<span style={styles.actionNote}>every public version is reviewed; a push event delivers the decision.</span>
 										</div>
+										{packageFails > 0 ? (
+											<div style={styles.submitMsg}>
+												<Banner variant="warning">{`The Package tab has ${packageFails} failing item${packageFails === 1 ? '' : 's'} — fix ${packageFails === 1 ? 'it' : 'them'} there before submitting.`}</Banner>
+											</div>
+										) : null}
 										{submitMsg ? (
 											<div style={styles.submitMsg}>
 												<Banner variant="warning">{submitMsg}</Banner>

@@ -871,6 +871,11 @@ const AppWebview: React.FC = () => {
 				await rpc<null>('saveListing', [draft]);
 			},
 			runPreflight: async () => await rpc<PreflightCheck[]>('preflight'),
+			// Package assets: native pick (app-folder-relative result) + text
+			// read for the icon/README previews.
+			pickAppFile: async (kind) => await rpc<string | null>('pickFile', [kind]),
+			readAppTextFile: async (relPath) => await rpc<string>('readFile', [relPath]),
+			readAppImageDataUri: async (relPath) => await rpc<string | null>('readImage', [relPath]),
 
 			// ── Dashboard + review thread — ONE history fetch, two shapes ───
 			// The bridge walks the server's 100-row pages and returns the

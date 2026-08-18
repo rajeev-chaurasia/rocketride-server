@@ -26,9 +26,10 @@
 
 /**
  * The App Builder's entire view surface: a top TabControl strip switching
- * the four activity views — DASHBOARD | DESIGN | STORE | DEPLOY — with the
- * app's `id · version` in the trailing slot (revised decision D1: activity
- * names, no coach bar, no artifact views). DASHBOARD is the landing view.
+ * the five activity views — DASHBOARD | DESIGN | PACKAGE | STORE | DEPLOY —
+ * with the app's `id · version` in the trailing slot (revised decision D1:
+ * activity names, no coach bar, no artifact views). DASHBOARD is the
+ * landing view; PACKAGE is the complete-app bar, STORE is commerce only.
  *
  * Hosts mount this ONE component in exactly one of two ways (decision D7):
  * rocket-ui direct-mounts it with an adapter over the live client; the
@@ -43,6 +44,7 @@ import type { ViewMenu } from 'shell';
 import { DashboardView } from './DashboardView';
 import { DesignView } from './DesignView';
 import { DeployView } from './DeployView';
+import { PackageView } from './PackageView';
 import { StoreView } from './StoreView';
 import type { AppBuilderStage, AppSummary, IAppBuilderHost } from './types';
 
@@ -134,11 +136,13 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 	}, [host]);
 	const namespaceMismatch = developerId !== null && app.id.split('.')[0] !== developerId;
 
-	// The four activity views, per the settled UI model — Dashboard lands first
+	// The five activity views, per the settled UI model — Dashboard lands
+	// first; Package is the complete-app bar, Store is commerce only.
 	const viewMenu: ViewMenu = useMemo(() => ({
 		entries: [
 			{ id: 'dashboard', label: 'Dashboard' },
 			{ id: 'design', label: 'Design' },
+			{ id: 'package', label: 'Package' },
 			{ id: 'store', label: 'Store' },
 			{ id: 'deploy', label: 'Deploy' },
 		],
@@ -185,6 +189,8 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 				{stage === 'design' && (
 					<DesignView host={host} previewPane={previewPane} codePane={codePane} />
 				)}
+				{/* Package edits LOCAL files (like DESIGN) — never namespace-gated. */}
+				{stage === 'package' && <PackageView host={host} app={app} />}
 				{stage === 'deploy' && <DeployView host={host} app={app} readOnly={namespaceMismatch} />}
 				{stage === 'store' && <StoreView host={host} app={app} readOnly={namespaceMismatch} />}
 			</div>

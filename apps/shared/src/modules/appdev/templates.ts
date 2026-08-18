@@ -95,6 +95,10 @@ function packageJson(v: TemplateVars): string {
 				publisher: v.publisher,
 				name: v.appName,
 				description: `${v.appName} — a RocketRide app`,
+				// Every scaffold ships a real icon + README so the PACKAGE tab's
+				// readiness starts green and the tile never shows a bare glyph.
+				icon: './icon.svg',
+				readme: './README.md',
 				categories: ['custom'],
 				mode: 'free',
 				authenticated: false,
@@ -512,6 +516,44 @@ export default App;
  *                the pre-options shape (status footer only).
  * @returns The files to write into the new app folder.
  */
+/**
+ * The scaffolded placeholder icon — a neutral rounded tile with an abstract
+ * rocket mark. Deliberately generic: it exists so the PACKAGE tab's icon
+ * readiness starts green and tiles never render the bare fallback glyph;
+ * replacing it is the developer's first branding act.
+ *
+ * @returns The icon.svg file content.
+ */
+function placeholderIcon(): string {
+	return (
+		'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">\n' +
+		'\t<rect width="64" height="64" rx="14" fill="#4F46E5"/>\n' +
+		'\t<path d="M32 12c8 6 12 14 12 24l-6 8H26l-6-8c0-10 4-18 12-24z" fill="#FFFFFF"/>\n' +
+		'\t<circle cx="32" cy="30" r="5" fill="#4F46E5"/>\n' +
+		'\t<path d="M24 46l-4 8 8-4zM40 46l4 8-8-4z" fill="#C7D2FE"/>\n' +
+		'</svg>\n'
+	);
+}
+
+/**
+ * The scaffolded starter README — what the app does and how to work on it.
+ * Ships with every template so the PACKAGE tab's readme readiness starts
+ * green and the store listing has a document to grow into.
+ *
+ * @param v - Substitution variables.
+ * @returns The README.md file content.
+ */
+function readmeMd(v: TemplateVars): string {
+	return (
+		`# ${v.appName}\n\n` +
+		`${v.appName} — a RocketRide app.\n\n` +
+		'## What it does\n\n' +
+		'Describe your app here — this README ships with the app and appears on its store listing.\n\n' +
+		'## Development\n\n' +
+		'Open the `.rrapp` file to launch the App Builder: live preview on the Design tab, identity and packaging on the Package tab, publishing on the Deploy tab.\n'
+	);
+}
+
 export function renderTemplate(name: TemplateName, vars: TemplateVars, frame: FrameOptions = DEFAULT_FRAME): TemplateFile[] {
 	const files: TemplateFile[] = [
 		{ path: 'package.json', content: packageJson(vars) },
@@ -520,6 +562,10 @@ export function renderTemplate(name: TemplateName, vars: TemplateVars, frame: Fr
 		{ path: `${vars.appId.split('.').pop()}.rrapp`, content: `${JSON.stringify({ id: vars.appId }, null, 2)}\n` },
 		{ path: 'rsbuild.config.mts', content: rsbuildConfig(vars) },
 		{ path: 'tsconfig.json', content: tsconfigJson() },
+		// The manifest's icon/readme point at these — scaffolded so every new
+		// app starts PACKAGE-ready instead of accumulating warnings.
+		{ path: 'icon.svg', content: placeholderIcon() },
+		{ path: 'README.md', content: readmeMd(vars) },
 		{ path: 'src/index.ts', content: asyncBoundary() },
 		{ path: 'src/global.d.ts', content: globalDts() },
 		{ path: 'src/AppDescriptor.ts', content: appDescriptor(vars) },

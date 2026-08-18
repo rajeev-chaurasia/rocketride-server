@@ -81,17 +81,26 @@ missing/non-numeric version is rejected, not sent as `null`).
 | `history`         | —                             | the app's full `deployment_history` stream, **oldest-first** — audit rows plus the review thread (`reply` rows); the host walks the server's 100-row pages |
 | `reply`           | `[message, registryVersion?]` | appends a developer message to the review thread (side `'developer'`) |
 | `buildLog`        | `[registryVersion]`           | one version's durable server build log (phase-by-phase output; `''` = no log) — the Deploy card's `failed` badge opens it |
+| `pickFile`        | `['icon' \| 'readme']`        | native file picker for a manifest asset; returns the APP-FOLDER-relative `./`-prefixed path (picks outside the app folder are refused — the server only serves app-relative assets) or `null` on cancel |
+| `readFile`        | `[appRelativePath]`           | one app-folder-relative text file (icon SVG / README markdown) for preview; traversal-guarded, 512KB cap |
+| `readImage`       | `[appRelativePath]`           | one app-folder-relative image as a data: URI (README images are binary; mime by extension, 256KB cap, `null` when unservable) — the README viewer resolves relative image refs against the README's own directory through this |
 
 Deploy packages the app's **source** — `dist/` is never uploaded; the server
 injects platform deps and performs the build.
 
 ## Stage persistence
 
-The App Builder's active tab (`dashboard | design | store | deploy`) persists
-per app in `workspaceState` under `appdev.stage.<appId>`. Values are
-normalized on read: the legacy `'develop'` id (pre-rename) maps to
-`'design'`, and anything unknown (or never persisted) lands on `'dashboard'`,
-the default landing view. Writes store the raw id.
+The App Builder's active tab (`dashboard | design | package | store |
+deploy`) persists per app in `workspaceState` under `appdev.stage.<appId>`.
+Values are normalized on read: the legacy `'develop'` id (pre-rename) maps
+to `'design'`, and anything unknown (or never persisted) lands on
+`'dashboard'`, the default landing view. Writes store the raw id.
+
+PACKAGE carries everything an app needs regardless of the store (identity,
+icon, README, `appManifest.include` pack roots, and the personal-readiness
+checks); STORE carries commerce only (mode, pricing plans, submission, and
+review history). The `preflight` checks are tiered accordingly (`tier:
+'package' | 'store'`), and Submit-for-review gates on both tiers.
 
 ## Account & checkout messages
 

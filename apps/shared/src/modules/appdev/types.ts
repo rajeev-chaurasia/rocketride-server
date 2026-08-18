@@ -159,9 +159,11 @@ export interface BillingPlan {
 }
 
 /**
- * The editable Store listing draft — a direct projection of the app's
- * `package.json` appManifest (mode, name, description, billing.plans).
- * package.json is the storage: loading reads it, saving writes it back.
+ * The editable app-manifest draft — a direct projection of the app's
+ * `package.json` appManifest. package.json is the storage: loading reads
+ * it, saving writes it back. The PACKAGE tab edits the identity/packaging
+ * fields (name, description, icon, readme, include); the STORE tab edits
+ * the commerce fields (mode, billing.plans) — one draft, disjoint editors.
  */
 export interface ListingDraft {
 	/** App id — read-only projection. */
@@ -174,18 +176,30 @@ export interface ListingDraft {
 	description: string;
 	/** Pricing plans (appManifest.billing.plans; empty for free mode). */
 	plans: BillingPlan[];
+	/** App-folder-relative icon path (appManifest.icon), '' = undeclared. */
+	icon?: string;
+	/** App-folder-relative README path (appManifest.readme), '' = undeclared. */
+	readme?: string;
+	/** Extra WORKSPACE-relative roots packed with the app and installed by
+	 * the server build (appManifest.include) — the directories the app's
+	 * imports need beyond its own folder. */
+	include?: string[];
 }
 
-/** One pre-flight submission check row. */
+/** One pre-flight readiness check row. */
 export interface PreflightCheck {
-	/** Stable id ("bundle", "contract", "listing", "screenshots", "stripe"). */
+	/** Stable id ("manifest", "appid", "name", "icon", "readme", "include", "desc", "pricing"). */
 	id: string;
 	/** Check outcome. */
 	state: 'pass' | 'warn' | 'fail';
 	/** Row label. */
 	label: string;
-	/** Supporting note ("./AppDescriptor exposed · 2.4 MB of 10 MB"). */
+	/** Supporting note ("2 include paths resolve"). */
 	note?: string;
+	/** Which bar the check belongs to: 'package' = complete/buildable app
+	 * (the personal-publish bar, PACKAGE tab); 'store' = additional store
+	 * submission requirements (STORE tab). Absent = 'package'. */
+	tier?: 'package' | 'store';
 }
 
 /** One review-history timeline item (per-version review model). */
@@ -405,6 +419,18 @@ export interface IAppBuilderHost {
 	saveListing?: (draft: ListingDraft) => Promise<void>;
 	/** Run the pre-flight checks for the current build. */
 	runPreflight?: () => Promise<PreflightCheck[]>;
+	/** Native file picker for a manifest asset. Returns the picked file's
+	 * APP-FOLDER-relative './'-prefixed POSIX path, or null on cancel. The
+	 * host enforces containment: assets must live inside the app folder
+	 * (the server's harvest only copies app-root-relative paths). */
+	pickAppFile?: (kind: 'icon' | 'readme') => Promise<string | null>;
+	/** Read one app-folder-relative text file (icon SVG, README markdown)
+	 * for preview. The host guards traversal and caps the size. */
+	readAppTextFile?: (relPath: string) => Promise<string>;
+	/** Read one app-folder-relative IMAGE as a data: URI (README images are
+	 * often binary — png/jpg — so text reads would corrupt them). null =
+	 * unreadable, unsupported type, or over the host's size cap. */
+	readAppImageDataUri?: (relPath: string) => Promise<string | null>;
 	/** Submit the given version for public review (addressed by the registry
 	 * version int, like publish). */
 	submitForReview?: (version: number) => Promise<void>;
@@ -419,8 +445,8 @@ export interface IAppBuilderHost {
 // VIEW VOCABULARY
 // =============================================================================
 
-/** The four activity views. */
-export type AppBuilderStage = 'dashboard' | 'design' | 'deploy' | 'store';
+/** The five activity views. */
+export type AppBuilderStage = 'dashboard' | 'design' | 'package' | 'store' | 'deploy';
 
 /** The DESIGN pill panes (Code is web-only). */
 export type DesignPane = 'preview' | 'code' | 'components' | 'events' | 'console' | 'errors';

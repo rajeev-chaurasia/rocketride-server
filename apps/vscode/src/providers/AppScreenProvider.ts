@@ -16,10 +16,11 @@
  */
 
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { randomBytes } from 'crypto';
 import { ConnectionManager } from '../connection/connection';
 import { GenericEvent } from '../shared/types';
-import { scanWorkspaceApps } from '../appdev/appScan';
+import { appIconDataUri, scanWorkspaceApps } from '../appdev/appScan';
 import { DEV_SESSION_NONCE } from '../appdev/devSession';
 import type { ScannedApp } from '../appdev/appScan';
 import { ensureAppTrigger, ensureProjectId, readAppListing, saveAppListing } from '../appdev/appMarker';
@@ -357,27 +358,130 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									value = await client.call('rrext_deploy_app', { subcommand: 'developer_register', developerId: String(callArgs?.[0] ?? '') });
 									break;
 								case 'preflight': {
-									// Real, client-side store pre-flight over the app's manifest +
-									// built bundle (no server round-trip): the checks the STORE
-									// tab renders before the developer submits for review.
+									// Real, client-side readiness checks over the app's manifest
+									// (no server round-trip), TIERED: 'package' rows are the
+									// complete-and-buildable bar (the PACKAGE tab's readiness box
+									// — all green means a personal @me/@team publish just works);
+									// 'store' rows are the ADDITIONAL public-submission bar the
+									// STORE tab gates its Submit button on.
 									const apps = await scanWorkspaceApps();
 									const scanned = apps.find((a) => a.id === appId);
-									const checks: Array<{ id: string; state: 'pass' | 'warn' | 'fail'; label: string; note?: string }> = [];
+									const checks: Array<{ id: string; state: 'pass' | 'warn' | 'fail'; label: string; note?: string; tier?: 'package' | 'store' }> = [];
 									if (!scanned) {
-										checks.push({ id: 'manifest', state: 'fail', label: 'App manifest', note: 'No package.json appManifest found for this app.' });
+										checks.push({ id: 'manifest', state: 'fail', label: 'App manifest', note: 'No package.json appManifest found for this app.', tier: 'package' });
 										value = checks;
 										break;
 									}
-									checks.push(scanned.id.includes('.') ? { id: 'appid', state: 'pass', label: 'App id namespaced', note: scanned.id } : { id: 'appid', state: 'fail', label: 'App id namespaced', note: `"${scanned.id}" must be <developerId>.<name>` });
-									checks.push(scanned.name ? { id: 'name', state: 'pass', label: 'Display name', note: scanned.name } : { id: 'name', state: 'fail', label: 'Display name', note: 'appManifest.name is required.' });
-									checks.push(scanned.description ? { id: 'desc', state: 'pass', label: 'Description' } : { id: 'desc', state: 'warn', label: 'Description', note: 'No description — recommended for the store listing.' });
-									checks.push(scanned.icon ? { id: 'icon', state: 'pass', label: 'Icon' } : { id: 'icon', state: 'warn', label: 'Icon', note: 'No icon declared — the store shows a generic glyph.' });
+									const listing = await readAppListing(scanned.folder);
+									/** Whether an app-folder-relative file exists. */
+									const fileExists = async (rel: string): Promise<boolean> => {
+										try {
+											await vscode.workspace.fs.stat(vscode.Uri.joinPath(vscode.Uri.file(scanned.folder), ...rel.replace(/^\.\//, '').split('/')));
+											return true;
+										} catch {
+											return false;
+										}
+									};
+									// ── package tier — the personal-publish bar ──────────
+									checks.push(scanned.id.includes('.') ? { id: 'appid', state: 'pass', label: 'App id namespaced', note: scanned.id, tier: 'package' } : { id: 'appid', state: 'fail', label: 'App id namespaced', note: `"${scanned.id}" must be <developerId>.<name>`, tier: 'package' });
+									checks.push(scanned.name ? { id: 'name', state: 'pass', label: 'Display name', note: scanned.name, tier: 'package' } : { id: 'name', state: 'fail', label: 'Display name', note: 'appManifest.name is required.', tier: 'package' });
+									// Icon/readme: a DECLARED path that does not resolve is a
+									// fail (the manifest lies); undeclared is only a warn.
+									if (listing.icon) {
+										checks.push((await fileExists(listing.icon)) ? { id: 'icon', state: 'pass', label: 'Icon', note: listing.icon, tier: 'package' } : { id: 'icon', state: 'fail', label: 'Icon', note: `${listing.icon} does not exist in the app folder.`, tier: 'package' });
+									} else {
+										checks.push({ id: 'icon', state: 'warn', label: 'Icon', note: 'No icon declared — tiles show a generic glyph.', tier: 'package' });
+									}
+									if (listing.readme) {
+										checks.push((await fileExists(listing.readme)) ? { id: 'readme', state: 'pass', label: 'README', note: listing.readme, tier: 'package' } : { id: 'readme', state: 'fail', label: 'README', note: `${listing.readme} does not exist in the app folder.`, tier: 'package' });
+									} else {
+										checks.push({ id: 'readme', state: 'warn', label: 'README', note: 'No README declared — recommended so users know what the app does.', tier: 'package' });
+									}
+									// Include paths are WORKSPACE-relative; a missing one fails
+									// the deploy pack, so it fails here first, by name.
+									const includeEntries = listing.include ?? [];
+									if (includeEntries.length > 0) {
+										const wsRoot = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(scanned.folder))?.uri;
+										const missing: string[] = [];
+										for (const entry of includeEntries) {
+											try {
+												if (!wsRoot) throw new Error('no workspace');
+												await vscode.workspace.fs.stat(vscode.Uri.joinPath(wsRoot, ...entry.split('/')));
+											} catch {
+												missing.push(entry);
+											}
+										}
+										checks.push(missing.length === 0 ? { id: 'include', state: 'pass', label: 'Include paths', note: `${includeEntries.length} path${includeEntries.length === 1 ? '' : 's'} resolve`, tier: 'package' } : { id: 'include', state: 'fail', label: 'Include paths', note: `Missing in the workspace: ${missing.join(', ')}`, tier: 'package' });
+									}
+									// ── store tier — the additional public-submission bar ─
+									checks.push(scanned.description ? { id: 'desc', state: 'pass', label: 'Description', tier: 'store' } : { id: 'desc', state: 'fail', label: 'Description', note: 'A store listing needs a description.', tier: 'store' });
+									if (listing.mode !== 'free') {
+										checks.push(listing.plans.length > 0 ? { id: 'pricing', state: 'pass', label: 'Pricing plans', note: `${listing.plans.length} plan${listing.plans.length === 1 ? '' : 's'}`, tier: 'store' } : { id: 'pricing', state: 'fail', label: 'Pricing plans', note: `Mode "${listing.mode}" needs at least one plan.`, tier: 'store' });
+									}
 									// No dist/ check: deployment packs SOURCE (packFilter's
 									// BASELINE_PATTERNS excludes dist/ unconditionally) and the
 									// server builds the client bundle itself, so a local build
 									// is never read or uploaded — failing on a missing dist/
 									// would block a submission the deploy would have accepted.
 									value = checks;
+									break;
+								}
+								case 'pickFile': {
+									// Native picker for a manifest asset (icon/readme). The
+									// result is APP-FOLDER-relative: the server's harvest only
+									// copies app-root-relative paths, so a pick outside the app
+									// folder is refused, not silently accepted.
+									const kind = String(callArgs?.[0] ?? '') === 'icon' ? 'icon' : 'readme';
+									const apps = await scanWorkspaceApps();
+									const scanned = apps.find((a) => a.id === appId);
+									if (!scanned) throw new Error(`App "${appId}" has no bound folder in this workspace.`);
+									const picked = await vscode.window.showOpenDialog({
+										canSelectMany: false,
+										defaultUri: vscode.Uri.file(scanned.folder),
+										openLabel: 'Select',
+										filters: kind === 'icon' ? { 'SVG icon': ['svg'] } : { Markdown: ['md'] },
+									});
+									if (!picked || picked.length === 0) {
+										value = null;
+										break;
+									}
+									const rel = path.relative(scanned.folder, picked[0].fsPath);
+									if (rel.startsWith('..') || path.isAbsolute(rel)) {
+										throw new Error('The file must live inside the app folder — the deploy only packs (and the server only serves) app-relative assets.');
+									}
+									value = `./${rel.split(path.sep).join('/')}`;
+									break;
+								}
+								case 'readImage': {
+									// One app-folder-relative image as a data: URI — README
+									// images are binary, so the text-read path would corrupt
+									// them. Reuses the icon inliner (mime by extension, size
+									// cap, undefined on anything unservable).
+									const rel = String(callArgs?.[0] ?? '').replace(/^\.\//, '');
+									const apps = await scanWorkspaceApps();
+									const scanned = apps.find((a) => a.id === appId);
+									if (!scanned) throw new Error(`App "${appId}" has no bound folder in this workspace.`);
+									const abs = path.resolve(scanned.folder, ...rel.split('/'));
+									if (!abs.startsWith(path.resolve(scanned.folder) + path.sep)) {
+										throw new Error('Path escapes the app folder.');
+									}
+									value = (await appIconDataUri(abs)) ?? null;
+									break;
+								}
+								case 'readFile': {
+									// One app-folder-relative text file for preview (icon SVG,
+									// README markdown). Traversal-guarded and size-capped.
+									const rel = String(callArgs?.[0] ?? '').replace(/^\.\//, '');
+									const apps = await scanWorkspaceApps();
+									const scanned = apps.find((a) => a.id === appId);
+									if (!scanned) throw new Error(`App "${appId}" has no bound folder in this workspace.`);
+									const abs = path.resolve(scanned.folder, ...rel.split('/'));
+									if (!abs.startsWith(path.resolve(scanned.folder) + path.sep)) {
+										throw new Error('Path escapes the app folder.');
+									}
+									const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(abs));
+									if (bytes.byteLength > 512 * 1024) throw new Error('File is over the 512KB preview limit.');
+									value = Buffer.from(bytes).toString('utf8');
 									break;
 								}
 								case 'history': {
@@ -592,9 +696,9 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 	 * @param raw - The raw workspaceState value.
 	 * @returns A valid stage id for the current tab set.
 	 */
-	private static normalizeStage(raw: unknown): 'dashboard' | 'design' | 'store' | 'deploy' {
+	private static normalizeStage(raw: unknown): 'dashboard' | 'design' | 'package' | 'store' | 'deploy' {
 		if (raw === 'develop') return 'design';
-		if (raw === 'design' || raw === 'store' || raw === 'deploy' || raw === 'dashboard') return raw;
+		if (raw === 'design' || raw === 'package' || raw === 'store' || raw === 'deploy' || raw === 'dashboard') return raw;
 		return 'dashboard';
 	}
 

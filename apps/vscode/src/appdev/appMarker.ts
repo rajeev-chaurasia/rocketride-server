@@ -65,6 +65,9 @@ interface AppManifestJson {
 	name?: string;
 	description?: string;
 	mode?: string;
+	icon?: string;
+	readme?: string;
+	include?: string[];
 	billing?: { plans?: Array<Record<string, unknown>> } & Record<string, unknown>;
 	[key: string]: unknown;
 }
@@ -159,6 +162,12 @@ export interface AppListing {
 	name: string;
 	description: string;
 	plans: Array<Record<string, unknown>>;
+	/** App-folder-relative icon path ('' = undeclared). */
+	icon?: string;
+	/** App-folder-relative README path ('' = undeclared). */
+	readme?: string;
+	/** Workspace-relative extra pack roots (appManifest.include). */
+	include?: string[];
 }
 
 /**
@@ -177,17 +186,23 @@ export async function readAppListing(folder: string): Promise<AppListing> {
 		name: typeof m.name === 'string' ? m.name : (pkg.name ?? ''),
 		description: typeof m.description === 'string' ? m.description : '',
 		plans: Array.isArray(m.billing?.plans) ? m.billing.plans : [],
+		icon: typeof m.icon === 'string' ? m.icon : '',
+		readme: typeof m.readme === 'string' ? m.readme : '',
+		include: Array.isArray(m.include) ? m.include.filter((p): p is string => typeof p === 'string' && p.length > 0) : [],
 	};
 }
 
 /**
- * Writes the STORE listing back into the folder's appManifest — mode, name,
- * description, and billing.plans. Plan metadata rides along verbatim; other
- * billing keys are preserved. An empty plan list removes billing.plans (and
- * an emptied billing block entirely).
+ * Writes the app-manifest draft back into the folder's appManifest — name,
+ * description, mode, billing.plans, and the packaging fields (icon, readme,
+ * include). Plan metadata rides along verbatim; other billing keys are
+ * preserved. Empty values DELETE their key (an empty plan list removes
+ * billing.plans and an emptied billing block entirely; '' icon/readme and
+ * an empty include list drop the manifest key) so the manifest never
+ * accumulates dead fields.
  *
  * @param folder - The app's bound folder (absolute path).
- * @param listing - The listing to persist.
+ * @param listing - The draft to persist.
  */
 export async function saveAppListing(folder: string, listing: AppListing): Promise<void> {
 	const file = await readPkg(folder);
@@ -200,6 +215,21 @@ export async function saveAppListing(folder: string, listing: AppListing): Promi
 	} else if (manifest.billing) {
 		delete manifest.billing.plans;
 		if (Object.keys(manifest.billing).length === 0) delete manifest.billing;
+	}
+	// Packaging fields — only touched when the draft carries them (the STORE
+	// tab's save omits them; the PACKAGE tab's save owns them).
+	if (listing.icon !== undefined) {
+		if (listing.icon) manifest.icon = listing.icon;
+		else delete manifest.icon;
+	}
+	if (listing.readme !== undefined) {
+		if (listing.readme) manifest.readme = listing.readme;
+		else delete manifest.readme;
+	}
+	if (listing.include !== undefined) {
+		const entries = listing.include.map((p) => p.trim()).filter(Boolean);
+		if (entries.length > 0) manifest.include = entries;
+		else delete manifest.include;
 	}
 	await writePkg(file);
 }

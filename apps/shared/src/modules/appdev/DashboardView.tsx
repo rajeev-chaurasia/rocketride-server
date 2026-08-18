@@ -31,11 +31,14 @@
  * no label-speak. Alongside it: the review conversation with the store
  * reviewer, where the app is live, and recent activity.
  *
- * The conversation IS the app's deployment history: 'reply' rows render as
- * chat bubbles (developer right/brand, admin left/surface — the developer's
- * own side sits right, mirroring the reviewer's App Admin surface), review
- * transitions as centered system lines. Pure machine ops (deploy, publish,
- * rollback...) stay out of the chat and live in Recent activity instead.
+ * The conversation IS the app's deployment history — the WHOLE of it, one
+ * chronological stream: every system event (deploy, publish, submission,
+ * verdict) renders as a timeline item on the dot rail, and 'reply' rows
+ * render as chat bubbles woven in at their timestamps (developer
+ * right/brand, admin left/surface — the developer's own side sits right,
+ * mirroring the reviewer's App Admin surface). The reply box sits at the
+ * bottom of the same stream, so the dashboard reads as one conversation
+ * between the developer and the system.
  *
  * Liveness (v1): the host re-creates its adapter on account changes (verdict
  * pushes ride app:statusChanged into that re-mint), which re-runs the
@@ -83,12 +86,18 @@ interface StatusLine {
 // =============================================================================
 
 const styles: Record<string, React.CSSProperties> = {
+	// The view owns the FULL tab height and never scrolls as a page — the
+	// conversation card flexes to the available space and only its inner
+	// stream scrolls (a fixed stream height made the card overflow the tab).
 	wrap: {
-		overflow: 'auto',
 		height: '100%',
+		display: 'flex',
+		flexDirection: 'column',
+		overflow: 'hidden',
 	},
 	head: {
 		padding: '18px 26px 0',
+		flexShrink: 0,
 	},
 	h1: {
 		fontSize: 20,
@@ -102,17 +111,32 @@ const styles: Record<string, React.CSSProperties> = {
 		lineHeight: 1.5,
 	},
 	grid: {
+		// Conversation right and WIDE — it is the app's whole story; the
+		// status/where-live facts sit left. The grid takes the remaining tab
+		// height and columns STRETCH into it (the conversation's fill chain).
 		display: 'grid',
-		gridTemplateColumns: '3fr 2fr',
+		gridTemplateColumns: '2fr 3fr',
 		gap: 16,
-		alignItems: 'start',
-		margin: '16px 26px 30px',
+		alignItems: 'stretch',
+		margin: '16px 26px 24px',
 		maxWidth: 1060,
+		flex: 1,
+		minHeight: 0,
 	},
+	// Left column: natural-height cards; scrolls on its own if the viewport
+	// is shorter than the facts.
 	col: {
 		display: 'flex',
 		flexDirection: 'column',
 		gap: 16,
+		minHeight: 0,
+		overflowY: 'auto',
+	},
+	// Right column: a fill chain down to the conversation card.
+	colFill: {
+		display: 'flex',
+		flexDirection: 'column',
+		minHeight: 0,
 	},
 	// ── Status & next steps (narrated prose) ────────────────────────────────
 	statusRow: {
@@ -127,24 +151,57 @@ const styles: Record<string, React.CSSProperties> = {
 		color: 'var(--rr-text-primary)',
 		lineHeight: 1.65,
 	},
-	// ── Conversation ────────────────────────────────────────────────────────
+	// ── Conversation — ONE chronological stream: system events on the
+	//    timeline rail (the Review-history grammar), replies as bubbles ────
 	chatScroll: {
-		display: 'flex',
-		flexDirection: 'column',
-		gap: 10,
-		height: 380,
+		flex: 1,
+		minHeight: 120,
 		overflowY: 'auto',
 		padding: '4px 2px',
 	},
-	sysLine: {
-		alignSelf: 'center',
+	stream: {
+		position: 'relative',
+		paddingLeft: 22,
+		display: 'flex',
+		flexDirection: 'column',
+		gap: 6,
+	},
+	streamRail: {
+		position: 'absolute',
+		left: 7,
+		top: 6,
+		bottom: 6,
+		width: 1,
+		background: 'var(--rr-border)',
+	},
+	tlItem: {
+		position: 'relative',
+		padding: '2px 0 6px',
+	},
+	tlDot: {
+		position: 'absolute',
+		left: -20,
+		top: 7,
+		width: 9,
+		height: 9,
+		borderRadius: '50%',
+	},
+	tlWhen: {
+		fontSize: 11,
+		color: 'var(--rr-text-disabled)',
+		fontFamily: 'var(--rr-font-mono, Consolas, monospace)',
+	},
+	tlWhat: {
+		fontSize: 12.5,
+		color: 'var(--rr-text-primary)',
+		marginTop: 1,
+		fontWeight: 600,
+	},
+	tlBy: {
 		fontSize: 11.5,
 		color: 'var(--rr-text-secondary)',
-		background: 'var(--rr-bg-surface-alt)',
-		border: '1px dashed var(--rr-border)',
-		borderRadius: 14,
-		padding: '3px 12px',
-		textAlign: 'center',
+		marginTop: 1,
+		lineHeight: 1.5,
 	},
 	replyRow: {
 		display: 'flex',
@@ -198,32 +255,10 @@ const styles: Record<string, React.CSSProperties> = {
 		textOverflow: 'ellipsis',
 		whiteSpace: 'nowrap',
 	},
-	// ── Recent activity ─────────────────────────────────────────────────────
-	actRow: {
-		display: 'flex',
-		gap: 10,
-		padding: '5px 0',
-		fontSize: 12,
-		borderTop: '1px solid var(--rr-bg-widget-header)',
-		alignItems: 'baseline',
-	},
-	actRowFirst: {
-		borderTop: 'none',
-	},
-	actWhen: {
-		fontFamily: 'var(--rr-font-mono, Consolas, monospace)',
-		fontSize: 11,
-		color: 'var(--rr-text-disabled)',
-		whiteSpace: 'nowrap',
-	},
-	actWhat: {
-		flex: 1,
-		color: 'var(--rr-text-secondary)',
-		lineHeight: 1.5,
-	},
 	loadBanner: {
 		margin: '16px 26px 0',
 		maxWidth: 1060,
+		flexShrink: 0,
 	},
 };
 
@@ -276,10 +311,18 @@ const TONE_COLOR: Record<StatusLine['tone'], string> = {
 // HISTORY VOCABULARY
 // =============================================================================
 
-// Review-lifecycle actions — rendered as system lines inside the conversation.
-const LIFECYCLE_ACTIONS = new Set(['request', 'approved', 'rejected', 'withdrawn', 'failed']);
+// Timeline dot color per action — review verdicts carry their semantic
+// color, plain machine ops stay neutral.
+const STREAM_DOT: Record<string, string> = {
+	request: 'var(--rr-color-warning)',
+	approved: 'var(--rr-color-success)',
+	rejected: 'var(--rr-color-error)',
+	failed: 'var(--rr-color-error)',
+	errored: 'var(--rr-color-error)',
+	withdrawn: 'var(--rr-text-disabled)',
+};
 
-// Human labels for machine actions (system lines + the activity feed).
+// Human labels for machine actions (the timeline item titles).
 const ACTION_LABEL: Record<string, string> = {
 	request: 'submitted for review',
 	approved: 'approved',
@@ -332,19 +375,6 @@ function formatAt(epochSeconds: number): string {
 	} catch {
 		return '';
 	}
-}
-
-/**
- * Human label for a machine history row ("v4 submitted for review by dana").
- *
- * @param entry - The history row.
- * @returns The one-line "what happened" text.
- */
-function systemLabel(entry: AppHistoryEntry): string {
-	const version = entry.version != null ? `v${entry.version} ` : '';
-	const label = ACTION_LABEL[entry.action] ?? entry.action;
-	const actor = entry.actor?.display || entry.actor?.email || '';
-	return `${version}${label}${actor ? ` by ${actor}` : ''}`;
 }
 
 /**
@@ -442,11 +472,22 @@ function deriveStatus(
 			text: 'Read the notes from the reviewer in the conversation below, fix what they flagged, and deploy a new version — a rejection is final for that version.',
 		});
 	}
-	const failing = checks.filter((c) => c.state === 'fail').length;
-	if (failing > 0) {
+	// The two readiness bars separately — a broken PACKAGE blocks everything
+	// (even a personal publish would ship a lying manifest), while missing
+	// STORE requirements only matter when a submission is the goal.
+	const packageFailing = checks.filter((c) => (c.tier ?? 'package') === 'package' && c.state === 'fail').length;
+	if (packageFailing > 0) {
 		lines.push({
 			tone: 'warn',
-			text: `Before your next store submission, ${failing === 1 ? 'one pre-flight check needs' : `${failing} pre-flight checks need`} fixing.`,
+			text: `${packageFailing === 1 ? 'One package item needs' : `${packageFailing} package items need`} fixing before this app is complete.`,
+			stage: 'package',
+		});
+	}
+	const storeFailing = checks.filter((c) => c.tier === 'store' && c.state === 'fail').length;
+	if (storeFailing > 0) {
+		lines.push({
+			tone: 'warn',
+			text: `Before your next store submission, ${storeFailing === 1 ? 'one store requirement needs' : `${storeFailing} store requirements need`} fixing.`,
 			stage: 'store',
 		});
 	}
@@ -572,28 +613,17 @@ export const DashboardView: React.FC<IDashboardViewProps> = ({ host, app, readOn
 		[versions, buildTicks],
 	);
 
-	// ── Conversation projection ──────────────────────────────────────────
-	// The chat shows replies and review transitions; pure machine ops stay
-	// in Recent activity.
-	const thread = useMemo(
-		() => (history ?? []).filter((e) => e.action === 'reply' || LIFECYCLE_ACTIONS.has(e.action)),
-		[history],
-	);
-	const activity = useMemo(
-		() => (history ?? []).filter((e) => e.action !== 'reply').slice(-10).reverse(),
-		[history],
-	);
 	const status = useMemo(
 		() => deriveStatus(liveVersions, pins, checks, watch, history ?? []),
 		[liveVersions, pins, checks, watch, history],
 	);
 
-	// Keep the chat pinned to its newest message on every (re)load.
+	// Keep the stream pinned to its newest entry on every (re)load.
 	const chatRef = useRef<HTMLDivElement | null>(null);
 	useEffect(() => {
 		const el = chatRef.current;
 		if (el) el.scrollTop = el.scrollHeight;
-	}, [thread]);
+	}, [history]);
 
 	/** Send the reply, then reload so the row renders from the server's
 	 * serialization (no optimistic insert). */
@@ -633,7 +663,7 @@ export const DashboardView: React.FC<IDashboardViewProps> = ({ host, app, readOn
 			) : null}
 
 			<div style={styles.grid}>
-				{/* ── Left: attention + the conversation ─────────────────── */}
+				{/* ── Left: the facts — status + where it's live ──────────── */}
 				<div style={styles.col}>
 					<Card header="Status & next steps">
 						{history === null ? (
@@ -654,36 +684,67 @@ export const DashboardView: React.FC<IDashboardViewProps> = ({ host, app, readOn
 						)}
 					</Card>
 
+					<Card header="Where it's live">
+						{pins.length === 0 ? (
+							<EmptyState title="Not serving anywhere" description="Publish a version to @me, @team, or @public and its pin appears here." />
+						) : (
+							pins.map((pin, i) => (
+								<div key={pin.handle} style={i === 0 ? { ...styles.pinRow, ...styles.pinRowFirst } : styles.pinRow}>
+									<span style={styles.pinHandle}>{pin.handle}</span>
+									<span style={styles.pinVersion}>v{pin.registryVersion}{pin.version ? ` · ${pin.version}` : ''}</span>
+									<StatusBadge variant={pin.state === 'pending' ? 'muted' : 'info'}>
+										{pin.state === 'enabled' ? 'live' : pin.state === 'approved' ? 'live' : 'in review'}
+									</StatusBadge>
+									<span style={styles.pinAudience}>{pin.audience}</span>
+								</div>
+							))
+						)}
+					</Card>
+				</div>
+
+				{/* ── Right: the whole story — every system event on the
+				    timeline rail, replies as bubbles, chat at the bottom ── */}
+				<div style={styles.colFill}>
 					<Card
-						header="Review conversation"
+						header="Conversation"
+						fill
 						headerActions={
 							<Button variant="secondary" small onClick={() => void refresh()}>Refresh</Button>
 						}
 					>
 						<div ref={chatRef} style={styles.chatScroll}>
 							{history === null ? (
-								<div style={styles.sysLine}>Loading thread...</div>
-							) : thread.length === 0 ? (
-								<EmptyState title="No conversation yet" description="Submissions, verdicts, and reviewer messages appear here once the app is on the server." />
+								<div style={styles.tlBy}>Loading the app&rsquo;s history...</div>
+							) : history.length === 0 ? (
+								<EmptyState title="Nothing yet" description="Deploys, publishes, review verdicts, and reviewer messages appear here once the app is on the server." />
 							) : (
-								thread.map((entry) => {
-									if (entry.action === 'reply' && entry.data?.message) {
-										const isDeveloper = entry.data.side === 'developer';
+								<div style={styles.stream}>
+									<div style={styles.streamRail} />
+									{history.map((entry) => {
+										if (entry.action === 'reply' && entry.data?.message) {
+											const isDeveloper = entry.data.side === 'developer';
+											return (
+												<React.Fragment key={entry.seq}>
+													<div style={bubble(isDeveloper)}>{entry.data.message}</div>
+													<div style={bubbleMeta(isDeveloper)}>
+														{(entry.actor?.display || entry.actor?.email || entry.data.side || '')} · {formatAt(entry.at)}
+													</div>
+												</React.Fragment>
+											);
+										}
+										// System event — one timeline item in the Review-history
+										// grammar: colored dot, mono timestamp, bold what, by-line.
+										const actor = entry.actor?.display || entry.actor?.email || '';
 										return (
-											<React.Fragment key={entry.seq}>
-												<div style={bubble(isDeveloper)}>{entry.data.message}</div>
-												<div style={bubbleMeta(isDeveloper)}>
-													{(entry.actor?.display || entry.actor?.email || entry.data.side || '')} · {formatAt(entry.at)}
-												</div>
-											</React.Fragment>
+											<div key={entry.seq} style={styles.tlItem}>
+												<div style={{ ...styles.tlDot, background: STREAM_DOT[entry.action] ?? 'var(--rr-border)' }} />
+												<div style={styles.tlWhen}>{formatAt(entry.at)}</div>
+												<div style={styles.tlWhat}>{`${entry.version != null ? `v${entry.version} ` : ''}${ACTION_LABEL[entry.action] ?? entry.action}`}</div>
+												{actor ? <div style={styles.tlBy}>by {actor}</div> : null}
+											</div>
 										);
-									}
-									return (
-										<div key={entry.seq} style={styles.sysLine}>
-											{formatAt(entry.at)} — {systemLabel(entry)}
-										</div>
-									);
-								})
+									})}
+								</div>
 							)}
 						</div>
 
@@ -692,7 +753,7 @@ export const DashboardView: React.FC<IDashboardViewProps> = ({ host, app, readOn
 								<div style={styles.replyRow}>
 									<div style={styles.replyInput}>
 										<InputField
-											placeholder={readOnly ? 'Replies disabled' : 'Reply to the reviewer...'}
+											placeholder={readOnly ? 'Replies disabled' : versions.length === 0 ? 'Ask the review team a question...' : 'Reply to the reviewer...'}
 											value={reply}
 											disabled={readOnly}
 											maxLength={4000}
@@ -715,39 +776,6 @@ export const DashboardView: React.FC<IDashboardViewProps> = ({ host, app, readOn
 							</>
 						) : (
 							<div style={styles.replyHint}>Replying is not wired up on this host yet — the thread is read-only here.</div>
-						)}
-					</Card>
-				</div>
-
-				{/* ── Right: where it's live + recent activity ───────────── */}
-				<div style={styles.col}>
-					<Card header="Where it's live">
-						{pins.length === 0 ? (
-							<EmptyState title="Not serving anywhere" description="Publish a version to @me, @team, or @public and its pin appears here." />
-						) : (
-							pins.map((pin, i) => (
-								<div key={pin.handle} style={i === 0 ? { ...styles.pinRow, ...styles.pinRowFirst } : styles.pinRow}>
-									<span style={styles.pinHandle}>{pin.handle}</span>
-									<span style={styles.pinVersion}>v{pin.registryVersion}{pin.version ? ` · ${pin.version}` : ''}</span>
-									<StatusBadge variant={pin.state === 'pending' ? 'muted' : 'info'}>
-										{pin.state === 'enabled' ? 'live' : pin.state === 'approved' ? 'live' : 'in review'}
-									</StatusBadge>
-									<span style={styles.pinAudience}>{pin.audience}</span>
-								</div>
-							))
-						)}
-					</Card>
-
-					<Card header="Recent activity">
-						{activity.length === 0 ? (
-							<EmptyState title="No activity yet" description="Deploys, publishes, and review events appear here." />
-						) : (
-							activity.map((entry, i) => (
-								<div key={entry.seq} style={i === 0 ? { ...styles.actRow, ...styles.actRowFirst } : styles.actRow}>
-									<span style={styles.actWhen}>{formatAt(entry.at)}</span>
-									<span style={styles.actWhat}>{systemLabel(entry)}</span>
-								</div>
-							))
 						)}
 					</Card>
 				</div>

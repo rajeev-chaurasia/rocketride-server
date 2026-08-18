@@ -37,6 +37,8 @@ export { DashboardView } from './DashboardView';
 export type { IDashboardViewProps } from './DashboardView';
 export { DesignView } from './DesignView';
 export type { IDesignViewProps } from './DesignView';
+export { PackageView } from './PackageView';
+export type { IPackageViewProps } from './PackageView';
 export { DeployView } from './DeployView';
 export type { IDeployViewProps } from './DeployView';
 export { StoreView } from './StoreView';
