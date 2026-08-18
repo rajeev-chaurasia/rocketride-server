@@ -26,9 +26,9 @@
 
 /**
  * The App Builder's entire view surface: a top TabControl strip switching
- * the three activity views — DEVELOP | STORE | DEPLOY — with the app's
- * `id · version` in the trailing slot (revised decision D1: activity names,
- * no coach bar, no artifact views).
+ * the four activity views — DASHBOARD | DESIGN | STORE | DEPLOY — with the
+ * app's `id · version` in the trailing slot (revised decision D1: activity
+ * names, no coach bar, no artifact views). DASHBOARD is the landing view.
  *
  * Hosts mount this ONE component in exactly one of two ways (decision D7):
  * rocket-ui direct-mounts it with an adapter over the live client; the
@@ -40,7 +40,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { TabControl } from 'shell';
 import type { ViewMenu } from 'shell';
-import { DevelopView } from './DevelopView';
+import { DashboardView } from './DashboardView';
+import { DesignView } from './DesignView';
 import { DeployView } from './DeployView';
 import { StoreView } from './StoreView';
 import type { AppBuilderStage, AppSummary, IAppBuilderHost } from './types';
@@ -59,7 +60,7 @@ export interface IAppBuilderScreenProps {
 	previewPane?: React.ReactNode;
 	/** Host-rendered Code surface (web: file tree + Monaco). */
 	codePane?: React.ReactNode;
-	/** Initial activity view (defaults to 'develop'). */
+	/** Initial activity view (defaults to 'dashboard'). */
 	initialStage?: AppBuilderStage;
 	/** Notified when the user switches views (hosts persist view state). */
 	onStageChange?: (stage: AppBuilderStage) => void;
@@ -119,7 +120,7 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 	host, app, previewPane, codePane, initialStage, onStageChange,
 }) => {
 	// ── Stage — the active activity view ─────────────────────────────────
-	const [stage, setStage] = useState<AppBuilderStage>(initialStage ?? 'develop');
+	const [stage, setStage] = useState<AppBuilderStage>(initialStage ?? 'dashboard');
 
 	// ── Namespace gate ───────────────────────────────────────────────────
 	// The app id's prefix must match the org's developerId to publish. On a
@@ -133,10 +134,11 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 	}, [host]);
 	const namespaceMismatch = developerId !== null && app.id.split('.')[0] !== developerId;
 
-	// The three activity views, per the settled UI model
+	// The four activity views, per the settled UI model — Dashboard lands first
 	const viewMenu: ViewMenu = useMemo(() => ({
 		entries: [
-			{ id: 'develop', label: 'Develop' },
+			{ id: 'dashboard', label: 'Dashboard' },
+			{ id: 'design', label: 'Design' },
 			{ id: 'store', label: 'Store' },
 			{ id: 'deploy', label: 'Deploy' },
 		],
@@ -163,8 +165,11 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 				}
 			/>
 
-			{/* Namespace-mismatch banner — why the page below is read-only */}
-			{namespaceMismatch && stage !== 'develop' && (
+			{/* Namespace-mismatch banner — why the page below is read-only.
+			    STORE/DEPLOY only: DESIGN is local work (always allowed), and the
+			    DASHBOARD is read-only by nature — it disables just its reply box
+			    with an inline hint instead of opening the landing tab on a warning. */}
+			{namespaceMismatch && (stage === 'store' || stage === 'deploy') && (
 				<div style={styles.nsBanner}>
 					<strong>Read-only:</strong> this app&rsquo;s id <code>{app.id}</code> is outside your
 					organization&rsquo;s developer namespace <code>{developerId}</code>. Rename the app id
@@ -174,8 +179,11 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 
 			{/* Active view body */}
 			<div style={styles.body}>
-				{stage === 'develop' && (
-					<DevelopView host={host} previewPane={previewPane} codePane={codePane} />
+				{stage === 'dashboard' && (
+					<DashboardView host={host} app={app} readOnly={namespaceMismatch} onNavigate={selectStage} />
+				)}
+				{stage === 'design' && (
+					<DesignView host={host} previewPane={previewPane} codePane={codePane} />
 				)}
 				{stage === 'deploy' && <DeployView host={host} app={app} readOnly={namespaceMismatch} />}
 				{stage === 'store' && <StoreView host={host} app={app} readOnly={namespaceMismatch} />}

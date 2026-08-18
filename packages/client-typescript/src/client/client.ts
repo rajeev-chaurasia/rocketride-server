@@ -2741,6 +2741,36 @@ export class RocketRideClient extends DAPClient {
 	}
 
 	/**
+	 * Append a developer message to the app's review thread — the developer
+	 * half of the reviewer conversation. The message rides the app's
+	 * deployment history as a 'reply' row (side 'developer'), the same
+	 * stream `deploy.history()` reads and the store reviewer writes to.
+	 * Developer-org and developer-namespace gated, like submit.
+	 *
+	 * @param appId - App id
+	 * @param message - The message text (server caps the length)
+	 * @param registryVersion - Optional registry version the message refers to
+	 * @returns `{replied: true, appId}`
+	 */
+	async replyApp(appId: string, message: string, registryVersion?: number): Promise<{ replied: boolean; appId: string }> {
+		return (await this.call('rrext_deploy_app', { subcommand: 'reply', appId, message, ...(registryVersion !== undefined && { version: registryVersion }) })) as any;
+	}
+
+	/**
+	 * Read one version's durable server build log — the full phase-by-phase
+	 * output the build worker writes beside the version's artifacts (no
+	 * error text rides the rail rows or the DB). Long logs serve their tail;
+	 * '' means no log exists for the version. Developer-org gated.
+	 *
+	 * @param appId - App id
+	 * @param registryVersion - Registry version number from the rail
+	 * @returns `{appId, version, log}`
+	 */
+	async buildLog(appId: string, registryVersion: number): Promise<{ appId: string; version: number; log: string }> {
+		return (await this.call('rrext_deploy_app', { subcommand: 'build_log', appId, version: registryVersion })) as any;
+	}
+
+	/**
 	 * Bind a deployment to an audience — first publish, update, promote, and
 	 * rollback are all this one verb ("repoint, never rebuild"). The binding
 	 * is a pure pointer; '@public' requires the deployment be 'ready'

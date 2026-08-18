@@ -27,9 +27,9 @@
 /**
  * Types for the App Builder view layer (`shared/modules/appdev`).
  *
- * The module owns the App Builder's ENTIRE view surface — DEVELOP | DEPLOY |
- * STORE views, their pane state, forms, and lists. A host integrates it in
- * exactly one of two ways:
+ * The module owns the App Builder's ENTIRE view surface — DASHBOARD |
+ * DESIGN | STORE | DEPLOY views, their pane state, forms, and lists. A host
+ * integrates it in exactly one of two ways:
  *
  *  1. DIRECT MOUNT — rocket-ui renders `<AppBuilderScreen host={adapter}>`
  *     where the adapter wraps the live client (useShellConnection).
@@ -101,6 +101,12 @@ export interface AppVersionInfo {
 	 * publishable), submit (in review), ready (approved for the store),
 	 * rejected, or failed. */
 	state?: 'private' | 'submit' | 'ready' | 'rejected' | 'failed';
+	/** SERVER build status of the version — a separate axis from the review
+	 * state: '' or 'ok' = servable bytes exist, 'failed' = the build broke
+	 * (the version can never serve), anything else is an in-flight ticker
+	 * word ('queued', 'building', ...). A 'private' review state says
+	 * nothing about servability — this does. */
+	buildStatus?: string;
 }
 
 /** One row of the "Where this app is live" reverse index. */
@@ -194,6 +200,33 @@ export interface ReviewTimelineItem {
 	state: 'done' | 'pending' | 'rejected';
 	/** Reviewer notes blockquote (rejected items). */
 	rejectionNotes?: string;
+}
+
+// =============================================================================
+// DASHBOARD — history stream + review thread
+// =============================================================================
+
+/**
+ * One row of the app's deployment history — the audit stream and the review
+ * thread in one. Machine rows (deploy, publish, review verdicts) and human
+ * 'reply' rows ride the same append-only stream; the Dashboard paints replies
+ * as chat bubbles and review transitions as system lines, so this type keeps
+ * the SEMANTIC fields (action, side) rather than pre-rendered strings — the
+ * one deliberate departure from the {@link ReviewTimelineItem} idiom.
+ */
+export interface AppHistoryEntry {
+	/** Stable append-order key — the row identity (oldest first as loaded). */
+	seq: number;
+	/** Unix timestamp (seconds). */
+	at: number;
+	/** Machine action ('publish', 'deploy', 'request', 'approved', ...) or the human row 'reply'. */
+	action: string;
+	/** Registry version the row refers to (absent on thread-only rows). */
+	version?: number;
+	/** Denormalized actor record. */
+	actor?: { userId?: string; display?: string; email?: string };
+	/** Human-row payload: the message and which side sent it; machine rows carry none. */
+	data?: { side?: 'admin' | 'developer'; message?: string };
 }
 
 // =============================================================================
@@ -344,12 +377,26 @@ export interface IAppBuilderHost {
 	listTeams?: () => Promise<Array<{ id: string; name: string }>>;
 	/** The reverse index for the Where-live panel. */
 	getWhereLive?: () => Promise<RungPin[]>;
+	/** One version's durable server build log — the full phase output the
+	 * build worker stores beside the version's artifacts ('' = no log).
+	 * The Deploy card's "failed" badge opens it. */
+	loadBuildLog?: (version: number) => Promise<string>;
 	/** The org's registered developer id ('' = not a developer yet). An app can
 	 * only deploy inside a claimed developer namespace (`<developerId>.<name>`). */
 	getDeveloperId?: () => Promise<string>;
 	/** Claim the org's developer id slug (org.admin, self-service — letters and
 	 * underscore only). Returns the assigned slug. */
 	registerDeveloper?: (developerId: string) => Promise<string>;
+
+	// ── Dashboard ────────────────────────────────────────────────────────
+	/** Load the app's full deployment history, oldest first — the ONE fetch
+	 * feeding the Dashboard's thread + activity feed AND the Store review
+	 * timeline (hosts project the same rows both ways). */
+	loadHistory?: () => Promise<AppHistoryEntry[]>;
+	/** Append a developer message to the review thread. Server-gated to the
+	 * developer org + namespace; the reply lands in the same history stream
+	 * the reviewer's App Admin surface reads. */
+	sendReply?: (message: string, version?: number) => Promise<void>;
 
 	// ── Store ────────────────────────────────────────────────────────────
 	/** Load the current listing draft (null = no server record yet). */
@@ -372,8 +419,8 @@ export interface IAppBuilderHost {
 // VIEW VOCABULARY
 // =============================================================================
 
-/** The three activity views. */
-export type AppBuilderStage = 'develop' | 'deploy' | 'store';
+/** The four activity views. */
+export type AppBuilderStage = 'dashboard' | 'design' | 'deploy' | 'store';
 
-/** The DEVELOP pill panes (Code is web-only). */
-export type DevelopPane = 'preview' | 'code' | 'components' | 'events' | 'console' | 'errors';
+/** The DESIGN pill panes (Code is web-only). */
+export type DesignPane = 'preview' | 'code' | 'components' | 'events' | 'console' | 'errors';

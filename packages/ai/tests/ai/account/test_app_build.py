@@ -417,7 +417,8 @@ async def test_job_builds_end_to_end(monkeypatch, build_store, toolchain):
 @pytest.mark.asyncio
 async def test_job_typecheck_failure_is_terminal_with_tsc_errors(monkeypatch, build_store, toolchain):
     """A tsc failure ends 'failed' (state untouched — redeploy-to-fix) with
-    the diagnostics as bounded error rows; no dist/ is written.
+    the diagnostics in build.log's failure tail — the DB blob carries NO
+    error text; no dist/ is written.
     """
     rail = _FakeRail(_app_source_zip(), {'status': 'queued', 'attempt': 0})
     rail.install(monkeypatch)
@@ -432,10 +433,12 @@ async def test_job_typecheck_failure_is_terminal_with_tsc_errors(monkeypatch, bu
     assert requeue is False
     final = rail.stamps[-1]
     assert (final['status'], final['phase']) == ('failed', 'typecheck')
-    assert 'error TS2322' in final['errors'][0]['message']
+    assert 'errors' not in final  # error text lives ONLY in build.log
     home = build_store / 'orgs' / 'org1' / 'files' / '.deployments' / 'acme.brandy' / 'v000001-abcdef12'
     assert not (home / 'dist').exists()
-    assert (home / 'build.log').is_file()  # the log survives failure
+    log_text = (home / 'build.log').read_text(encoding='utf-8')  # the log survives failure
+    assert 'error TS2322' in log_text  # the diagnostics land in the failure tail
+    assert 'app-build-' not in log_text  # the scratch dir is scrubbed to <build>
 
 
 @pytest.mark.asyncio
@@ -467,7 +470,9 @@ async def test_job_drift_fails_reasoned(monkeypatch, build_store, toolchain):
     await worker._run_job('org1', 'acme.brandy', 1)
     final = rail.stamps[-1]
     assert (final['status'], final['phase']) == ('failed', 'install')
-    assert any('react 18.2.0 -> 18.3.1' in row['message'] for row in final['errors'])
+    assert 'errors' not in final
+    home = build_store / 'orgs' / 'org1' / 'files' / '.deployments' / 'acme.brandy' / 'v000001-abcdef12'
+    assert 'react 18.2.0 -> 18.3.1' in (home / 'build.log').read_text(encoding='utf-8')
 
 
 @pytest.mark.asyncio
@@ -494,7 +499,9 @@ async def test_job_infra_failure_requeues_then_exhausts(monkeypatch, build_store
     assert await worker._run_job('org1', 'acme.brandy', 1) is False  # exhausted
     final = rail.stamps[-1]
     assert final['status'] == 'failed'
-    assert 'registry unreachable' in final['errors'][0]['message']
+    assert 'errors' not in final
+    home = build_store / 'orgs' / 'org1' / 'files' / '.deployments' / 'acme.brandy' / 'v000001-abcdef12'
+    assert 'registry unreachable' in (home / 'build.log').read_text(encoding='utf-8')
 
 
 @pytest.mark.asyncio
@@ -520,7 +527,9 @@ async def test_job_unexpected_exception_never_strands_building(monkeypatch, buil
     assert await worker._run_job('org1', 'acme.brandy', 1) is False  # exhausted
     final = rail.stamps[-1]
     assert final['status'] == 'failed'
-    assert 'unexpected OS quirk' in final['errors'][0]['message']
+    assert 'errors' not in final
+    home = build_store / 'orgs' / 'org1' / 'files' / '.deployments' / 'acme.brandy' / 'v000001-abcdef12'
+    assert 'unexpected OS quirk' in (home / 'build.log').read_text(encoding='utf-8')
 
 
 @pytest.mark.asyncio
@@ -545,9 +554,30 @@ async def test_job_rejects_unsafe_zip_entry_at_materialize(monkeypatch, build_st
     assert await worker._run_job('org1', 'acme.brandy', 1) is False  # user-flavored: no requeue
     final = rail.stamps[-1]
     assert (final['status'], final['phase']) == ('failed', 'materialize')
-    assert 'unsafe path' in final['errors'][0]['message']
+    assert 'errors' not in final
+    home = build_store / 'orgs' / 'org1' / 'files' / '.deployments' / 'acme.brandy' / 'v000001-abcdef12'
+    assert 'unsafe path' in (home / 'build.log').read_text(encoding='utf-8')
     # Nothing escaped: no evil.txt anywhere under the scratch root.
     assert not list(toolchain['scratch'].rglob('evil.txt'))
+
+
+def test_scrub_paths_strips_build_root_and_user_home():
+    """The log sanitizer: the scratch root collapses to <build> in BOTH
+    separator spellings, and any surviving user-home prefix collapses to
+    <home> — no host layout or user name reaches the served log.
+    """
+    root = 'C:\\Users\\SomeUser\\AppData\\Local\\Temp\\app-build-123-acme.brandy-v1-abc'
+    text = (
+        f'{root}\\ws\\apps\\brandy-ui: ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND\n'
+        f'Could not install from "{root.replace(chr(92), "/")}/ws/apps/shared"\n'
+        'D:\\Users\\other\\secret\\place also leaks'
+    )
+    scrubbed = app_build._scrub_paths(text, [root])
+    assert root not in scrubbed
+    assert 'SomeUser' not in scrubbed
+    assert '<build>\\ws\\apps\\brandy-ui' in scrubbed
+    assert '<build>/ws/apps/shared' in scrubbed
+    assert 'other' not in scrubbed and '<home>\\secret\\place' in scrubbed
 
 
 @pytest.mark.asyncio

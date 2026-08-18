@@ -24,7 +24,7 @@
 // FROZEN rocketride SDK contract — floor v1.3 — never edit by hand
 // =============================================================================
 // Floor key:     1.3 (MAJOR.MINOR of packages/client-typescript/package.json)
-// Source commit: 8c90aa2ebe93c48e1fd646f00799f9d9d186af43
+// Source commit: 3ff080c33c3d726336173f229e6ca6a837a9f005
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder client-typescript:freeze
 //
@@ -1199,12 +1199,23 @@ export interface DeployHistoryEntry {
     /** Unix timestamp (seconds). */
     at?: number;
     /** `pause`/`resume` appear only on rows written before the
-        enable/disable vocabulary (the trail is immutable). */
+        enable/disable vocabulary (the trail is immutable). NOTE: app rails
+        additionally carry the review vocabulary (`request`/`approved`/
+        `rejected`/`withdrawn`/`failed`) and the human `reply` row at runtime —
+        the union names the pipe-rail actions only and stays as the frozen
+        v1.3 floor wrote it (widening a returned union would break floor
+        assignability); compare raw strings for the app-rail extras. */
     action?: "publish" | "deploy" | "rollback" | "enable" | "disable" | "pause" | "resume" | "errored" | "remove";
     /** `''` on org-wide rows (publish); the team id on pointer changes. */
     teamId?: string;
     version?: number;
     actor?: DeployActor;
+    /** Human-row payload (`reply` rows): the review-thread message and its
+        side; machine rows carry null/absent. */
+    data?: {
+        side?: "admin" | "developer";
+        message?: string;
+    } | null;
 }
 /** Body of `deploy.add()` — the generic rail door. */
 export interface PublishResult {
@@ -5240,6 +5251,37 @@ export declare class RocketRideClient extends DAPClient {
      */
     withdrawApp(appId: string, registryVersion: number): Promise<{
         artifact: Record<string, unknown>;
+    }>;
+    /**
+     * Append a developer message to the app's review thread — the developer
+     * half of the reviewer conversation. The message rides the app's
+     * deployment history as a 'reply' row (side 'developer'), the same
+     * stream `deploy.history()` reads and the store reviewer writes to.
+     * Developer-org and developer-namespace gated, like submit.
+     *
+     * @param appId - App id
+     * @param message - The message text (server caps the length)
+     * @param registryVersion - Optional registry version the message refers to
+     * @returns `{replied: true, appId}`
+     */
+    replyApp(appId: string, message: string, registryVersion?: number): Promise<{
+        replied: boolean;
+        appId: string;
+    }>;
+    /**
+     * Read one version's durable server build log — the full phase-by-phase
+     * output the build worker writes beside the version's artifacts (no
+     * error text rides the rail rows or the DB). Long logs serve their tail;
+     * '' means no log exists for the version. Developer-org gated.
+     *
+     * @param appId - App id
+     * @param registryVersion - Registry version number from the rail
+     * @returns `{appId, version, log}`
+     */
+    buildLog(appId: string, registryVersion: number): Promise<{
+        appId: string;
+        version: number;
+        log: string;
     }>;
     /**
      * Bind a deployment to an audience — first publish, update, promote, and

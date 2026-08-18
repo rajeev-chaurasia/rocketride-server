@@ -78,9 +78,20 @@ missing/non-numeric version is rejected, not sent as `null`).
 | `registerDeveloper` | `[developerId]`             | claims the org's developer-id slug |
 | `loadListing` / `saveListing` | `[listing?]`      | read/write the app's store listing metadata |
 | `preflight`       | —                             | pre-submit checks (app entry point + rsbuild config present) |
+| `history`         | —                             | the app's full `deployment_history` stream, **oldest-first** — audit rows plus the review thread (`reply` rows); the host walks the server's 100-row pages |
+| `reply`           | `[message, registryVersion?]` | appends a developer message to the review thread (side `'developer'`) |
+| `buildLog`        | `[registryVersion]`           | one version's durable server build log (phase-by-phase output; `''` = no log) — the Deploy card's `failed` badge opens it |
 
 Deploy packages the app's **source** — `dist/` is never uploaded; the server
 injects platform deps and performs the build.
+
+## Stage persistence
+
+The App Builder's active tab (`dashboard | design | store | deploy`) persists
+per app in `workspaceState` under `appdev.stage.<appId>`. Values are
+normalized on read: the legacy `'develop'` id (pre-rename) maps to
+`'design'`, and anything unknown (or never persisted) lands on `'dashboard'`,
+the default landing view. Writes store the raw id.
 
 ## Account & checkout messages
 

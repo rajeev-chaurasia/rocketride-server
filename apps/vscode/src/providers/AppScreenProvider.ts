@@ -188,7 +188,7 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 							previewUrl: this.buildPreviewUrl(appId),
 							// VSCode variant: files are native, F5 debugs, no Code pane
 							capabilities: { hasCodePane: false, hasNativeFiles: true, canDebug: true },
-							stage: this.context.workspaceState.get(`appdev.stage.${appId}`) ?? 'develop',
+							stage: AppScreenProvider.normalizeStage(this.context.workspaceState.get(`appdev.stage.${appId}`)),
 							// App Builder UI preferences (preview layout, zoom, …)
 							// — per-workspace, per-app; written back via appdev:pref
 							prefs: this.context.workspaceState.get(`appdev.prefs.${appId}`) ?? {},
@@ -380,6 +380,44 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 									value = checks;
 									break;
 								}
+								case 'history': {
+									// The app's full deployment_history stream — audit rows
+									// plus the review thread. The server clamps page_size to
+									// 100, so walk the pages; the webview projects the one
+									// array into the Dashboard thread AND the Store timeline.
+									if (!client) throw new Error('Not connected');
+									const rows: unknown[] = [];
+									let total = Number.POSITIVE_INFINITY;
+									// Defensive ceiling — 50 pages (5000 rows) is far past any
+									// real thread; a server paging bug must not spin forever.
+									for (let page = 1; rows.length < total && page <= 50; page += 1) {
+										const envelope = await client.deploy.history(appId, { page, pageSize: 100 });
+										const chunk = envelope?.rows ?? [];
+										total = typeof envelope?.total === 'number' ? envelope.total : rows.length + chunk.length;
+										// A short/empty page ends the walk even if `total`
+										// disagrees — rows deleted between requests must not
+										// spin the loop.
+										if (chunk.length === 0) break;
+										rows.push(...chunk);
+										if (chunk.length < 100) break;
+									}
+									// Server pages newest-first; the views render oldest-first.
+									value = rows.reverse();
+									break;
+								}
+								case 'reply':
+									// Append a developer message to the review thread.
+									if (!client) throw new Error('Not connected');
+									value = await client.replyApp(appId, String(callArgs?.[0] ?? ''), typeof callArgs?.[1] === 'number' ? callArgs[1] : undefined);
+									break;
+								case 'buildLog': {
+									// One version's durable server build log (the Deploy
+									// card's "failed" badge opens it).
+									if (!client) throw new Error('Not connected');
+									const body = await client.buildLog(appId, this.requireRegistryVersion(callArgs?.[0]));
+									value = body?.log ?? '';
+									break;
+								}
 								default:
 									throw new Error(`Unknown appdev method: ${method}`);
 							}
@@ -543,6 +581,21 @@ export class AppScreenProvider implements vscode.CustomReadonlyEditorProvider {
 			throw new Error(`Invalid registry version: ${JSON.stringify(arg)}`);
 		}
 		return version;
+	}
+
+	/**
+	 * Maps a persisted stage value to the current vocabulary. workspaceState
+	 * stores the active tab raw, so windows that persisted before the
+	 * DEVELOP -> DESIGN rename hold the legacy id; anything unknown (or
+	 * never persisted) lands on 'dashboard', the default view.
+	 *
+	 * @param raw - The raw workspaceState value.
+	 * @returns A valid stage id for the current tab set.
+	 */
+	private static normalizeStage(raw: unknown): 'dashboard' | 'design' | 'store' | 'deploy' {
+		if (raw === 'develop') return 'design';
+		if (raw === 'design' || raw === 'store' || raw === 'deploy' || raw === 'dashboard') return raw;
+		return 'dashboard';
 	}
 
 	// =========================================================================

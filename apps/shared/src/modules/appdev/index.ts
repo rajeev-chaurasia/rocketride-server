@@ -33,8 +33,10 @@
 
 export { AppBuilderScreen } from './AppBuilderScreen';
 export type { IAppBuilderScreenProps } from './AppBuilderScreen';
-export { DevelopView } from './DevelopView';
-export type { IDevelopViewProps } from './DevelopView';
+export { DashboardView } from './DashboardView';
+export type { IDashboardViewProps } from './DashboardView';
+export { DesignView } from './DesignView';
+export type { IDesignViewProps } from './DesignView';
 export { DeployView } from './DeployView';
 export type { IDeployViewProps } from './DeployView';
 export { StoreView } from './StoreView';
@@ -59,12 +61,13 @@ export type {
 	AppBuilderStage,
 	AppErrorRow,
 	AppEventRow,
+	AppHistoryEntry,
 	AppStatus,
 	AppSummary,
 	AppVersionInfo,
 	BuildStatusTick,
 	ConsoleRow,
-	DevelopPane,
+	DesignPane,
 	IAppBuilderHost,
 	ListingDraft,
 	PreflightCheck,

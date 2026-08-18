@@ -105,8 +105,10 @@ _PHASE_TIMEOUTS = {
 # pinned toolchain reproduces identically, so retrying it is pointless.
 _MAX_ATTEMPTS = 2
 
-# Bounds on what lands in metadata.build.errors (the DEPLOY-view feed) and
-# the captured subprocess output (head+tail truncation).
+# Bounds on the failure tail appended to build.log and the captured
+# subprocess output (head+tail truncation). Error detail lives ONLY in the
+# log file beside the version's artifacts — metadata.build carries status/
+# phase/timestamps, never error text.
 _MAX_ERRORS = 50
 _MAX_ERROR_CHARS = 2000
 _MAX_LOG_CAPTURE = 64 * 1024  # per end (head + tail)
@@ -178,11 +180,29 @@ def _engine_dir() -> str:
     return os.path.dirname(os.path.realpath(sys.executable))
 
 
+def _scrub_paths(text: str, roots: List[str]) -> str:
+    """Strip caller-exposing filesystem detail from build-log text.
+
+    The build runs in a server-local scratch dir whose ABSOLUTE path leaks
+    host layout (user name, temp root, process id) into every tool line.
+    The log is served to the developer, so before it is written each given
+    root collapses to ``<build>`` (both separator spellings), then any
+    surviving ``<drive>:\\Users\\<name>`` prefix collapses to ``<home>`` —
+    workspace-relative paths stay readable, the host stays undescribed.
+    """
+    for root in roots:
+        if not root:
+            continue
+        for variant in dict.fromkeys((root, root.replace('\\', '/'), root.replace('/', '\\'))):
+            text = text.replace(variant, '<build>')
+    return re.sub(r'[A-Za-z]:[\\/][Uu]sers[\\/][^\\/\s:;"\')\]]+', '<home>', text)
+
+
 class BuildFailure(Exception):
     """A build phase failed for USER-visible reasons (no infra retry).
 
-    Carries the phase and the bounded error rows destined for
-    ``metadata.build.errors``.
+    Carries the phase and the bounded error rows appended to build.log's
+    failure tail (never the DB — metadata.build holds no error text).
     """
 
     def __init__(self, phase: str, message: str, errors: Optional[List[Dict[str, str]]] = None):
@@ -1069,13 +1089,20 @@ class AppBuildWorker:
             return False
         except (BuildFailure, asyncio.TimeoutError) as exc:
             # USER-visible failure (compile errors, timeout): terminal for
-            # this attempt set — recovery is redeploy-to-fix.
+            # this attempt set — recovery is redeploy-to-fix. The error
+            # DETAIL rides build.log's failure tail (written in finally),
+            # never the DB: metadata.build carries status/phase/times only.
             if isinstance(exc, asyncio.TimeoutError):
                 phase = str(build.get('phase') or 'build')
                 errors = [{'phase': phase, 'message': f'{phase} timed out after {_PHASE_TIMEOUTS.get(phase, 0)}s'}]
             else:
                 phase, errors = exc.phase, exc.errors
-            build.update({'status': 'failed', 'phase': phase, 'errors': errors[:_MAX_ERRORS], 'endedAt': time.time()})
+            log_parts.append(
+                f'== failed ({phase}) ==\n'
+                + '\n'.join(f'[{e.get("phase", phase)}] {e.get("message", "")}' for e in errors[:_MAX_ERRORS])
+            )
+            build.update({'status': 'failed', 'phase': phase, 'endedAt': time.time()})
+            build.pop('errors', None)
             await self._stamp(org_id, app_id, version, build)
             await feed.status('failed')
             debug(f'[app_build] {app_id} v{version}: build failed in {phase}')
@@ -1096,21 +1123,18 @@ class AppBuildWorker:
                 await feed.status('queued')
                 debug(f'[app_build] {app_id} v{version}: infra failure in {phase}, requeued: {exc}')
                 return True
-            build.update(
-                {
-                    'status': 'failed',
-                    'phase': phase,
-                    'errors': [{'phase': phase, 'message': str(exc)[:_MAX_ERROR_CHARS]}],
-                    'endedAt': time.time(),
-                }
-            )
+            log_parts.append(f'== failed ({phase}) ==\n{str(exc)[:_MAX_ERROR_CHARS]}')
+            build.update({'status': 'failed', 'phase': phase, 'endedAt': time.time()})
+            build.pop('errors', None)
             await self._stamp(org_id, app_id, version, build)
             await feed.status('failed')
             error(f'[app_build] {app_id} v{version}: infra failure (attempts exhausted): {exc}')
             return False
         finally:
-            # Durable full log beside the artifacts — success and failure alike.
-            await self._write_log(content_root, log_parts)
+            # Durable full log beside the artifacts — success and failure
+            # alike, with the scratch paths scrubbed before the bytes leave
+            # this process (the log is served to the developer).
+            await self._write_log(content_root, log_parts, scrub_roots=[job_dir])
             if job_dir:
                 shutil.rmtree(job_dir, ignore_errors=True)
 
@@ -1386,14 +1410,21 @@ class AppBuildWorker:
             except Exception as exc:
                 debug(f'[app_build] deploy event failed: {exc}')
 
-    async def _write_log(self, content_root: str, log_parts: List[str]) -> None:
-        """Write the durable full build log beside the version's artifacts."""
+    async def _write_log(
+        self, content_root: str, log_parts: List[str], scrub_roots: Optional[List[str]] = None
+    ) -> None:
+        """Write the durable full build log beside the version's artifacts.
+
+        The ONLY home of build detail (metadata.build carries no error text)
+        and the payload the ``build_log`` verb serves — so the scratch roots
+        are scrubbed here, at the write, not at read time.
+        """
         if not content_root or not log_parts:
             return
         try:
             from ai.account.store import Store
 
-            text = '\n\n'.join(log_parts)
+            text = _scrub_paths('\n\n'.join(log_parts), scrub_roots or [])
             await Store.instance()._store.write_bytes(f'{content_root}/build.log', text.encode('utf-8'))
         except Exception as exc:
             debug(f'[app_build] build.log write failed: {exc}')

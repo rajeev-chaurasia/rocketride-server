@@ -597,14 +597,24 @@ def _zip_guard(archive: Any) -> str:
     return ''
 
 
+# Review-thread messages are chat lines, not documents — cap the payload so
+# a runaway client cannot balloon the history stream.
+_REPLY_MAX_CHARS = 4000
+
+# Response cap for the build_log verb — long logs serve their TAIL (the
+# failure always lands at the end; the full file stays in the store).
+_BUILD_LOG_MAX_CHARS = 256 * 1024
+
+
 async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any]:
     """
     Handle the ``rrext_deploy_app`` command for both platform flavours.
 
     App-specific publish control: publish / versions / where / entry /
-    disable / remove. Uploading is NOT here — the generic ``rrext_deploy
-    add`` verb is the one rail door for every kind. Requires an
-    authenticated connection; org scoping comes from the session.
+    submit / withdraw / reply / build_log / disable / remove. Uploading is
+    NOT here — the generic ``rrext_deploy add`` verb is the one rail door
+    for every kind. Requires an authenticated connection; org scoping
+    comes from the session.
 
     CROSS-ORG: every subcommand first resolves the app's HOME org — the
     caller's own org when its rail carries the app (the developer case),
@@ -855,6 +865,67 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
                 debug(f'[app_deploy] withdraw status push failed: {exc}')
         return conn.build_response(request, body={'artifact': _rail_entry(updated, artifact)})
 
+    # ── reply — append a developer message to the review thread ───────────
+    # The developer half of the review conversation: the message rides the
+    # app's deployment_history as a 'reply' row (side 'developer'), the same
+    # stream the admin verbs write to. No broadcast — readers refresh.
+    if sub == 'reply':
+        message = str(args.get('message') or '').strip()
+        if not message:
+            return conn.build_error(request, 'message is required')
+        if len(message) > _REPLY_MAX_CHARS:
+            return conn.build_error(request, f'message exceeds the {_REPLY_MAX_CHARS}-character limit')
+        version = args.get('version')
+        if version is not None and not isinstance(version, int):
+            return conn.build_error(request, 'version must be a registry version integer when given')
+        if not developer:
+            return conn.build_error(
+                request, f'Only the developer organization can reply on the review thread of {app_id}'
+            )
+        try:
+            _assert_owns_namespace(conn, app_id)
+        except ValueError as exc:
+            return conn.build_error(request, str(exc))
+        await account.deployments_history_append(
+            home,
+            app_id,
+            'reply',
+            _actor_of(conn),
+            version=version,
+            data={'side': 'developer', 'message': message},
+        )
+        return conn.build_response(request, body={'replied': True, 'appId': app_id})
+
+    # ── build_log — one version's durable server build log ────────────────
+    # The full output the build worker writes beside the version's artifacts
+    # (metadata.build carries no error text) — the Deploy card's "failed"
+    # badge opens this. Developer-org only: the log describes the org's own
+    # source build.
+    if sub == 'build_log':
+        version = args.get('version')
+        if not isinstance(version, int):
+            return conn.build_error(request, 'version (registry version number) is required')
+        if not developer:
+            return conn.build_error(request, f'Only the developer organization can read the build log of {app_id}')
+        entry = await _registry_entry_of(account, home, app_id, version)
+        if entry is None:
+            return conn.build_error(request, f'{app_id} has no registry version {version}')
+        content_root = artifact_content_dir(str(entry.get('artifactPath') or ''))
+        if not content_root:
+            return conn.build_error(request, f'v{version} of {app_id} has no content home on the server')
+        from ai.account.store import Store
+
+        try:
+            data = await Store.instance()._store.read_bytes(f'{content_root}/build.log')
+        except Exception:
+            # No log (legacy build, or the worker never ran) — an empty log
+            # is a normal answer, not an error.
+            return conn.build_response(request, body={'appId': app_id, 'version': version, 'log': ''})
+        text = data.decode('utf-8', errors='replace')
+        if len(text) > _BUILD_LOG_MAX_CHARS:
+            text = f'... (showing the last {_BUILD_LOG_MAX_CHARS} characters)\n{text[-_BUILD_LOG_MAX_CHARS:]}'
+        return conn.build_response(request, body={'appId': app_id, 'version': version, 'log': text})
+
     # ── where — the reverse index (audience → served version) ─────────────
     if sub == 'where':
         return conn.build_response(
@@ -900,9 +971,10 @@ def _rail_entry(entry: Dict[str, Any], artifact: Optional[Dict[str, Any]]) -> Di
         'author': who.get('display') or who.get('email') or who.get('userId') or '',
         'message': entry.get('comment', ''),
         # The build lifecycle (metadata.build) — the DEPLOY view's chips.
+        # No error text rides the rail: detail lives in build.log, served
+        # on demand by the build_log verb.
         'buildStatus': str(build.get('status') or ''),
         'buildPhase': str(build.get('phase') or ''),
-        'buildErrors': build.get('errors') or [],
         'buildEndedAt': build.get('endedAt'),
     }
 

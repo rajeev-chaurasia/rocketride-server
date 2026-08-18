@@ -111,12 +111,20 @@ export interface DeployHistoryEntry {
 	/** Unix timestamp (seconds). */
 	at?: number;
 	/** `pause`/`resume` appear only on rows written before the
-	    enable/disable vocabulary (the trail is immutable). */
+	    enable/disable vocabulary (the trail is immutable). NOTE: app rails
+	    additionally carry the review vocabulary (`request`/`approved`/
+	    `rejected`/`withdrawn`/`failed`) and the human `reply` row at runtime —
+	    the union names the pipe-rail actions only and stays as the frozen
+	    v1.3 floor wrote it (widening a returned union would break floor
+	    assignability); compare raw strings for the app-rail extras. */
 	action?: 'publish' | 'deploy' | 'rollback' | 'enable' | 'disable' | 'pause' | 'resume' | 'errored' | 'remove';
 	/** `''` on org-wide rows (publish); the team id on pointer changes. */
 	teamId?: string;
 	version?: number;
 	actor?: DeployActor;
+	/** Human-row payload (`reply` rows): the review-thread message and its
+	    side; machine rows carry null/absent. */
+	data?: { side?: 'admin' | 'developer'; message?: string } | null;
 }
 
 /** Body of `deploy.add()` — the generic rail door. */
