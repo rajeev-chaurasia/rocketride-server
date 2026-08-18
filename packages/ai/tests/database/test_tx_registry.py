@@ -391,3 +391,36 @@ def test_session_rollback_resolves_open_savepoints(registry_and_engine):
     reg.rollback(sid)  # must not raise; nested resolved before root rollback
     assert eng.last_conn.closed
     assert eng.last_conn.nested[0].rolled_back
+
+
+def test_rollback_to_savepoint_keeps_target_rerollbackable(registry_and_engine):
+    # Postgres keeps the target savepoint after ROLLBACK TO: a repeated
+    # rollback-to must succeed against a freshly re-minted nested transaction.
+    reg, eng = registry_and_engine
+    sid = reg.begin()
+    reg.execute(sid, 'savepoint sp1')
+    reg.execute(sid, 'rollback to savepoint sp1')
+    reg.execute(sid, 'rollback to savepoint sp1')
+    assert eng.last_conn.begin_nested_calls == 3  # original + one re-mint per rollback
+    assert eng.last_conn.nested[0].rolled_back and eng.last_conn.nested[1].rolled_back
+
+
+def test_rollback_to_then_release_succeeds(registry_and_engine):
+    reg, eng = registry_and_engine
+    sid = reg.begin()
+    reg.execute(sid, 'savepoint sp1')
+    reg.execute(sid, 'rollback to savepoint sp1')
+    reg.execute(sid, 'release savepoint sp1')
+    assert eng.last_conn.nested[0].rolled_back
+    assert eng.last_conn.nested[1].committed  # the re-minted target releases cleanly
+
+
+def test_rollback_to_destroys_descendants_but_keeps_target(registry_and_engine):
+    reg, eng = registry_and_engine
+    sid = reg.begin()
+    reg.execute(sid, 'savepoint sp1')
+    reg.execute(sid, 'savepoint sp2')
+    reg.execute(sid, 'rollback to savepoint sp1')
+    with pytest.raises(ValueError, match='unknown savepoint: sp2'):
+        reg.execute(sid, 'rollback to savepoint sp2')
+    reg.execute(sid, 'release savepoint sp1')  # target survived the rollback

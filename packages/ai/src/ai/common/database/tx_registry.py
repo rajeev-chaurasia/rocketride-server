@@ -278,9 +278,10 @@ class TransactionRegistry:
 
         Raw SAVEPOINT SQL cannot recover a connection after a DBAPI error
         (SQLAlchemy raises PendingRollbackError); ``begin_nested()`` is the
-        supported path. Deviation from Postgres: ROLLBACK TO releases the
-        savepoint instead of keeping it re-rollbackable — the Drizzle driver
-        uses each savepoint exactly once, so this never observably differs.
+        supported path. Matches Postgres semantics: RELEASE destroys the target
+        and every later savepoint; ROLLBACK TO destroys later savepoints but
+        KEEPS the target re-rollbackable (the rolled-back SQLAlchemy object is
+        inactive, so the target is re-minted via a fresh ``begin_nested()``).
         """
         name = m.group('name').lower()
         if m.group('sp'):
@@ -288,13 +289,16 @@ class TransactionRegistry:
             return
         for i in range(len(held.savepoints) - 1, -1, -1):
             if held.savepoints[i][0] == name:
+                is_release = bool(m.group('rel'))
                 # Resolve BEFORE deleting: if a commit/rollback raises mid-unwind,
                 # unresolved entries stay on the stack for _drop() to clean up.
                 for j in range(len(held.savepoints) - 1, i - 1, -1):
                     sp = held.savepoints[j][1]
                     if sp.is_active:
-                        sp.commit() if m.group('rel') else sp.rollback()
+                        sp.commit() if is_release else sp.rollback()
                     del held.savepoints[j]
+                if not is_release:
+                    held.savepoints.append((name, held.conn.begin_nested()))
                 return
         raise ValueError(f'unknown savepoint: {name}')
 
