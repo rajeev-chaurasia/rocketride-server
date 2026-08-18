@@ -23,8 +23,8 @@
 // =============================================================================
 // FROZEN shell-api contract — ShellApiV0 — never edit by hand
 // =============================================================================
-// Generated:     2026-08-07T07:09:39.400Z
-// Source commit: 02eb2375d7963391ae0f6cb8426226affdb0adff
+// Generated:     2026-08-18T17:29:03.314Z
+// Source commit: efd9dad9d21c387e07dd0f04688ec34fc7df197e
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder shell:freeze
 // =============================================================================
@@ -32,8 +32,7 @@
 // ===== BEGIN FROZEN BUNDLE — do not edit =====
 import React$1 from 'react';
 import { CSSProperties, InputHTMLAttributes, ReactElement, ReactNode, Ref, RefObject } from 'react';
-import { Options, Sequelize } from 'sequelize';
-import { CellComponent, ColumnDefinition, Options as Options$1, Tabulator } from 'tabulator-tables';
+import { CellComponent, ColumnDefinition, Options, Tabulator } from 'tabulator-tables';
 export declare const commonStyles: {
     card: React$1.CSSProperties;
     cardHeader: React$1.CSSProperties;
@@ -3085,7 +3084,7 @@ export interface TASK_METRICS {
 /**
  * SDK version — automatically synced from package.json during build.
  */
-export declare const SDK_VERSION = "1.3.0";
+export declare const SDK_VERSION = "2.0.0";
 /**
  * Default protocol for connections when none is specified.
  */
@@ -3738,62 +3737,44 @@ declare class BillingApi {
     }>;
 }
 /**
- * Constructor shape of the `Sequelize` class, injected by the caller so the
- * RocketRide client never statically (runtime) imports the `sequelize`
- * package. `sequelize` transitively pulls in Node built-ins (`util`, `debug`)
- * that cannot be bundled for browser targets (dropper-ui, chat-ui, etc.).
- * Callers pass their own `import { Sequelize } from 'sequelize'` through.
- */
-export type SequelizeConstructor = new (options?: Options) => Sequelize;
-/** Options for {@link createSequelize}. */
-export interface CreateSequelizeOptions {
-    /** The `Sequelize` class, injected by the caller (`import { Sequelize } from 'sequelize'`). */
-    Sequelize: SequelizeConstructor;
-    /** A `DatabaseLike` instance (e.g. `client.database`) to forward SQL through. */
-    db: DatabaseLike;
-    /** Pipeline token for authentication and resource access. */
-    token: string;
-    /** Optional target database node ID; pins connections to a specific node. */
-    nodeId?: string;
-    /** Extra Sequelize options merged over the defaults. */
-    sequelizeOptions?: Options;
-}
-/**
- * Build a Sequelize v6 instance whose Postgres dialect transports SQL over
- * a RocketRide `DatabaseLike` (e.g. `client.database`) instead of a TCP socket.
- *
- * Internally wires `makePgShim` as `dialectModule` so Sequelize never opens a
- * real pg connection — all queries, transactions, and parameter binding are
- * forwarded through the RocketRide pipeline protocol.
- *
- * @param opts - See {@link CreateSequelizeOptions}.
- * @returns A fully configured `Sequelize` instance ready for model definition and queries.
- *
- * @example
- * ```ts
- * import { Sequelize } from 'sequelize';
- * const sq = createSequelize({ Sequelize, db: client.database, token: myToken, nodeId: 'myDb' });
- * const User = sq.define('User', { name: DataTypes.STRING }, { tableName: 'users', timestamps: false });
- * const users = await User.findAll();
- * ```
- */
-export declare function createSequelize(opts: CreateSequelizeOptions): Sequelize;
-/**
- * Structural interface satisfied by `DatabaseApi` (and test doubles) for the
- * Sequelize pg-compatible shim.  Only the four methods the shim needs are
- * required, so the interface remains stable across future `DatabaseApi`
- * additions without forcing shim changes.
+ * Structural interface satisfied by `DatabaseApi` (and test doubles),
+ * consumed by the Drizzle-over-pipes driver (`rocketride/drizzle`).  Only the
+ * four methods the driver needs are required, so the interface remains stable
+ * across future `DatabaseApi` additions without forcing driver changes.
  */
 export interface DatabaseLike {
-    /** Execute a raw SQL statement. */
+    /** Execute a raw SQL statement. `rowMode: 'array'` returns positional rows. */
     query(options: {
         token: string;
         sql: string;
         nodeId?: string;
         sessionId?: string;
         params?: unknown[];
+        rowMode: "array";
+    }): Promise<{
+        rows: unknown[][];
+        affected_rows: number;
+    }>;
+    query(options: {
+        token: string;
+        sql: string;
+        nodeId?: string;
+        sessionId?: string;
+        params?: unknown[];
+        rowMode?: "object";
     }): Promise<{
         rows: Record<string, unknown>[];
+        affected_rows: number;
+    }>;
+    query(options: {
+        token: string;
+        sql: string;
+        nodeId?: string;
+        sessionId?: string;
+        params?: unknown[];
+        rowMode?: "object" | "array";
+    }): Promise<{
+        rows: unknown[][] | Record<string, unknown>[];
         affected_rows: number;
     }>;
     /** Begin a database transaction. */
@@ -3855,7 +3836,11 @@ export declare class DatabaseApi {
      *   `beginTransaction`.  When provided the statement runs within that session.
      * @param options.params - Optional positional parameters bound to the statement
      *   (e.g. `[1, 'foo']` for `$1`, `$2` placeholders).
-     * @returns Object with `rows` (array of row objects) and `affected_rows` (number).
+     * @param options.rowMode - Row shape: `'object'` (default) returns rows as
+     *   objects keyed by column name; `'array'` returns positional arrays
+     *   (column order preserved, duplicate column names kept) — the shape ORM
+     *   drivers such as Drizzle require.
+     * @returns Object with `rows` (row objects, or positional arrays with `rowMode: 'array'`) and `affected_rows` (number).
      */
     query(options: {
         token: string;
@@ -3863,8 +3848,31 @@ export declare class DatabaseApi {
         nodeId?: string;
         sessionId?: string;
         params?: unknown[];
+        rowMode: "array";
+    }): Promise<{
+        rows: unknown[][];
+        affected_rows: number;
+    }>;
+    query(options: {
+        token: string;
+        sql: string;
+        nodeId?: string;
+        sessionId?: string;
+        params?: unknown[];
+        rowMode?: "object";
     }): Promise<{
         rows: Record<string, unknown>[];
+        affected_rows: number;
+    }>;
+    query(options: {
+        token: string;
+        sql: string;
+        nodeId?: string;
+        sessionId?: string;
+        params?: unknown[];
+        rowMode?: "object" | "array";
+    }): Promise<{
+        rows: unknown[][] | Record<string, unknown>[];
         affected_rows: number;
     }>;
     /**
@@ -3929,29 +3937,6 @@ export declare class DatabaseApi {
         token: string;
         nodeId?: string;
     }): Promise<DatabaseDialect>;
-    /**
-     * Build a Sequelize ORM instance that transports its SQL over this RocketRide
-     * pipe (via `query`/`beginTransaction`/`commit`/`rollback`) instead of a TCP socket.
-     *
-     * Passes `this` as the `DatabaseLike` transport — TypeScript confirms structural
-     * compatibility at compile time.
-     *
-     * The `sequelize` package is a peer dependency, not a hard dependency: it pulls
-     * in Node built-ins (`util`, `debug`) that cannot be bundled for browser targets.
-     * Callers must import `Sequelize` themselves and pass the class in.
-     *
-     * @param options.Sequelize - The `Sequelize` class (`import { Sequelize } from 'sequelize'`).
-     * @param options.token - Pipeline token for authentication.
-     * @param options.nodeId - Target database node id (pins transactions to one node).
-     * @param options.sequelizeOptions - Extra Sequelize options merged over the defaults.
-     * @returns A configured `Sequelize` instance ready for model definition and queries.
-     */
-    sequelize(options: {
-        Sequelize: SequelizeConstructor;
-        token: string;
-        nodeId?: string;
-        sequelizeOptions?: import("sequelize").Options;
-    }): import("sequelize").Sequelize;
 }
 declare class DeployApi {
     /** @param client - The parent RocketRideClient that owns this namespace. */
@@ -4857,7 +4842,7 @@ export declare class RocketRideClient extends DAPClient {
         file: File;
         objinfo?: Record<string, unknown>;
         mimetype?: string;
-    }>, token: string): Promise<UPLOAD_RESULT[]>;
+    }>, token: string, maxConcurrent?: number): Promise<UPLOAD_RESULT[]>;
     /**
      * Ask a question to RocketRide's AI and get an intelligent response.
      */
@@ -9532,6 +9517,51 @@ export interface IModalProps {
  * @returns The modal element.
  */
 export declare function Modal({ title, onClose, children, footer, showClose, closeOnEscape, width, noBodyPadding, ariaLabel, }: IModalProps): React$1.ReactElement;
+/** One selectable file type — the OS Save-dialog "Save as type" vocabulary. */
+export interface ISaveFileType {
+    /** Human-readable type label, e.g. "RocketRide Pipeline". */
+    label: string;
+    /** Extension appended to the typed name, WITH the leading dot, e.g. ".pipe". */
+    extension: string;
+}
+/** Props for the {@link SaveFileDialog} component. */
+export interface ISaveFileDialogProps {
+    /** Dialog title, e.g. "Save Pipeline As". */
+    title: string;
+    /** File system the dialog browses — only `list` and `mkdir` are called. */
+    vfs: IVirtualFileSystem;
+    /**
+     * Selectable file types. The FIRST entry is the initial selection; a
+     * single-entry list hides the type picker (the extension still shows as the
+     * name input's suffix).
+     */
+    fileTypes: ISaveFileType[];
+    /** Label rendered for the tree root row. Default "$/". */
+    rootLabel?: string;
+    /**
+     * Directory preselected on open — relative to the VFS root, '/'-separated.
+     * Rendered as a dimmed ghost row when it does not exist yet; the missing
+     * segments are created on save.
+     */
+    defaultDir?: string;
+    /** Initial value of the name input (no extension). */
+    initialName?: string;
+    /**
+     * Called with the chosen path (relative to the VFS root, extension
+     * included) AFTER any missing directories were created. The caller
+     * performs the actual write.
+     */
+    onConfirm: (path: string) => void;
+    /** Called when the dialog is dismissed (Cancel or Escape). */
+    onCancel: () => void;
+}
+/**
+ * Renders the stock Save-As dialog over a virtual file system.
+ *
+ * @param props - {@link ISaveFileDialogProps}.
+ * @returns The dialog element.
+ */
+export declare function SaveFileDialog({ title, vfs, fileTypes, rootLabel, defaultDir, initialName, onConfirm, onCancel }: ISaveFileDialogProps): React$1.ReactElement;
 /** Props for the {@link SidebarMenu} component. */
 export interface ISidebarMenuProps {
     /** The declared menu whose entries render as the vertical list. */
@@ -10143,7 +10173,7 @@ export interface IDataGridProps<Row extends Record<string, unknown>> {
      */
     fetchDistinct?: (field: string) => Promise<(string | number | boolean)[]>;
     /** Native Tabulator options escape hatch — merged over the defaults. */
-    options?: Options$1;
+    options?: Options;
 }
 /** Imperative surface exposed through the component ref. */
 export interface IDataGridHandle {
@@ -11308,6 +11338,7 @@ export declare const shellApi: {
     readonly TabPanel: typeof TabPanel;
     readonly Modal: typeof Modal;
     readonly CLOSE_GLYPH: string;
+    readonly SaveFileDialog: typeof SaveFileDialog;
     readonly SidebarMenu: typeof SidebarMenu;
     readonly SidebarCollapsedProvider: import("react").FC<ISidebarCollapsedProviderProps>;
     readonly SidebarCollapsedGate: import("react").FC<ISidebarCollapsedGateProps>;
