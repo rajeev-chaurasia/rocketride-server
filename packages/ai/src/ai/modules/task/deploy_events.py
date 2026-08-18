@@ -55,7 +55,7 @@ care (the owning org + cross-org reviewers) via
 subscription above cannot serve the reviewer audience.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from rocketlib import error
 
@@ -94,12 +94,14 @@ async def broadcast_deploy_changed(server: Any, org_id: str, team_id: str, proje
 
 
 async def broadcast_review_state(
-    server: Any, org_id: str, app_id: str, version: int, state: str, notes: str = ''
+    server: Any, org_id: str, app_id: str, version: Optional[int], state: str, notes: str = ''
 ) -> None:
     """Push BOTH signals of one review-state transition.
 
-    A review transition (submit/withdraw/approve/reject/failed flip) has two
-    audiences with different reach, served by two existing wire contracts:
+    A review transition (submit/withdraw/approve/reject/failed flip — and
+    the review thread's 'reply' liveness ping, which rides the same walk
+    because its audience is identical) has two audiences with different
+    reach, served by two existing wire contracts:
 
     - ``apaevt_deploy`` (org-scoped, via :func:`broadcast_deploy_changed`):
       cache invalidation for the OWNING org's deploy surfaces — version
@@ -119,16 +121,22 @@ async def broadcast_review_state(
         server: The DAP server (connection registry + broadcast provider).
         org_id: The org OWNING the app (the deployment's home org).
         app_id: The app whose version transitioned.
-        version: The registry version that transitioned.
+        version: The registry version that transitioned; None for
+            subject-level thread pings (a versionless reply) — omitted from
+            the body (the typed map's ``version`` is optional).
         state: The new review state
-            ('submit'|'private'|'ready'|'rejected'|'failed').
+            ('submit'|'private'|'ready'|'rejected'|'failed'), or 'reply'
+            for a thread liveness ping (consumers toast only on explicit
+            'ready'/'rejected' and re-fetch on everything else).
         notes: Reviewer notes riding a rejection ('' = none).
     """
     # ── Rail invalidation: the owning org's deploy surfaces re-fetch ──────
     await broadcast_deploy_changed(server, org_id, '', app_id, state)
 
     # ── Typed status push: owning org + cross-org reviewers ──────────────
-    body: Dict[str, Any] = {'appId': app_id, 'version': version, 'status': state}
+    body: Dict[str, Any] = {'appId': app_id, 'status': state}
+    if version is not None:
+        body['version'] = version
     if notes:
         body['notes'] = notes
     for conn in list(getattr(server, '_connections', {}).values()):

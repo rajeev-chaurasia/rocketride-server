@@ -868,7 +868,8 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
     # ── reply — append a developer message to the review thread ───────────
     # The developer half of the review conversation: the message rides the
     # app's deployment_history as a 'reply' row (side 'developer'), the same
-    # stream the admin verbs write to. No broadcast — readers refresh.
+    # stream the admin verbs write to. A 'reply' liveness ping follows so
+    # reviewer surfaces update without polling.
     if sub == 'reply':
         message = str(args.get('message') or '').strip()
         if not message:
@@ -894,6 +895,18 @@ async def handle_deploy_app(conn: Any, request: Dict[str, Any]) -> Dict[str, Any
             version=version,
             data={'side': 'developer', 'message': message},
         )
+        # Reply liveness: the same walk the verdict pushes use, with status
+        # 'reply' — cross-org reviewer surfaces (queue badges, the Feedback
+        # thread list) re-pull on it; consumers toast only on explicit
+        # 'ready'/'rejected'. Best-effort, never fails the reply.
+        server = getattr(conn, '_server', None)
+        if server is not None:
+            try:
+                from ai.modules.task.deploy_events import broadcast_review_state
+
+                await broadcast_review_state(server, home, app_id, version, 'reply')
+            except Exception as exc:
+                debug(f'[app_deploy] reply status push failed: {exc}')
         return conn.build_response(request, body={'replied': True, 'appId': app_id})
 
     # ── build_log — one version's durable server build log ────────────────
