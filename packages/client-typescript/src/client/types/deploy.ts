@@ -122,9 +122,23 @@ export interface DeployHistoryEntry {
 	teamId?: string;
 	version?: number;
 	actor?: DeployActor;
-	/** Human-row payload (`reply` rows): the review-thread message and its
-	    side; machine rows carry null/absent. */
-	data?: { side?: 'admin' | 'developer'; message?: string } | null;
+	/** Row payload — self-describing by contract (rows render without a
+	    second lookup). `reply` rows carry the review-thread message and its
+	    side. App audience rows (publish binds, removed/disabled/enabled)
+	    carry the audience WITH its server-dereferenced display facts
+	    (`name`, `handle`), plus `previousVersion` when a publish repointed
+	    an existing binding. A `publish` row without an audience is the
+	    registry write (the DEPLOY) and rides the deploy `comment`; review
+	    transitions carry both endpoints (`from`/`to`). */
+	data?: {
+		side?: 'admin' | 'developer';
+		message?: string;
+		audience?: { type?: string; id?: string; name?: string; handle?: string };
+		previousVersion?: number;
+		comment?: string;
+		from?: string;
+		to?: string;
+	} | null;
 }
 
 /** Body of `deploy.add()` — the generic rail door. */

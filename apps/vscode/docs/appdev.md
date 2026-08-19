@@ -78,7 +78,7 @@ missing/non-numeric version is rejected, not sent as `null`).
 | `registerDeveloper` | `[developerId]`             | claims the org's developer-id slug |
 | `loadListing` / `saveListing` | `[listing?]`      | read/write the app's store listing metadata |
 | `preflight`       | —                             | pre-submit checks (app entry point + rsbuild config present) |
-| `history`         | —                             | the app's full `deployment_history` stream, **oldest-first** — audit rows plus the review thread (`reply` rows); the host walks the server's 100-row pages |
+| `history`         | —                             | the app's full `deployment_history` stream, **oldest-first** — audit rows plus the review thread (`reply` rows); the host walks the server's 100-row pages. Rows are self-describing: audience rows carry the dereferenced `name`/`handle` (plus `previousVersion` on a repoint), deploy rows the deploy `comment`, review rows their `from`/`to` states — the view never needs a second lookup |
 | `reply`           | `[message, registryVersion?]` | appends a developer message to the review thread (side `'developer'`) |
 | `buildLog`        | `[registryVersion]`           | one version's durable server build log (phase-by-phase output; `''` = no log) — the Deploy card's `failed` badge opens it |
 | `pickFile`        | `['icon' \| 'readme']`        | native file picker for a manifest asset; returns the APP-FOLDER-relative `./`-prefixed path (picks outside the app folder are refused — the server only serves app-relative assets) or `null` on cancel |
@@ -86,7 +86,10 @@ missing/non-numeric version is rejected, not sent as `null`).
 | `readImage`       | `[appRelativePath]`           | one app-folder-relative image as a data: URI (README images are binary; mime by extension, 256KB cap, `null` when unservable) — the README viewer resolves relative image refs against the README's own directory through this |
 
 Deploy packages the app's **source** — `dist/` is never uploaded; the server
-injects platform deps and performs the build.
+injects platform deps and performs the build. The packed zip is capped at
+**50 MB zipped** (refused client-side at pack time and again by the server
+before parsing); an over-cap pack almost always means an over-broad
+`appManifest.include` entry.
 
 ## Stage persistence
 
@@ -101,6 +104,12 @@ icon, README, `appManifest.include` pack roots, and the personal-readiness
 checks); STORE carries commerce only (mode, pricing plans, submission, and
 review history). The `preflight` checks are tiered accordingly (`tier:
 'package' | 'store'`), and Submit-for-review gates on both tiers.
+
+PACKAGE also carries the strict-type-checking waiver: `appManifest.
+typecheck: false` makes the server build SKIP its verify phase (the user's
+own `tsc --noEmit`) and bundle anyway — the waiver is recorded in the
+version's build.log and surfaces as a standing warn row in the readiness
+checks. Absent/`true` = strict, the default.
 
 ## Account & checkout messages
 

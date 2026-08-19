@@ -71,6 +71,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -178,6 +179,41 @@ def _scratch_root() -> str:
 def _engine_dir() -> str:
     """The engine's install dir — static client tgzs and the env cache live here."""
     return os.path.dirname(os.path.realpath(sys.executable))
+
+
+def _rmtree(path: str) -> None:
+    r"""Best-effort recursive delete for scratch trees, with two guarantees
+    the plain ``shutil.rmtree(ignore_errors=True)`` call could not give:
+
+    - Deletes past Windows' 260-char MAX_PATH via the extended-length
+      (``\\?\``) spelling. Scratch entries routinely cross the ceiling
+      (pnpm's ``.pnpm`` store names plus module-federation's dist depth
+      measured ~290 chars with NO include roots), and a plain unlink then
+      fails with a misleading WinError 3 that ``ignore_errors`` swallowed —
+      the lingering ``app-build-*`` temp dirs.
+    - NEVER follows links. pnpm materializes node_modules through junctions
+      and hard links into its global store; walking through one would
+      destroy the linked target. A link ROOT is removed as a link in place;
+      links inside the tree are removed as links by ``shutil.rmtree``'s own
+      no-descend contract (hard links just drop one name, never content).
+    """
+    try:
+        st_res = os.stat(path, follow_symlinks=False)
+        reparse = os.name == 'nt' and bool(getattr(st_res, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        if stat.S_ISLNK(st_res.st_mode) or reparse:
+            # The root itself is a link/junction — remove the LINK, never
+            # its target (directory links need rmdir, file symlinks unlink).
+            if reparse or stat.S_ISDIR(st_res.st_mode):
+                os.rmdir(path)
+            else:
+                os.unlink(path)
+            return
+    except OSError:
+        return  # already gone (or unstatable) — nothing to clean
+    target = path
+    if os.name == 'nt' and not path.startswith('\\\\?\\'):
+        target = ('\\\\?\\UNC\\' + path[2:]) if path.startswith('\\\\') else ('\\\\?\\' + path)
+    shutil.rmtree(target, ignore_errors=True)
 
 
 def _scrub_paths(text: str, roots: List[str]) -> str:
@@ -1017,7 +1053,7 @@ class AppBuildWorker:
                     continue
             except OSError:
                 pass  # vanished or unreadable — attempt the delete
-            shutil.rmtree(stale, ignore_errors=True)
+            _rmtree(stale)
         from ai.account import account
 
         rows = await account.deployments_scan_builds(('queued', 'building'))
@@ -1136,7 +1172,7 @@ class AppBuildWorker:
             # this process (the log is served to the developer).
             await self._write_log(content_root, log_parts, scrub_roots=[job_dir])
             if job_dir:
-                shutil.rmtree(job_dir, ignore_errors=True)
+                _rmtree(job_dir)
 
     async def _build(
         self,
@@ -1303,7 +1339,14 @@ class AppBuildWorker:
         build['phase'] = 'typecheck'
         await self._stamp(org_id, app_id, version, build)
         tsconfig = os.path.join(app_dir, 'tsconfig.json')
-        if os.path.isfile(tsconfig):
+        if manifest.get('typecheck') is False:
+            # The developer's explicit waiver (appManifest.typecheck: false,
+            # the PACKAGE tab's checkbox): the verify gate is a QUALITY
+            # gate, not a build necessity — rsbuild transpiles without it,
+            # so the app deploys even with type errors. The waiver is
+            # recorded in the log, never silent.
+            log_parts.append('== typecheck ==\nskipped by appManifest.typecheck: false')
+        elif os.path.isfile(tsconfig):
             tsc = _resolve_user_tsc(app_dir, job_dir)
             if not tsc:
                 raise BuildInfraFailure(

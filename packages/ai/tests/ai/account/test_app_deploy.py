@@ -231,7 +231,10 @@ class _FakeRegistry:
             row = {
                 'orgId': org_id,
                 'appId': app_id,
-                'audience': dict(audience),
+                # The real backends key by {type,id} and DECODE the audience
+                # from the key on the way out — the resolver's display keys
+                # (name/handle) land in history data, never on publish rows.
+                'audience': {'type': audience['type'], 'id': audience.get('id', '')},
                 'version': version,
                 'state': 'enabled',
                 'artifactState': _art_state(version),
@@ -543,6 +546,22 @@ async def test_add_requires_a_developer_id(registry):
 
 
 @pytest.mark.asyncio
+async def test_add_rejects_oversized_zip_upload(registry, content_store, monkeypatch):
+    """The upload cap is measured on the ZIPPED byte count and refused
+    before ANY parsing — an over-cap payload never reaches the zip parser,
+    the manifest read, the registry, or the store (the payload here is not
+    even a valid archive, proving the cap runs first).
+    """
+    monkeypatch.setattr('ai.account.app_deploy._ZIP_MAX_ZIPPED', 1024)
+    conn = _FakeConn()
+    result = await handle_app_add(conn, _add_request(data=b'\0' * 4096))
+    assert result['success'] is False
+    assert 'upload cap' in result['message']
+    assert registry.publish_calls == []
+    assert _written(content_store) == {}
+
+
+@pytest.mark.asyncio
 async def test_add_rejects_zip_bomb_on_actual_size(registry, content_store, monkeypatch):
     """The unpacked cap is measured on REAL decompressed bytes, not the
     attacker-controlled declared size — a highly-compressible entry over the
@@ -774,6 +793,10 @@ async def test_publish_user_allowed_for_deployer(registry, quiet_push):
     assert (row['audience'], row['state']) == (AUD_USER, 'enabled')
     # The manifest snapshot rode along from the entry's metadata
     assert registry.set_calls[0]['snapshot']['name'] == 'Brandy'
+    # The audience the backend received is self-describing: the resolver
+    # stamped the display facts the history row will store verbatim.
+    sent = registry.set_calls[0]['audience']
+    assert (sent['handle'], sent['name']) == ('@me', 'User One')
     # The acting user's manifest is refreshed (data + signal)
     assert quiet_push == [{'user_id': 'u1', 'source': 'app-publish'}]
 
@@ -792,6 +815,10 @@ async def test_publish_team_needs_membership_only(registry, quiet_push):
 
     assert result['success'] is True
     assert result['body']['publish']['state'] == 'enabled'
+    # The team NAME was dereferenced at resolution — the history row never
+    # needs a second lookup to say which team.
+    sent = registry.set_calls[0]['audience']
+    assert (sent['handle'], sent['name'], sent['id']) == ('@team/Development', 'Development', 't1')
 
 
 @pytest.mark.asyncio

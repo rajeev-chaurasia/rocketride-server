@@ -47,6 +47,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -171,19 +172,12 @@ def _app_field(entry, name: str):
     return entry.get(name) if isinstance(entry, dict) else getattr(entry, name, None)
 
 
-async def _resolve_app_access(token: str, app_id: str) -> bool:
-    """Uncached: may the caller load ``app_id``'s bundle?
-
-    The served directory IS the app id (the build emits
-    ``dist/server/static/apps/<app_id>/``), so the first path segment of an
-    ``/apps/...`` request is the app id we authorize. Defers to the same account
-    resolver the store listing uses, so every gate (audience, binding state,
-    requiredPermissions) folds into one boolean — an app the caller can't see is
-    an app they can't fetch.
+async def _apps_for_token(token: str) -> list:
+    """The caller-visible app manifest entries — the shell's own resolution.
 
     An authenticated caller gets their full entitled set; an anonymous caller
     (or an unverifiable token) gets the PUBLIC set only — so public apps (the
-    pre-auth landing/home) load without a session, private ones do not.
+    pre-auth landing/home) resolve without a session, private ones do not.
     """
     from ai.account import account
 
@@ -203,14 +197,53 @@ async def _resolve_app_access(token: str, app_id: str) -> bool:
         organizations = [org.model_dump() if hasattr(org, 'model_dump') else org] if org else []
         sys_perms = list(getattr(info, 'sysPermissions', []) or [])
         try:
-            apps = await account.get_apps_for_user(info.userId, organizations, sys_perms)
+            return await account.get_apps_for_user(info.userId, organizations, sys_perms)
         except TypeError:
             # Older signature without sys_permissions.
-            apps = await account.get_apps_for_user(info.userId, organizations)
-    else:
-        apps = await account.get_public_apps()
+            return await account.get_apps_for_user(info.userId, organizations)
+    return await account.get_public_apps()
 
+
+async def _resolve_app_access(token: str, app_id: str) -> bool:
+    """Uncached: may the caller load ``app_id``'s bundle?
+
+    The served directory IS the app id (the build emits
+    ``dist/server/static/apps/<app_id>/``), so the first path segment of an
+    ``/apps/...`` request is the app id we authorize. Defers to the same account
+    resolver the store listing uses, so every gate (audience, binding state,
+    requiredPermissions) folds into one boolean — an app the caller can't see is
+    an app they can't fetch.
+    """
+    apps = await _apps_for_token(token)
     return any(_app_field(a, 'id') == app_id for a in apps)
+
+
+async def _app_entry_info(token: str, app_id: str) -> Optional[dict]:
+    """The resolution document of one app for one caller, or None.
+
+    "What will be served": the SAME manifest entry the shell's connect
+    resolves (scope-walk winner), reduced to the safe subset and the
+    versioned entry URL clients would construct from it. Deliberately
+    minimal — no org ids, no build metadata, no developer facts — because
+    anonymous callers reach this. A visible entry WITHOUT a registry
+    version (a dev-overlay-only preview) returns None: nothing versioned
+    would serve, and the probe must say so.
+    """
+    for entry in await _apps_for_token(token):
+        if _app_field(entry, 'id') != app_id:
+            continue
+        registry_version = _app_field(entry, 'registryVersion')
+        if not registry_version:
+            return None
+        version = int(registry_version)
+        return {
+            'appId': app_id,
+            'name': _app_field(entry, 'name') or app_id,
+            'version': str(_app_field(entry, 'version') or ''),
+            'registryVersion': version,
+            'entry': f'/apps/{app_id}/v{version}/remoteEntry.js',
+        }
+    return None
 
 
 async def _authorize_app(token: str, app_id: str) -> bool:
@@ -383,7 +416,7 @@ async def apps_static(request: Request):
     """
     Serve MF remote app bundles (versioned, store-backed) + app assets.
 
-    Handles ``GET /apps/{path}``. Two shapes:
+    Handles ``GET /apps/{path}``. Three shapes:
 
     - ``<appId>/v<N>/<rest>`` — VERSIONED serving, the ONLY bundle path:
       the registry version's built ``dist/`` tree streamed from the STORE,
@@ -391,6 +424,9 @@ async def apps_static(request: Request):
       open) through a HARD-expiry verdict cache. There is no unversioned
       bundle serving of any kind — clients construct versioned URLs from
       the version numbers the wire carries.
+    - ``<appId>`` (bare, no version, no file) — RESOLUTION INFO: a small
+      JSON document saying what a bundle fetch would serve this caller
+      (see ``_app_entry_info``). The deploy smoke test's probe.
     - anything else — the static assets tree on disk: the icons/readmes the
       app manifests point at (``/apps/<dir>/icon.svg``).
 
@@ -412,6 +448,19 @@ async def apps_static(request: Request):
         version_seg = _VERSION_SEG.match(parts[1])
         if version_seg:
             return await _serve_versioned(request, parts[0], int(version_seg.group(1)), parts[2:])
+
+    # Resolution info — a BARE app id (no version, no file) answers with what
+    # a bundle fetch WOULD serve this caller: the deploy smoke test's probe
+    # and a one-curl ops answer to "which version am I getting?". Resolution
+    # runs under the same identity as serving (the /apps cookie, anonymous
+    # without it). A miss falls through to the static tree, which never
+    # served a bare directory — the same 404 as before, so this is not an
+    # existence oracle for apps the caller cannot see.
+    if len(parts) == 1 and _APP_ID_SEG.match(parts[0]):
+        info = await _app_entry_info(request.cookies.get(_APP_COOKIE, ''), parts[0])
+        if info is not None:
+            # Mutable resolution facts — never let a client pin them.
+            return JSONResponse(info, headers={'Cache-Control': 'no-cache, must-revalidate'})
 
     # Apps haven't been built/copied yet — surface a clearer signal.
     if not os.path.isdir(_apps_root):

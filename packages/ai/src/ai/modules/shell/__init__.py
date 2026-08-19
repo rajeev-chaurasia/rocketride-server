@@ -33,12 +33,20 @@ Static files:
   - ``static/shell/static/css/*.css``     — CSS bundles
   - ``static/shell/themes/*.json``        — theme token files
   - ``static/shell/favicon.svg``          — favicon
-  - ``static/apps/<app>/remoteEntry.js``  — MF remote app bundles
+  - ``static/apps/<app>/...``             — app ASSETS (icons/readmes); MF
+                                            bundles serve store-backed and
+                                            versioned, never from this tree
 
 Routes registered:
-    GET /                           — shell SPA entry point (index.html)
-    GET /shell/{file_path:path}     — shell assets (JS, CSS, themes)
-    GET /apps/{file_path:path}      — MF remote app bundles
+    GET  /                          — shell SPA entry point (index.html)
+    GET  /shell/{file_path:path}    — shell assets (JS, CSS, themes)
+    POST /apps/session              — mint the /apps auth cookie
+    GET  /apps/{file_path:path}     — app serving, three shapes:
+        <appId>/v<N>/<file>         — versioned MF bundle (store-backed)
+        <appId>                     — resolution info: what a bundle fetch
+                                      would serve THIS caller (the deploy
+                                      smoke-test / ops probe)
+        anything else               — the static assets tree
 """
 
 from typing import Any, Dict

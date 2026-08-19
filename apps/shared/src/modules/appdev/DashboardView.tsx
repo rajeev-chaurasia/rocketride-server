@@ -52,6 +52,7 @@ import { Button } from 'shell';
 import { Card } from 'shell';
 import { EmptyState } from 'shell';
 import { InputField } from 'shell';
+import { Modal } from 'shell';
 import { StatusBadge } from 'shell';
 import type { AppBuilderStage, AppHistoryEntry, AppSummary, AppVersionInfo, BuildStatusTick, IAppBuilderHost, PreflightCheck, RungPin, WatchStatus } from './types';
 
@@ -73,8 +74,9 @@ export interface IDashboardViewProps {
 
 /** One sentence of the narrated status — the card speaks plain English. */
 interface StatusLine {
-	/** Sentence tone: 'plain' narrates, 'warn'/'error' tint the text. */
-	tone: 'plain' | 'warn' | 'error';
+	/** Sentence tone: 'plain' narrates, 'warn'/'error' tint the text,
+	 * 'note' is the quiet standing footnote. */
+	tone: 'plain' | 'warn' | 'error' | 'note';
 	/** The sentence itself — full natural language, no label-speak. */
 	text: string;
 	/** Tab that carries the recommended action, rendered as an "Open ..." button. */
@@ -203,6 +205,40 @@ const styles: Record<string, React.CSSProperties> = {
 		marginTop: 1,
 		lineHeight: 1.5,
 	},
+	// The deploy's "what changed" note, quoted under its timeline item.
+	tlNote: {
+		fontSize: 11.5,
+		color: 'var(--rr-text-secondary)',
+		marginTop: 1,
+		lineHeight: 1.5,
+		fontStyle: 'italic',
+	},
+	// A deploy whose SERVER BUILD failed — the rail's verdict on the row.
+	tlFail: {
+		fontSize: 11.5,
+		color: 'var(--rr-color-error)',
+		marginTop: 1,
+		lineHeight: 1.5,
+	},
+	tlAction: {
+		marginTop: 5,
+	},
+	// The build-log viewer body (inside the stock Modal).
+	logPre: {
+		fontFamily: 'var(--rr-font-mono, Consolas, monospace)',
+		fontSize: 11.5,
+		lineHeight: 1.5,
+		whiteSpace: 'pre-wrap',
+		wordBreak: 'break-word',
+		background: 'var(--rr-bg-surface-alt)',
+		border: '1px solid var(--rr-border)',
+		borderRadius: 6,
+		padding: '10px 12px',
+		maxHeight: '55vh',
+		overflowY: 'auto',
+		color: 'var(--rr-text-primary)',
+		margin: 0,
+	},
 	replyRow: {
 		display: 'flex',
 		gap: 10,
@@ -305,6 +341,7 @@ const TONE_COLOR: Record<StatusLine['tone'], string> = {
 	plain: 'var(--rr-text-primary)',
 	warn: 'var(--rr-color-warning)',
 	error: 'var(--rr-color-error)',
+	note: 'var(--rr-text-secondary)',
 };
 
 // =============================================================================
@@ -322,14 +359,16 @@ const STREAM_DOT: Record<string, string> = {
 	withdrawn: 'var(--rr-text-disabled)',
 };
 
-// Human labels for machine actions (the timeline item titles).
+// Human labels for machine actions (the timeline item titles). 'publish'
+// is deliberately absent — its two flavors are told apart by payload in
+// {@link streamLabel}, per the settled vocabulary (deploy = version to the
+// server, publish = bind to a rung).
 const ACTION_LABEL: Record<string, string> = {
 	request: 'submitted for review',
 	approved: 'approved',
 	rejected: 'rejected',
 	withdrawn: 'withdrawn from review',
 	failed: 'build failed',
-	publish: 'published to the rail',
 	deploy: 'deployed',
 	rollback: 'rolled back',
 	enable: 'enabled',
@@ -340,6 +379,49 @@ const ACTION_LABEL: Record<string, string> = {
 	removed: 'removed',
 	errored: 'errored',
 };
+
+/**
+ * The audience handle a publish row bound to. Rows written since the
+ * self-describing-history contract carry the server-dereferenced handle
+ * ('@team/Engineering'); legacy rows fall back to a generic spelling
+ * composed from the type alone.
+ *
+ * @param audience - The row's audience payload.
+ * @returns The display handle, '' when absent.
+ */
+function audienceHandle(audience: { type?: string; handle?: string } | undefined): string {
+	if (audience?.handle) return audience.handle;
+	if (!audience?.type) return '';
+	if (audience.type === 'user') return '@me';
+	if (audience.type === 'public') return '@public';
+	return '@team';
+}
+
+/**
+ * The timeline title verb for one history row. A 'publish' row carrying an
+ * audience is the PUBLISH (bind to a rung) — with the version it repointed
+ * OFF of when the row records one; without an audience it is the registry
+ * write — the DEPLOY — per the settled deploy/publish vocabulary. The
+ * binding-lifecycle rows (removed/disabled/enabled) name their rung the
+ * same way — "v15 removed" alone reads like the VERSION vanished.
+ *
+ * @param entry - The history row.
+ * @returns The verb phrase after "vN ".
+ */
+function streamLabel(entry: AppHistoryEntry): string {
+	const handle = audienceHandle(entry.data?.audience);
+	if (entry.action === 'publish') {
+		if (!handle) return 'deployed to the server';
+		const prev = entry.data?.previousVersion;
+		return prev ? `published to ${handle} (was v${prev})` : `published to ${handle}`;
+	}
+	if (handle) {
+		if (entry.action === 'removed' || entry.action === 'remove') return `removed from ${handle}`;
+		if (entry.action === 'disabled' || entry.action === 'disable') return `disabled on ${handle}`;
+		if (entry.action === 'enabled' || entry.action === 'enable') return `re-enabled on ${handle}`;
+	}
+	return ACTION_LABEL[entry.action] ?? entry.action;
+}
 
 // =============================================================================
 // HELPERS
@@ -532,6 +614,16 @@ function deriveStatus(
 		});
 	}
 
+	// Standing footnote — the immutable-snapshot rule in one sentence, so
+	// "why isn't my edit live" never needs asking: EVERYTHING (code,
+	// pricing, icon, readme, settings) froze into the version at deploy.
+	if (newest) {
+		lines.push({
+			tone: 'note',
+			text: `Any changes to your application after the v${newest.registryVersion} deploy${newest.publishedAt ? ` on ${formatAt(newest.publishedAt)}` : ''} will not take effect until you deploy a new version.`,
+		});
+	}
+
 	return lines;
 }
 
@@ -559,6 +651,29 @@ export const DashboardView: React.FC<IDashboardViewProps> = ({ host, app, readOn
 	const [reply, setReply] = useState('');
 	const [sending, setSending] = useState(false);
 	const [replyError, setReplyError] = useState('');
+
+	// ── Build-log viewer (opened from a failed event's button) ───────────
+	// logFor: the registry version whose log is open (null = closed);
+	// logText: null = loading, text = loaded.
+	const [logFor, setLogFor] = useState<number | null>(null);
+	const [logText, setLogText] = useState<string | null>(null);
+
+	/** Open the build-log viewer for one version and fetch its log. */
+	const openBuildLog = useCallback(
+		(version: number): void => {
+			setLogFor(version);
+			setLogText(null);
+			if (!host.loadBuildLog) {
+				setLogText('Build-log reading is not wired up on this host.');
+				return;
+			}
+			void host
+				.loadBuildLog(version)
+				.then((text) => setLogText(text || 'No build log exists for this version.'))
+				.catch((e) => setLogText(`Could not load the build log: ${e instanceof Error ? e.message : String(e)}`));
+		},
+		[host]
+	);
 
 	/** Batched refresh: history, rail, pins, and pre-flight in one round. */
 	const refresh = useCallback(async (): Promise<void> => {
@@ -616,6 +731,15 @@ export const DashboardView: React.FC<IDashboardViewProps> = ({ host, app, readOn
 	const status = useMemo(
 		() => deriveStatus(liveVersions, pins, checks, watch, history ?? []),
 		[liveVersions, pins, checks, watch, history],
+	);
+
+	// The rail's build verdict per version, for the timeline join below: a
+	// server-build failure never writes a history row (the worker stamps the
+	// ARTIFACT), so without this join a failed deploy reads healthy in the
+	// conversation and its log is unreachable from the story.
+	const buildByVersion = useMemo(
+		() => new Map(liveVersions.map((v) => [v.registryVersion, buildStateOf(v)])),
+		[liveVersions],
 	);
 
 	// Keep the stream pinned to its newest entry on every (re)load.
@@ -734,13 +858,29 @@ export const DashboardView: React.FC<IDashboardViewProps> = ({ host, app, readOn
 										}
 										// System event — one timeline item in the Review-history
 										// grammar: colored dot, mono timestamp, bold what, by-line.
+										// A failed event carries its WHY one click away.
 										const actor = entry.actor?.display || entry.actor?.email || '';
+										// A DEPLOY row (publish without an audience) quotes the
+										// developer's "what changed" note under the title — and
+										// joins the RAIL's build verdict, because the worker's
+										// failure stamps the artifact, never the history stream.
+										const isDeploy = entry.action === 'publish' && !entry.data?.audience;
+										const note = isDeploy ? entry.data?.comment : undefined;
+										const buildFailed = isDeploy && entry.version != null && buildByVersion.get(entry.version) === 'failed';
+										const showLog = (entry.action === 'failed' || buildFailed) && entry.version != null && Boolean(host.loadBuildLog);
 										return (
 											<div key={entry.seq} style={styles.tlItem}>
-												<div style={{ ...styles.tlDot, background: STREAM_DOT[entry.action] ?? 'var(--rr-border)' }} />
+												<div style={{ ...styles.tlDot, background: buildFailed ? 'var(--rr-color-error)' : STREAM_DOT[entry.action] ?? 'var(--rr-border)' }} />
 												<div style={styles.tlWhen}>{formatAt(entry.at)}</div>
-												<div style={styles.tlWhat}>{`${entry.version != null ? `v${entry.version} ` : ''}${ACTION_LABEL[entry.action] ?? entry.action}`}</div>
+												<div style={styles.tlWhat}>{`${entry.version != null ? `v${entry.version} ` : ''}${streamLabel(entry)}`}</div>
+												{note ? <div style={styles.tlNote}>&ldquo;{note}&rdquo;</div> : null}
+												{buildFailed ? <div style={styles.tlFail}>the server build failed — this version can never serve</div> : null}
 												{actor ? <div style={styles.tlBy}>by {actor}</div> : null}
+												{showLog ? (
+													<div style={styles.tlAction}>
+														<Button variant="secondary" small onClick={() => openBuildLog(entry.version as number)}>View build log</Button>
+													</div>
+												) : null}
 											</div>
 										);
 									})}
@@ -780,6 +920,24 @@ export const DashboardView: React.FC<IDashboardViewProps> = ({ host, app, readOn
 					</Card>
 				</div>
 			</div>
+
+			{/* ── Build-log viewer — the failed event's click-through ────── */}
+			{logFor !== null && (
+				<Modal
+					title={`v${logFor} build log`}
+					// 80% of the pane: build-log lines are long — the stock box
+					// wraps them into porridge.
+					width={Math.floor(window.innerWidth * 0.8)}
+					onClose={() => setLogFor(null)}
+					footer={
+						<Button variant="secondary" onClick={() => setLogFor(null)}>
+							Close
+						</Button>
+					}
+				>
+					<pre style={styles.logPre}>{logText === null ? 'Loading build log...' : logText}</pre>
+				</Modal>
+			)}
 		</div>
 	);
 };

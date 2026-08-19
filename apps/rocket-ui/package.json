@@ -14,9 +14,6 @@
 		"description": "Design, run, and deploy AI pipelines visually.",
 		"readme": "./src/README.md",
 		"icon": "./src/icon.svg",
-		"include": [
-			"apps/shared"
-		],
 		"categories": [
 			"pipelines",
 			"ai"
@@ -430,7 +427,11 @@
 					}
 				}
 			]
-		}
+		},
+		"typecheck": false,
+		"include": [
+			"apps/shared"
+		]
 	},
 	"scripts": {
 		"build": "rsbuild build",

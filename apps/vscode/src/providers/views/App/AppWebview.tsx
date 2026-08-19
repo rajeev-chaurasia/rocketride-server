@@ -26,7 +26,7 @@ import '../../../themes/rocketride-vscode.css';
 import '../../styles/root.css';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { AppBuilderScreen } from 'shared/modules/appdev';
-import type { AppBuilderStage, AppErrorRow, AppEventRow, AppHistoryEntry, AppSummary, AppVersionInfo, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, ReviewTimelineItem, WatchStatus } from 'shared/modules/appdev';
+import type { AppBuilderStage, AppErrorRow, AppEventRow, AppHistoryEntry, AppSummary, AppVersionInfo, BuildStatusTick, ConsoleRow, IAppBuilderHost, ListingDraft, PreflightCheck, WatchStatus } from 'shared/modules/appdev';
 import { useMessaging } from '../hooks/useMessaging';
 
 // =============================================================================
@@ -82,7 +82,15 @@ interface WireHistoryRow {
 	teamId?: string | null;
 	version?: number | null;
 	actor?: { userId?: string; display?: string; email?: string } | null;
-	data?: { side?: string; message?: string } | null;
+	data?: {
+		side?: string;
+		message?: string;
+		audience?: { type?: string; id?: string; name?: string; handle?: string };
+		previousVersion?: number;
+		comment?: string;
+		from?: string;
+		to?: string;
+	} | null;
 }
 
 // =============================================================================
@@ -104,50 +112,22 @@ function toHistoryEntries(rows: WireHistoryRow[]): AppHistoryEntry[] {
 		action: r.action,
 		version: r.version ?? undefined,
 		actor: r.actor ?? undefined,
-		data: r.data ? { side: r.data.side === 'admin' || r.data.side === 'developer' ? r.data.side : undefined, message: r.data.message } : undefined,
+		data: r.data
+			? {
+					side: r.data.side === 'admin' || r.data.side === 'developer' ? r.data.side : undefined,
+					message: r.data.message,
+					// The audience marker is what separates a PUBLISH row (bind
+					// to a rung) from the bare registry-write DEPLOY row.
+					audience: r.data.audience,
+					previousVersion: r.data.previousVersion,
+					comment: r.data.comment,
+					from: r.data.from,
+					to: r.data.to,
+				}
+			: undefined,
 	}));
 }
 
-/** Review-lifecycle actions and their timeline presentation. */
-const TIMELINE_VERBS: Record<string, { verb: string; state: ReviewTimelineItem['state'] }> = {
-	request: { verb: 'submitted for review', state: 'pending' },
-	approved: { verb: 'approved', state: 'done' },
-	rejected: { verb: 'rejected', state: 'rejected' },
-	withdrawn: { verb: 'withdrawn', state: 'done' },
-	failed: { verb: 'build failed', state: 'rejected' },
-};
-
-/**
- * Projects the SAME history rows into the Store tab's review timeline:
- * lifecycle transitions only, newest first, with a rejected item's reviewer
- * notes pulled from the admin 'reply' row the rejection appends right after
- * the state flip (matched by version).
- *
- * @param rows - Raw bridge rows, oldest first.
- * @returns Review timeline items, newest first.
- */
-function projectReviewTimeline(rows: WireHistoryRow[]): ReviewTimelineItem[] {
-	const items: ReviewTimelineItem[] = [];
-	for (let i = 0; i < rows.length; i += 1) {
-		const row = rows[i];
-		const entry = TIMELINE_VERBS[row.action];
-		if (!entry) continue;
-		let rejectionNotes: string | undefined;
-		if (row.action === 'rejected') {
-			const notes = rows.slice(i + 1).find((r) => r.action === 'reply' && r.data?.side === 'admin' && r.version === row.version);
-			rejectionNotes = notes?.data?.message;
-		}
-		const actor = row.actor?.display || row.actor?.email || '';
-		items.push({
-			when: new Date(row.at * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).replace(', ', ' · '),
-			title: `${row.version != null ? `v${row.version} ` : ''}${entry.verb}`,
-			note: actor ? `by ${actor}` : undefined,
-			state: entry.state,
-			rejectionNotes,
-		});
-	}
-	return items.reverse();
-}
 
 // Bridge RPC bound — generous because publish builds are the slowest
 // legitimate call; a host that never answers must not pend forever.
@@ -874,18 +854,18 @@ const AppWebview: React.FC = () => {
 			// Package assets: native pick (app-folder-relative result) + text
 			// read for the icon/README previews.
 			pickAppFile: async (kind) => await rpc<string | null>('pickFile', [kind]),
+			pickIncludePath: async () => await rpc<string | null>('pickIncludePath'),
 			readAppTextFile: async (relPath) => await rpc<string>('readFile', [relPath]),
 			readAppImageDataUri: async (relPath) => await rpc<string | null>('readImage', [relPath]),
 
-			// ── Dashboard + review thread — ONE history fetch, two shapes ───
+			// ── Dashboard + review thread ───────────────────────────────────
 			// The bridge walks the server's 100-row pages and returns the
-			// whole stream oldest-first; the Dashboard renders it as the
-			// thread/activity, the Store card as the review timeline.
+			// whole stream oldest-first; the Dashboard's conversation renders
+			// it (the Store tab's review-history card retired into it).
 			loadHistory: async () => toHistoryEntries(await rpc<WireHistoryRow[]>('history')),
 			sendReply: async (message, version) => {
 				await rpc('reply', version === undefined ? [message] : [message, version]);
 			},
-			loadReviewHistory: async () => projectReviewTimeline(await rpc<WireHistoryRow[]>('history')),
 		};
 	}, [capabilities, previewUrl, sendMessage, rpc, accountSeq, subscribeEvents, subscribeConsole, subscribeErrors, subscribeWatch, subscribeBuildStatus]);
 

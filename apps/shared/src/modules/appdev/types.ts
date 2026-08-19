@@ -184,6 +184,10 @@ export interface ListingDraft {
 	 * the server build (appManifest.include) — the directories the app's
 	 * imports need beyond its own folder. */
 	include?: string[];
+	/** Whether the server build verifies the app with its own tsconfig
+	 * before bundling (appManifest.typecheck; absent = true). Off = the
+	 * app deploys even with type errors — a visible waiver, not a default. */
+	typecheck?: boolean;
 }
 
 /** One pre-flight readiness check row. */
@@ -202,19 +206,6 @@ export interface PreflightCheck {
 	tier?: 'package' | 'store';
 }
 
-/** One review-history timeline item (per-version review model). */
-export interface ReviewTimelineItem {
-	/** Rendered timestamp line ("Jul 7 · 11:20"). */
-	when: string;
-	/** Bold event line ("v0.4.0 approved"). */
-	title: string;
-	/** Supporting note under the title. */
-	note?: string;
-	/** Node state — pending renders the amber dot. */
-	state: 'done' | 'pending' | 'rejected';
-	/** Reviewer notes blockquote (rejected items). */
-	rejectionNotes?: string;
-}
 
 // =============================================================================
 // DASHBOARD — history stream + review thread
@@ -239,8 +230,23 @@ export interface AppHistoryEntry {
 	version?: number;
 	/** Denormalized actor record. */
 	actor?: { userId?: string; display?: string; email?: string };
-	/** Human-row payload: the message and which side sent it; machine rows carry none. */
-	data?: { side?: 'admin' | 'developer'; message?: string };
+	/** Row payload — self-describing by contract (the stream renders without
+	 * a second lookup). Human 'reply' rows carry {side, message}. Audience
+	 * rows (publish binds, removed/disabled/enabled) carry {audience} with
+	 * the server-dereferenced display facts (name, handle); a repoint adds
+	 * previousVersion (the version it moved OFF of). A 'publish' row WITHOUT
+	 * an audience is the registry write — the DEPLOY, per the settled
+	 * vocabulary — and rides the developer's deploy comment. Review
+	 * transitions carry both endpoints {from, to}. */
+	data?: {
+		side?: 'admin' | 'developer';
+		message?: string;
+		audience?: { type?: string; id?: string; name?: string; handle?: string };
+		previousVersion?: number;
+		comment?: string;
+		from?: string;
+		to?: string;
+	};
 }
 
 // =============================================================================
@@ -424,6 +430,12 @@ export interface IAppBuilderHost {
 	 * host enforces containment: assets must live inside the app folder
 	 * (the server's harvest only copies app-root-relative paths). */
 	pickAppFile?: (kind: 'icon' | 'readme') => Promise<string | null>;
+	/** Native picker for an include path — a workspace FOLDER or FILE.
+	 * Returns the picked entry's WORKSPACE-relative POSIX path (no './'
+	 * prefix — include entries are workspace-relative, unlike app assets),
+	 * or null on cancel. The host enforces containment: the pick must live
+	 * inside the workspace. */
+	pickIncludePath?: () => Promise<string | null>;
 	/** Read one app-folder-relative text file (icon SVG, README markdown)
 	 * for preview. The host guards traversal and caps the size. */
 	readAppTextFile?: (relPath: string) => Promise<string>;
@@ -437,8 +449,6 @@ export interface IAppBuilderHost {
 	/** Withdraw a pending review (submit -> private) — the developer's own
 	 * cancel; the version returns to draft. */
 	withdrawReview?: (version: number) => Promise<void>;
-	/** Load the per-version review history, newest first. */
-	loadReviewHistory?: () => Promise<ReviewTimelineItem[]>;
 }
 
 // =============================================================================

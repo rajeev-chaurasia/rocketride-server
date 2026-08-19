@@ -68,6 +68,7 @@ interface AppManifestJson {
 	icon?: string;
 	readme?: string;
 	include?: string[];
+	typecheck?: boolean;
 	billing?: { plans?: Array<Record<string, unknown>> } & Record<string, unknown>;
 	[key: string]: unknown;
 }
@@ -168,6 +169,8 @@ export interface AppListing {
 	readme?: string;
 	/** Workspace-relative extra pack roots (appManifest.include). */
 	include?: string[];
+	/** Server-build typecheck gate (appManifest.typecheck; absent = true). */
+	typecheck?: boolean;
 }
 
 /**
@@ -189,6 +192,8 @@ export async function readAppListing(folder: string): Promise<AppListing> {
 		icon: typeof m.icon === 'string' ? m.icon : '',
 		readme: typeof m.readme === 'string' ? m.readme : '',
 		include: Array.isArray(m.include) ? m.include.filter((p): p is string => typeof p === 'string' && p.length > 0) : [],
+		// Normalized: only an explicit false disables the gate.
+		typecheck: m.typecheck !== false,
 	};
 }
 
@@ -230,6 +235,11 @@ export async function saveAppListing(folder: string, listing: AppListing): Promi
 		const entries = listing.include.map((p) => p.trim()).filter(Boolean);
 		if (entries.length > 0) manifest.include = entries;
 		else delete manifest.include;
+	}
+	if (listing.typecheck !== undefined) {
+		// Only the non-default is stored: absent = strict (true).
+		if (listing.typecheck) delete manifest.typecheck;
+		else manifest.typecheck = false;
 	}
 	await writePkg(file);
 }

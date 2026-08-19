@@ -40,9 +40,17 @@ import { getLogger } from '../shared/util/output';
  * built entirely in the extension host's memory (AdmZip buffers + toBuffer +
  * a Uint8Array copy), so an unbounded tree OOMs the host and kills every
  * RocketRide surface. A deploy packs source only — a few hundred MB is far
- * beyond any legitimate app plus its declared includes.
+ * beyond any legitimate app plus its declared includes. This is the memory
+ * bound; the upload contract is MAX_ZIP_BYTES on the zipped result.
  */
 const MAX_PACK_BYTES = 512 * 1024 * 1024;
+
+/**
+ * The upload cap on the ZIPPED package. The server refuses anything larger
+ * at receipt before parsing a byte, so the pack fails fast client-side with
+ * the same bound and a pointer at the usual cause (an over-broad include).
+ */
+const MAX_ZIP_BYTES = 50 * 1024 * 1024;
 
 // =============================================================================
 // INCLUDE VALIDATION
@@ -194,6 +202,13 @@ export async function deployApp(appId: string, message: string): Promise<Record<
 		logger.output(`[appdev:pack]   + ${file.zipPath} (${bytes.length} bytes)`);
 	}
 	const data = new Uint8Array(zip.toBuffer());
+	// The upload contract: the server refuses over-cap zips at receipt, so
+	// an oversized pack fails HERE with the actionable spelling instead of
+	// after the upload round-trip.
+	if (data.byteLength > MAX_ZIP_BYTES) {
+		logger.output(`[appdev:pack] pack ABORTED — ${Math.round(data.byteLength / (1024 * 1024))} MB zipped exceeds the ${Math.round(MAX_ZIP_BYTES / (1024 * 1024))} MB upload cap`);
+		throw new Error(`Deploy package is ${Math.round(data.byteLength / (1024 * 1024))} MB zipped — the upload cap is ${Math.round(MAX_ZIP_BYTES / (1024 * 1024))} MB. Narrow appManifest.include (a shared source root, a build output, or large assets) and redeploy.`);
+	}
 	logger.output(`[appdev:pack] pack complete — all checks passed; ${files.length} files, ${totalBytes} bytes source, ${data.byteLength} bytes zipped`);
 	logger.output(`[appdev] packed ${files.length} files (${data.byteLength} bytes)`);
 
@@ -207,10 +222,10 @@ export async function deployApp(appId: string, message: string): Promise<Record<
 	const entry = (body as Record<string, unknown>)?.artifact as Record<string, unknown> | undefined;
 	if (!entry) throw new Error(`Deploy returned no artifact entry for ${appId}.`);
 	// The registry's answer is the truth about what was deployed — report
-	// the SAME version in the log and the toast (the manifest's app.version
-	// is only the fallback).
+	// the SAME version in the log (the manifest's app.version is only the
+	// fallback). No toast: the deploy runs FROM the App Builder, whose
+	// Deploy rail and dashboard already show the new version live.
 	const deployedVersion = (entry.appVersion as string) ?? app.version;
 	logger.output(`[appdev] deployed ${appId} v${deployedVersion} (registry v${entry.registryVersion})`);
-	vscode.window.showInformationMessage(`Deployed ${app.name} v${deployedVersion} — publish it from the Deploy view to make it live.`);
 	return entry;
 }

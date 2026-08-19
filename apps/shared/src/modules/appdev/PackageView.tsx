@@ -26,20 +26,27 @@
 
 /**
  * The PACKAGE view: everything EVERY app needs regardless of the store —
- * identity (name, description), the icon and README assets (browse +
- * preview), the include paths that make the build work, and the readiness
- * box narrating whether the app is ready to deploy and publish personally.
+ * identity (name, description), the icon and README assets (typed or
+ * browsed, with preview), the include paths that make the build work (typed
+ * or browsed), and the readiness box narrating whether the app is ready to
+ * deploy and publish personally.
  * Commerce (mode, pricing, review) lives on the STORE tab; nothing here is
  * store-specific.
  *
  * Storage is the app's package.json appManifest via the same
  * loadListing/saveListing round-trip the STORE tab uses — files are truth.
+ *
+ * The whole view is ONE form (the record-panel footer pattern): edits stage
+ * into a draft, and an anchored Save/Cancel bar materializes at the bottom
+ * only while the draft diverges from the saved manifest. Cancel routes
+ * through the stock discard confirm before reverting to the baseline.
  */
 
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { Banner } from 'shell';
 import { Button } from 'shell';
 import { Card } from 'shell';
+import { ConfirmDialog } from 'shell';
 import { EmptyState } from 'shell';
 import { InputField } from 'shell';
 import { Modal } from 'shell';
@@ -66,9 +73,18 @@ export interface IPackageViewProps {
 // =============================================================================
 
 const styles: Record<string, React.CSSProperties> = {
+	// The view is one flex column: a scrolling content region above an
+	// anchored footer bar — the footer never scrolls out of reach.
 	wrap: {
-		overflow: 'auto',
+		display: 'flex',
+		flexDirection: 'column',
 		height: '100%',
+		minHeight: 0,
+	},
+	scroll: {
+		flex: 1,
+		minHeight: 0,
+		overflowY: 'auto',
 	},
 	head: {
 		padding: '18px 26px 0',
@@ -135,7 +151,36 @@ const styles: Record<string, React.CSSProperties> = {
 		marginTop: 14,
 		alignItems: 'center',
 	},
+	// The typecheck waiver checkbox: box + explanatory sentence in one label.
+	checkRowLabel: {
+		display: 'flex',
+		gap: 8,
+		alignItems: 'flex-start',
+		cursor: 'pointer',
+		fontSize: 12.5,
+	},
+	checkRowText: {
+		color: 'var(--rr-text-secondary)',
+		lineHeight: 1.5,
+	},
 	actionNote: {
+		fontSize: 11.5,
+		color: 'var(--rr-text-disabled)',
+	},
+	// ── Anchored form footer (DetailPanel's footer grammar, view gutters) ──
+	// Materializes only while the draft diverges from the saved manifest:
+	// note left, verbs right, divided from the scrolling content above.
+	footer: {
+		flex: 'none',
+		display: 'flex',
+		alignItems: 'center',
+		justifyContent: 'flex-end',
+		gap: 8,
+		padding: '12px 26px',
+		borderTop: '1px solid var(--rr-border)',
+	},
+	footerNote: {
+		marginRight: 'auto',
 		fontSize: 11.5,
 		color: 'var(--rr-text-disabled)',
 	},
@@ -145,22 +190,14 @@ const styles: Record<string, React.CSSProperties> = {
 		gap: 8,
 		alignItems: 'center',
 	},
-	assetPath: {
+	// The flex slot every editable path input sits in (asset + include rows).
+	pathInput: {
 		flex: 1,
+	},
+	// Asset paths are typed directly — mono type, matching the App ID box.
+	assetInput: {
 		fontFamily: 'var(--rr-font-mono, Consolas, monospace)',
 		fontSize: 12,
-		color: 'var(--rr-text-primary)',
-		background: 'var(--rr-bg-input)',
-		border: '1px solid var(--rr-border)',
-		borderRadius: 3,
-		padding: '6px 10px',
-		whiteSpace: 'nowrap',
-		overflow: 'hidden',
-		textOverflow: 'ellipsis',
-	},
-	assetEmpty: {
-		color: 'var(--rr-text-disabled)',
-		fontFamily: 'inherit',
 	},
 	iconPreview: {
 		width: 44,
@@ -189,9 +226,6 @@ const styles: Record<string, React.CSSProperties> = {
 		gap: 8,
 		alignItems: 'center',
 		marginBottom: 6,
-	},
-	includeInput: {
-		flex: 1,
 	},
 	includeHint: {
 		fontSize: 11.5,
@@ -345,6 +379,29 @@ async function inlineReadmeImages(
 }
 
 // =============================================================================
+// DIRTY COMPARE
+// =============================================================================
+
+/**
+ * Canonical compare form of the fields THIS view edits, defaults applied —
+ * so a toggle round-trip (undefined -> true) never reads as a change and
+ * store-only fields (mode, plans) never dirty the package form.
+ *
+ * @param d - The draft to canonicalize.
+ * @returns A stable JSON string for equality comparison.
+ */
+function packageFields(d: ListingDraft): string {
+	return JSON.stringify({
+		name: d.name ?? '',
+		description: d.description ?? '',
+		typecheck: d.typecheck !== false,
+		icon: d.icon ?? '',
+		readme: d.readme ?? '',
+		include: d.include ?? [],
+	});
+}
+
+// =============================================================================
 // COMPONENT
 // =============================================================================
 
@@ -356,14 +413,37 @@ async function inlineReadmeImages(
 export const PackageView: React.FC<IPackageViewProps> = ({ host, app }) => {
 	// ── Data — loaded through the host adapter ───────────────────────────
 	const [draft, setDraft] = useState<ListingDraft | null>(null);
+	// The saved manifest the draft was seeded from — the dirty compare's
+	// baseline and Cancel's revert target (ProfilePanel's exact model).
+	const [saved, setSaved] = useState<ListingDraft | null>(null);
 	const [checks, setChecks] = useState<PreflightCheck[]>([]);
 	const [iconSvg, setIconSvg] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState('');
+	// Footer-Cancel discard confirm (the standard's guard before reverting).
+	const [confirmDiscard, setConfirmDiscard] = useState(false);
 	// README viewer: null = closed; '' = loading; text = rendered.
 	const [readmeText, setReadmeText] = useState<string | null>(null);
 
-	/** Load the manifest draft + readiness checks, then the icon preview. */
+	/** Load the icon preview for a manifest-relative SVG path (null on any
+	 *  failure — the preview slot then shows its 'none' glyph). */
+	const loadIcon = useCallback(
+		async (rel: string | undefined): Promise<void> => {
+			if (rel && host.readAppTextFile) {
+				try {
+					setIconSvg(await host.readAppTextFile(rel));
+					return;
+				} catch {
+					// Unreadable icon: fall through to the empty preview.
+				}
+			}
+			setIconSvg(null);
+		},
+		[host]
+	);
+
+	/** Load the manifest draft + readiness checks, then the icon preview.
+	 *  Seeds BOTH the draft and the dirty baseline from the saved manifest. */
 	const refresh = useCallback(async (): Promise<void> => {
 		setError('');
 		try {
@@ -371,28 +451,23 @@ export const PackageView: React.FC<IPackageViewProps> = ({ host, app }) => {
 				host.loadListing?.() ?? Promise.resolve(null),
 				host.runPreflight?.() ?? Promise.resolve([]),
 			]);
-			setDraft(d ?? { appId: app.id, mode: 'free', name: app.name, description: app.description ?? '', plans: [], icon: '', readme: '', include: [] });
+			const loaded = d ?? { appId: app.id, mode: 'free' as const, name: app.name, description: app.description ?? '', plans: [], icon: '', readme: '', include: [] };
+			setDraft(loaded);
+			setSaved(loaded);
 			setChecks(c);
 			// Icon preview: SVG is text — read it and render as a data URI.
-			if (d?.icon && host.readAppTextFile) {
-				try {
-					setIconSvg(await host.readAppTextFile(d.icon));
-				} catch {
-					setIconSvg(null);
-				}
-			} else {
-				setIconSvg(null);
-			}
+			await loadIcon(d?.icon);
 		} catch (e) {
 			setError(e instanceof Error ? e.message : String(e));
 		}
-	}, [host, app.id, app.name, app.description]);
+	}, [host, app.id, app.name, app.description, loadIcon]);
 
 	useEffect(() => {
 		void refresh();
 	}, [refresh]);
 
-	/** Persist the draft (identity + assets + include), then re-check. */
+	/** Persist the WHOLE form (identity + assets + include), then re-check —
+	 *  the refresh re-seeds the baseline, so the footer dematerializes. */
 	const onSave = useCallback(async (): Promise<void> => {
 		if (!draft || !host.saveListing) return;
 		setSaving(true);
@@ -407,6 +482,16 @@ export const PackageView: React.FC<IPackageViewProps> = ({ host, app }) => {
 		}
 	}, [draft, host, refresh]);
 
+	/** Confirmed discard: revert the draft to the saved baseline, restoring
+	 *  the icon preview to the baseline's icon. */
+	const onDiscard = useCallback((): void => {
+		setConfirmDiscard(false);
+		if (!saved) return;
+		setDraft(saved);
+		setError('');
+		void loadIcon(saved.icon);
+	}, [saved, loadIcon]);
+
 	/** Browse for an asset and stage the picked app-relative path. */
 	const onPick = useCallback(
 		async (kind: 'icon' | 'readme'): Promise<void> => {
@@ -416,13 +501,24 @@ export const PackageView: React.FC<IPackageViewProps> = ({ host, app }) => {
 				const rel = await host.pickAppFile(kind);
 				if (rel === null) return; // canceled
 				setDraft((d) => (d ? { ...d, [kind]: rel } : d));
-				if (kind === 'icon' && host.readAppTextFile) {
-					try {
-						setIconSvg(await host.readAppTextFile(rel));
-					} catch {
-						setIconSvg(null);
-					}
-				}
+				if (kind === 'icon') await loadIcon(rel);
+			} catch (e) {
+				setError(e instanceof Error ? e.message : String(e));
+			}
+		},
+		[host, loadIcon]
+	);
+
+	/** Browse for an include folder or file and stage the workspace-relative
+	 *  pick into the given row. */
+	const onPickInclude = useCallback(
+		async (idx: number): Promise<void> => {
+			if (!host.pickIncludePath) return;
+			setError('');
+			try {
+				const rel = await host.pickIncludePath();
+				if (rel === null) return; // canceled
+				setDraft((d) => (d ? { ...d, include: (d.include ?? []).map((p, i) => (i === idx ? rel : p)) } : d));
 			} catch (e) {
 				setError(e instanceof Error ? e.message : String(e));
 			}
@@ -457,118 +553,165 @@ export const PackageView: React.FC<IPackageViewProps> = ({ host, app }) => {
 	// Icon preview data URI (SVG text -> inline image).
 	const iconUri = iconSvg ? `data:image/svg+xml;utf8,${encodeURIComponent(iconSvg)}` : null;
 
+	// Dirty flag: any edited field differs from the saved baseline. Drives
+	// the materializing footer bar and gates the discard confirm.
+	const dirty = draft !== null && saved !== null && packageFields(draft) !== packageFields(saved);
+
 	// =====================================================================
 	// RENDER
 	// =====================================================================
 
 	return (
 		<div style={styles.wrap}>
-			{/* View header — title + one-line purpose */}
-			<div style={styles.head}>
-				<div style={styles.h1}>{app.name}</div>
-				<div style={styles.sub}>Package — everything this app needs to build, deploy, and publish personally: identity, icon, README, and the workspace paths it ships with. Store-only concerns (pricing, review) live on the Store tab.</div>
-			</div>
-
-			{error ? (
-				<div style={{ margin: '16px 26px 0', maxWidth: 1060 }}>
-					<Banner variant="error">{error}</Banner>
-				</div>
-			) : null}
-
-			<div style={styles.grid}>
-				{/* ── Left: identity + assets ─────────────────────────────── */}
-				<div style={styles.col}>
-					<Card header="Identity">
-						<div style={styles.formRow}>
-							<div style={styles.formLabel}>App ID</div>
-							<div style={styles.formStatic}>{draft?.appId ?? app.id}</div>
-						</div>
-						<div style={styles.formRow}>
-							<div style={styles.formLabel}>Display name</div>
-							<InputField value={draft?.name ?? ''} onChange={(e) => setDraft((d) => (d ? { ...d, name: e.target.value } : d))} />
-						</div>
-						<div style={styles.formRow}>
-							<div style={styles.formLabel}>Description</div>
-							<textarea style={styles.formArea} value={draft?.description ?? ''} onChange={(e) => setDraft((d) => (d ? { ...d, description: e.target.value } : d))} />
-						</div>
-					</Card>
-
-					<Card header="Assets">
-						<div style={styles.formRow}>
-							<div style={styles.formLabel}>Icon (SVG)</div>
-							<div style={styles.assetRow}>
-								<div style={styles.iconPreview}>
-									{iconUri ? <img style={styles.iconImg} src={iconUri} alt="App icon" /> : <span style={styles.iconGlyph}>none</span>}
-								</div>
-								<div style={draft?.icon ? styles.assetPath : { ...styles.assetPath, ...styles.assetEmpty }}>{draft?.icon || 'no icon declared'}</div>
-								{host.pickAppFile && (
-									<Button variant="secondary" small onClick={() => void onPick('icon')}>Browse</Button>
-								)}
-							</div>
-						</div>
-						<div style={styles.formRow}>
-							<div style={styles.formLabel}>README (Markdown)</div>
-							<div style={styles.assetRow}>
-								<div style={draft?.readme ? styles.assetPath : { ...styles.assetPath, ...styles.assetEmpty }}>{draft?.readme || 'no README declared'}</div>
-								{host.pickAppFile && (
-									<Button variant="secondary" small onClick={() => void onPick('readme')}>Browse</Button>
-								)}
-								{draft?.readme && host.readAppTextFile ? (
-									<Button variant="secondary" small onClick={() => void onViewReadme()}>View</Button>
-								) : null}
-							</div>
-						</div>
-						{host.saveListing && (
-							<div style={styles.actions}>
-								<Button onClick={() => void onSave()} disabled={saving || !draft}>
-									{saving ? 'Saving…' : 'Save Package'}
-								</Button>
-								<span style={styles.actionNote}>Saved to the app&rsquo;s package.json — the manifest is the truth; every deploy packs it.</span>
-							</div>
-						)}
-					</Card>
+			{/* Scrolling content region — every card lives here; only the
+			    footer bar below stays anchored. */}
+			<div style={styles.scroll}>
+				{/* View header — title + one-line purpose */}
+				<div style={styles.head}>
+					<div style={styles.h1}>{app.name}</div>
+					<div style={styles.sub}>Package — everything this app needs to build, deploy, and publish personally: identity, icon, README, and the workspace paths it ships with. Store-only concerns (pricing, review) live on the Store tab.</div>
 				</div>
 
-				{/* ── Right: readiness + include paths ───────────────────── */}
-				<div style={styles.col}>
-					<Card header="Readiness">
-						{packageChecks.length === 0 ? (
-							<EmptyState title="No checks yet" description="Readiness runs against the app's manifest once it loads." />
-						) : (
-							<>
-								<div style={styles.readyLead}>{readyLead}</div>
-								{packageChecks.map((c, i) => (
-									<div key={c.id} style={i === 0 ? { ...styles.checkRow, ...styles.checkRowFirst } : styles.checkRow}>
-										<div style={{ ...styles.checkMark, background: CHECK_PALETTE[c.state].bg, color: CHECK_PALETTE[c.state].fg }}>{CHECK_PALETTE[c.state].glyph}</div>
-										<div style={styles.checkText}>{c.label}</div>
-										{c.note ? <div style={styles.checkNote} title={c.note}>{c.note}</div> : null}
-									</div>
-								))}
-							</>
-						)}
-					</Card>
+				{error ? (
+					<div style={{ margin: '16px 26px 0', maxWidth: 1060 }}>
+						<Banner variant="error">{error}</Banner>
+					</div>
+				) : null}
 
-					<Card header="Include paths">
-						<div style={styles.includeHint}>Workspace directories your app imports beyond its own folder (for example <code>apps/shared</code>). They are packed into every deploy and installed by the server build — a missing one fails the build.</div>
-						{(draft?.include ?? []).map((entry, idx) => (
-							<div key={idx} style={styles.includeRow}>
-								<div style={styles.includeInput}>
-									<InputField
-										value={entry}
-										placeholder="apps/shared"
-										onChange={(e) => setDraft((d) => (d ? { ...d, include: (d.include ?? []).map((p, i) => (i === idx ? e.target.value : p)) } : d))}
+				<div style={styles.grid}>
+					{/* ── Left: identity + assets ─────────────────────────────── */}
+					<div style={styles.col}>
+						<Card header="Identity">
+							<div style={styles.formRow}>
+								<div style={styles.formLabel}>App ID</div>
+								<div style={styles.formStatic}>{draft?.appId ?? app.id}</div>
+							</div>
+							<div style={styles.formRow}>
+								<div style={styles.formLabel}>Display name</div>
+								<InputField value={draft?.name ?? ''} onChange={(e) => setDraft((d) => (d ? { ...d, name: e.target.value } : d))} />
+							</div>
+							<div style={styles.formRow}>
+								<div style={styles.formLabel}>Description</div>
+								<textarea style={styles.formArea} value={draft?.description ?? ''} onChange={(e) => setDraft((d) => (d ? { ...d, description: e.target.value } : d))} />
+							</div>
+							<div style={styles.formRow}>
+								<div style={styles.formLabel}>Strict type checking</div>
+								<label style={styles.checkRowLabel}>
+									<input
+										type="checkbox"
+										checked={draft?.typecheck !== false}
+										onChange={(e) => setDraft((d) => (d ? { ...d, typecheck: e.target.checked } : d))}
 									/>
-								</div>
-								<Button variant="secondary" small onClick={() => setDraft((d) => (d ? { ...d, include: (d.include ?? []).filter((_, i) => i !== idx) } : d))}>Remove</Button>
+									<span style={styles.checkRowText}>The server verifies the app with your own tsconfig before building — turning this off deploys even with type errors.</span>
+								</label>
 							</div>
-						))}
-						<div style={styles.actions}>
-							<Button variant="secondary" small onClick={() => setDraft((d) => (d ? { ...d, include: [...(d.include ?? []), ''] } : d))}>Add path</Button>
-							<span style={styles.actionNote}>workspace-relative · saved with Save Package</span>
-						</div>
-					</Card>
+						</Card>
+
+						<Card header="Assets">
+							<div style={styles.formRow}>
+								<div style={styles.formLabel}>Icon (SVG)</div>
+								<div style={styles.assetRow}>
+									<div style={styles.iconPreview}>
+										{iconUri ? <img style={styles.iconImg} src={iconUri} alt="App icon" /> : <span style={styles.iconGlyph}>none</span>}
+									</div>
+									<div style={styles.pathInput}>
+										{/* Typed path, app-folder-relative; the preview reloads
+										    once the field settles (blur), not per keystroke. */}
+										<InputField
+											style={styles.assetInput}
+											value={draft?.icon ?? ''}
+											placeholder="./src/icon.svg"
+											onChange={(e) => setDraft((d) => (d ? { ...d, icon: e.target.value } : d))}
+											onBlur={() => void loadIcon(draft?.icon)}
+										/>
+									</div>
+									{host.pickAppFile && (
+										<Button variant="secondary" small onClick={() => void onPick('icon')}>Browse</Button>
+									)}
+								</div>
+							</div>
+							<div style={styles.formRow}>
+								<div style={styles.formLabel}>README (Markdown)</div>
+								<div style={styles.assetRow}>
+									<div style={styles.pathInput}>
+										<InputField
+											style={styles.assetInput}
+											value={draft?.readme ?? ''}
+											placeholder="./src/README.md"
+											onChange={(e) => setDraft((d) => (d ? { ...d, readme: e.target.value } : d))}
+										/>
+									</div>
+									{host.pickAppFile && (
+										<Button variant="secondary" small onClick={() => void onPick('readme')}>Browse</Button>
+									)}
+									{draft?.readme && host.readAppTextFile ? (
+										<Button variant="secondary" small onClick={() => void onViewReadme()}>View</Button>
+									) : null}
+								</div>
+							</div>
+						</Card>
+					</div>
+
+					{/* ── Right: readiness + include paths ───────────────────── */}
+					<div style={styles.col}>
+						<Card header="Readiness">
+							{packageChecks.length === 0 ? (
+								<EmptyState title="No checks yet" description="Readiness runs against the app's manifest once it loads." />
+							) : (
+								<>
+									<div style={styles.readyLead}>{readyLead}</div>
+									{packageChecks.map((c, i) => (
+										<div key={c.id} style={i === 0 ? { ...styles.checkRow, ...styles.checkRowFirst } : styles.checkRow}>
+											<div style={{ ...styles.checkMark, background: CHECK_PALETTE[c.state].bg, color: CHECK_PALETTE[c.state].fg }}>{CHECK_PALETTE[c.state].glyph}</div>
+											<div style={styles.checkText}>{c.label}</div>
+											{c.note ? <div style={styles.checkNote} title={c.note}>{c.note}</div> : null}
+										</div>
+									))}
+								</>
+							)}
+						</Card>
+
+						<Card header="Include paths">
+							<div style={styles.includeHint}>Workspace directories or files your app imports beyond its own folder (for example <code>apps/shared</code>). They are packed into every deploy and installed by the server build — a missing one fails the build.</div>
+							{(draft?.include ?? []).map((entry, idx) => (
+								<div key={idx} style={styles.includeRow}>
+									<div style={styles.pathInput}>
+										<InputField
+											value={entry}
+											placeholder="apps/shared"
+											onChange={(e) => setDraft((d) => (d ? { ...d, include: (d.include ?? []).map((p, i) => (i === idx ? e.target.value : p)) } : d))}
+										/>
+									</div>
+									{host.pickIncludePath && (
+										<Button variant="secondary" small onClick={() => void onPickInclude(idx)}>Browse</Button>
+									)}
+									<Button variant="secondary" small onClick={() => setDraft((d) => (d ? { ...d, include: (d.include ?? []).filter((_, i) => i !== idx) } : d))}>Remove</Button>
+								</div>
+							))}
+							<div style={styles.actions}>
+								<Button variant="secondary" small onClick={() => setDraft((d) => (d ? { ...d, include: [...(d.include ?? []), ''] } : d))}>Add path</Button>
+								<span style={styles.actionNote}>workspace-relative</span>
+							</div>
+						</Card>
+					</div>
 				</div>
 			</div>
+
+			{/* ── Anchored form footer (record-panel standard): materializes
+			      only while the draft diverges from the saved manifest — Save
+			      persists the WHOLE form, Cancel reverts via the discard
+			      confirm. ─────────────────────────────────────────────────── */}
+			{dirty && host.saveListing && (
+				<div style={styles.footer}>
+					<span style={styles.footerNote}>Saved to the app&rsquo;s package.json — the manifest is the truth; every deploy packs it.</span>
+					<Button variant="primary" small onClick={() => void onSave()} disabled={saving}>
+						{saving ? 'Saving…' : 'Save Package'}
+					</Button>
+					<Button variant="ghost" small onClick={() => setConfirmDiscard(true)} disabled={saving}>
+						Cancel
+					</Button>
+				</div>
+			)}
 
 			{/* ── README viewer — rendered markdown in a wide modal ───────── */}
 			{readmeText !== null && (
@@ -590,6 +733,20 @@ export const PackageView: React.FC<IPackageViewProps> = ({ host, app }) => {
 						)}
 					</div>
 				</Modal>
+			)}
+
+			{/* ── Footer-Cancel discard guard — the stock confirm before the
+			      draft reverts to the saved baseline. ───────────────────────── */}
+			{confirmDiscard && (
+				<ConfirmDialog
+					title="Discard changes?"
+					message="Your unsaved changes will be lost."
+					confirmLabel="Discard"
+					cancelLabel="Keep Editing"
+					destructive
+					onConfirm={onDiscard}
+					onCancel={() => setConfirmDiscard(false)}
+				/>
 			)}
 		</div>
 	);

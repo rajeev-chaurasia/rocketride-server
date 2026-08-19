@@ -442,6 +442,34 @@ async def test_job_typecheck_failure_is_terminal_with_tsc_errors(monkeypatch, bu
 
 
 @pytest.mark.asyncio
+async def test_job_typecheck_waiver_skips_the_verify_phase(monkeypatch, build_store, toolchain):
+    """appManifest.typecheck: false (the PACKAGE tab's waiver) skips the
+    verify phase entirely: the build succeeds despite a tsc that WOULD
+    have failed, no tsc runs, and the waiver is recorded in build.log —
+    visible, never silent.
+    """
+    rail = _FakeRail(_app_source_zip(), {'status': 'queued', 'attempt': 0})
+    rail.entry['metadata']['manifest']['typecheck'] = False
+    rail.install(monkeypatch)
+    await _seed_zip(rail.zip_bytes)
+    fake = _FakeExec()
+    fake.typecheck_exit = 2
+    fake.typecheck_out = 'src/App.tsx(1,1): error TS9999: would have failed the build'
+    monkeypatch.setattr(app_build, '_exec', fake)
+
+    worker = AppBuildWorker(server=None)
+    assert await worker._run_job('org1', 'acme.brandy', 1) is False
+    final = rail.stamps[-1]
+    assert final['status'] == 'ok'
+    # The verify phase never reached the exec seam.
+    assert not any('--noEmit' in ' '.join(c['argv']) for c in fake.calls)
+    home = build_store / 'orgs' / 'org1' / 'files' / '.deployments' / 'acme.brandy' / 'v000001-abcdef12'
+    log_text = (home / 'build.log').read_text(encoding='utf-8')
+    assert 'skipped by appManifest.typecheck: false' in log_text
+    assert (home / 'dist' / 'remoteEntry.js').is_file()
+
+
+@pytest.mark.asyncio
 async def test_job_drift_fails_reasoned(monkeypatch, build_store, toolchain):
     """A packed lockfile whose pins re-resolve during install fails the
     post-install diff with the drifted package named (shell/rocketride
@@ -559,6 +587,68 @@ async def test_job_rejects_unsafe_zip_entry_at_materialize(monkeypatch, build_st
     assert 'unsafe path' in (home / 'build.log').read_text(encoding='utf-8')
     # Nothing escaped: no evil.txt anywhere under the scratch root.
     assert not list(toolchain['scratch'].rglob('evil.txt'))
+
+
+def test_rmtree_clears_trees_past_windows_max_path(tmp_path):
+    """The scratch cleaner must delete trees whose entries cross Windows'
+    260-char MAX_PATH — measured at ~290 in real scratch dirs (pnpm .pnpm
+    names + module-federation dist depth, NO include roots needed). A plain
+    rmtree(ignore_errors=True) silently LEAKED them, and the aged startup
+    sweep used the same call, so nothing ever reclaimed them.
+    """
+    from pathlib import Path
+
+    segment = 'component-directory-with-a-real-world-name'
+    deep = tmp_path / 'job'
+    target = deep
+    while len(str(target)) < 300:
+        target = target / segment
+    assert len(str(target)) > 260
+    # Setup needs the extended spelling too — plain mkdir hits the same
+    # ceiling the cleaner must overcome.
+    make = Path(f'\\\\?\\{target}') if os.name == 'nt' else target
+    make.mkdir(parents=True)
+    (make / 'ContainerEntryModule.js.map').write_text('x', encoding='utf-8')
+
+    app_build._rmtree(str(deep))
+    assert not deep.exists()
+
+
+def test_rmtree_never_follows_links(tmp_path):
+    """Links are removed as LINKS — their targets survive untouched. pnpm
+    materializes node_modules through junctions/links into its global
+    store, so a cleaner that walked through one would destroy the store.
+    Covers both shapes: a link INSIDE the tree, and the root BEING a link.
+    """
+    import subprocess
+
+    # The protected target, outside the tree, with a sentinel inside.
+    store = tmp_path / 'store' / 'protected-package'
+    store.mkdir(parents=True)
+    sentinel = store / 'sentinel.txt'
+    sentinel.write_text('must survive', encoding='utf-8')
+
+    def make_dir_link(link: str, target: str) -> None:
+        if os.name == 'nt':
+            # Junctions need no privilege (symlinks may) — pnpm's own shape.
+            subprocess.run(['cmd', '/c', 'mklink', '/J', link, target], check=True, capture_output=True)
+        else:
+            os.symlink(target, link)
+
+    # Shape 1: a link inside the tree being cleaned.
+    job = tmp_path / 'job'
+    (job / 'node_modules').mkdir(parents=True)
+    make_dir_link(str(job / 'node_modules' / 'protected-package'), str(store))
+    app_build._rmtree(str(job))
+    assert not job.exists()
+    assert sentinel.read_text(encoding='utf-8') == 'must survive'
+
+    # Shape 2: the root itself is a link — unlinked in place, never entered.
+    root_link = tmp_path / 'root-link'
+    make_dir_link(str(root_link), str(store))
+    app_build._rmtree(str(root_link))
+    assert not root_link.exists()
+    assert sentinel.read_text(encoding='utf-8') == 'must survive'
 
 
 def test_scrub_paths_strips_build_root_and_user_home():

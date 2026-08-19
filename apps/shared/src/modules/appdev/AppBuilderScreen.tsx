@@ -192,7 +192,7 @@ export const AppBuilderScreen: React.FC<IAppBuilderScreenProps> = ({
 				{/* Package edits LOCAL files (like DESIGN) — never namespace-gated. */}
 				{stage === 'package' && <PackageView host={host} app={app} />}
 				{stage === 'deploy' && <DeployView host={host} app={app} readOnly={namespaceMismatch} />}
-				{stage === 'store' && <StoreView host={host} app={app} readOnly={namespaceMismatch} />}
+				{stage === 'store' && <StoreView host={host} app={app} readOnly={namespaceMismatch} onNavigate={selectStage} />}
 			</div>
 		</div>
 	);

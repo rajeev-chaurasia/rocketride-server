@@ -24,7 +24,7 @@
 // FROZEN rocketride SDK contract — floor v1.3 — never edit by hand
 // =============================================================================
 // Floor key:     1.3 (MAJOR.MINOR of packages/client-typescript/package.json)
-// Source commit: 3ff080c33c3d726336173f229e6ca6a837a9f005
+// Source commit: 733316f33fb2590af88ca4e96507548b68a06a43
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder client-typescript:freeze
 //
@@ -1210,11 +1210,27 @@ export interface DeployHistoryEntry {
     teamId?: string;
     version?: number;
     actor?: DeployActor;
-    /** Human-row payload (`reply` rows): the review-thread message and its
-        side; machine rows carry null/absent. */
+    /** Row payload — self-describing by contract (rows render without a
+        second lookup). `reply` rows carry the review-thread message and its
+        side. App audience rows (publish binds, removed/disabled/enabled)
+        carry the audience WITH its server-dereferenced display facts
+        (`name`, `handle`), plus `previousVersion` when a publish repointed
+        an existing binding. A `publish` row without an audience is the
+        registry write (the DEPLOY) and rides the deploy `comment`; review
+        transitions carry both endpoints (`from`/`to`). */
     data?: {
         side?: "admin" | "developer";
         message?: string;
+        audience?: {
+            type?: string;
+            id?: string;
+            name?: string;
+            handle?: string;
+        };
+        previousVersion?: number;
+        comment?: string;
+        from?: string;
+        to?: string;
     } | null;
 }
 /** Body of `deploy.add()` — the generic rail door. */

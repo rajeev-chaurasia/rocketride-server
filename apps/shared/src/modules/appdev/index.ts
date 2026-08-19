@@ -74,7 +74,6 @@ export type {
 	ListingDraft,
 	PreflightCheck,
 	BillingPlan,
-	ReviewTimelineItem,
 	RungKind,
 	RungPin,
 	WatchStatus,
