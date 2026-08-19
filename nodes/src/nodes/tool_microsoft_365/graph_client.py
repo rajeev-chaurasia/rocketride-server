@@ -81,9 +81,34 @@ _MS_TOKEN_HOSTS = frozenset({'login.microsoftonline.com'})
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
 
 
+class _AuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Drop the Authorization header when a redirect leaves the original host.
+
+    Graph answers ``/content`` downloads with a 302 to a pre-authorized
+    download host (e.g. OneDrive CDN). urllib forwards the original headers,
+    and those hosts reject requests that carry a foreign bearer token with
+    401 Unauthenticated — found live on word_read_text. Same-host redirects
+    keep the header.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None:
+            old_host = urllib.parse.urlparse(req.full_url).hostname
+            new_host = urllib.parse.urlparse(newurl).hostname
+            if old_host != new_host:
+                # Request stores unredirected headers case-normalized
+                new_req.remove_header('Authorization')
+                new_req.remove_header('Authorization'.capitalize())
+        return new_req
+
+
+_opener = urllib.request.build_opener(_AuthStrippingRedirectHandler)
+
+
 def _urlopen(req, timeout=30):
-    """Seam for tests; all HTTP goes through here."""
-    return urllib.request.urlopen(req, timeout=timeout)
+    """Seam for tests; all HTTP goes through here (redirects strip auth cross-host)."""
+    return _opener.open(req, timeout=timeout)
 
 
 @dataclass(frozen=True)

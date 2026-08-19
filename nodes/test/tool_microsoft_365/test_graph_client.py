@@ -183,6 +183,32 @@ class TestBrokerUserAuth:
             gc.build_auth(SVC, 'user', cfg, [])
 
 
+class TestRedirectAuthStripping:
+    """/content 302s go to a pre-authorized host that rejects foreign bearers."""
+
+    def _redirect(self, from_url, to_url):
+        req = urllib.request.Request(from_url, headers={'Authorization': 'Bearer T'})
+        h = gc._AuthStrippingRedirectHandler()
+        fp = mock.MagicMock()
+        return h.redirect_request(req, fp, 302, 'Found', {'location': to_url}, to_url)
+
+    def test_cross_host_redirect_drops_authorization(self):
+        new_req = self._redirect(
+            'https://graph.microsoft.com/v1.0/me/drive/items/X/content',
+            'https://public.dl.example.net/pre-authed-blob',
+        )
+        assert new_req is not None
+        assert not new_req.has_header('Authorization')
+
+    def test_same_host_redirect_keeps_authorization(self):
+        new_req = self._redirect(
+            'https://graph.microsoft.com/v1.0/me/a',
+            'https://graph.microsoft.com/v1.0/me/b',
+        )
+        assert new_req is not None
+        assert new_req.has_header('Authorization')
+
+
 class TestUserBase:
     def test_user_auth_is_me(self):
         assert gc.user_base({'authType': 'user'}) == '/me'
