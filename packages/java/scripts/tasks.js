@@ -23,23 +23,35 @@
 
 /**
  * Java Build Module
- * 
- * Handles downloading JDK, JRE, and Maven.
+ *
+ * Handles downloading JDK, JRE, and Maven, and builds the engine's java
+ * libraries: rocketride-core and rocketride-dbgconn.
  */
 const path = require('path');
 const {
     withLock, getState, setState,
     downloadFile, extractArchive,
-    removeDir, getPlatform, PROJECT_ROOT, BUILD_ROOT,
+    removeDir, removeDirs, removeFile, getPlatform, PROJECT_ROOT, BUILD_ROOT, DIST_ROOT,
     exists, readJson, mkdir,
+    execCommand, syncDir, syncFile, formatSyncStats,
     parallel
 } = require('../../../scripts/lib');
 
 // Paths
+const PACKAGE_DIR = path.join(__dirname, '..');
 const BUILD_DIR = path.join(BUILD_ROOT, 'java');
 const JDK_DIR = path.join(BUILD_DIR, 'jdk');
 const JRE_DIR = path.join(BUILD_DIR, 'jre');
 const MAVEN_DIR = path.join(BUILD_DIR, 'maven');
+const MAVEN = path.join(MAVEN_DIR, 'bin', 'mvn');
+
+// Maven repository shared by every java build in the tree
+const SRC_BUILD_DIR = path.join(BUILD_DIR, 'src');
+const M2_DIR = path.join(BUILD_ROOT, 'm2');
+const DIST_DIR = path.join(DIST_ROOT, 'server', 'java');
+
+// Glob patterns to ignore when syncing
+const IGNORE = ['**/target/**', '**/scripts/**'];
 
 // Read versions from package.json (loaded async in tasks)
 let MAVEN_VERSION = '3.9.6';
@@ -72,6 +84,18 @@ function getJdkUrl() {
 function getJreUrl() {
     const { os: osName, arch } = getPlatform();
     return `https://api.adoptium.net/v3/binary/latest/${JDK_VERSION}/ga/${osName}/${arch}/jre/hotspot/normal/eclipse`;
+}
+
+async function execMaven(args, options = {}) {
+    return execCommand(MAVEN, ['-B', `-Dmaven.repo.local=${M2_DIR}`, ...args], {
+        ...options,
+        env: {
+            ...process.env,
+            JAVA_HOME: JDK_DIR,
+            PATH: `${path.join(JDK_DIR, 'bin')}${path.delimiter}${process.env.PATH}`,
+            MAVEN_OPTS: `${process.env.MAVEN_OPTS || ''} -Xmx1024m`.trim()
+        }
+    });
 }
 
 // =============================================================================
@@ -164,6 +188,116 @@ function makeSetupJreAction(options = {}) {
     };
 }
 
+function makeSyncSourceAction(options = {}) {
+    return {
+        locks: ['java-src'],
+        run: async (ctx, task) => {
+            task.output = 'Scanning for changes...';
+            const stats = await syncDir(PACKAGE_DIR, SRC_BUILD_DIR, { ignore: IGNORE });
+            task.output = formatSyncStats(stats);
+            ctx.javaSourceChanged = stats.changed > 0;
+        }
+    };
+}
+
+function makeBuildCoreAction(options = {}) {
+    const buildCoreDir = path.join(SRC_BUILD_DIR, 'lib', 'core');
+    const distCoreJar = path.join(DIST_DIR, 'lib', 'rocketride-core.jar');
+
+    return {
+        locks: ['maven'],
+        run: async (ctx, task) => {
+            // Skip if already built
+            if (!options.force && !ctx.javaSourceChanged && await exists(distCoreJar)) {
+                task.output = 'Already built';
+                return;
+            }
+
+            // Installed so the tika module can resolve it
+            await execMaven(['clean', 'compile', 'package', 'install',
+                             'dependency:copy-dependencies', '-q'],
+                            { task, cwd: buildCoreDir });
+        }
+    };
+}
+
+function makeBuildDbgconnAction(options = {}) {
+    const buildDbgconnDir = path.join(SRC_BUILD_DIR, 'lib', 'dbgconn');
+    const distDbgconnJar = path.join(DIST_DIR, 'lib', 'rocketride-dbgconn.jar');
+
+    return {
+        locks: ['maven'],
+        run: async (ctx, task) => {
+            // Skip if already built
+            if (!options.force && !ctx.javaSourceChanged && await exists(distDbgconnJar)) {
+                task.output = 'Already built';
+                return;
+            }
+
+            await execMaven(['clean', 'compile', 'package', '-q'], { task, cwd: buildDbgconnDir });
+        }
+    };
+}
+
+function makeTestDbgconnAction() {
+    const buildDbgconnDir = path.join(SRC_BUILD_DIR, 'lib', 'dbgconn');
+
+    return {
+        locks: ['maven'],
+        run: async (_ctx, task) => {
+            await execMaven(['test', '-q'], { task, cwd: buildDbgconnDir });
+        }
+    };
+}
+
+function makeSyncOutputsAction(options = {}) {
+    const buildCoreDir = path.join(SRC_BUILD_DIR, 'lib', 'core');
+    const buildDbgconnDir = path.join(SRC_BUILD_DIR, 'lib', 'dbgconn');
+    const distCoreJar = path.join(DIST_DIR, 'lib', 'rocketride-core.jar');
+    const distDbgconnJar = path.join(DIST_DIR, 'lib', 'rocketride-dbgconn.jar');
+
+    return {
+        locks: ['java-src'],
+        run: async (ctx, task) => {
+            // Skip if already copied
+            if (!options.force && !ctx.javaSourceChanged &&
+                await exists(distCoreJar) && await exists(distDbgconnJar)) {
+                task.output = 'Already copied';
+                return;
+            }
+
+            const libDir = path.join(DIST_DIR, 'lib');
+
+            // Drop the pre-rename jars, getJars() takes every jar it finds
+            for (const legacy of ['dbgconn.jar', 'tika.jar'])
+                await removeFile(path.join(libDir, legacy));
+
+            // Copy JRE to dist
+            const jreDist = path.join(DIST_DIR, 'jre');
+            if (await exists(JRE_DIR)) {
+                task.output = 'Syncing JRE...';
+                const jreStats = await syncDir(JRE_DIR, jreDist, { package: true });
+                task.output = `JRE: ${formatSyncStats(jreStats)}`;
+            }
+
+            // Copy rocketride-core.jar and its log4j dependencies
+            await syncFile(path.join(buildCoreDir, 'target', 'rocketride-core-1.0.jar'),
+                           distCoreJar, { package: true });
+            await syncDir(path.join(buildCoreDir, 'target', 'dependency'), libDir,
+                          { mirror: false, package: true });
+
+            // Copy rocketride-dbgconn.jar
+            const dbgconnJarWithDeps = path.join(buildDbgconnDir, 'target', 'rocketride-dbgconn-2.0-jar-with-dependencies.jar');
+            const dbgconnJar = path.join(buildDbgconnDir, 'target', 'rocketride-dbgconn-2.0.jar');
+            if (await exists(dbgconnJarWithDeps)) {
+                await syncFile(dbgconnJarWithDeps, distDbgconnJar, { package: true });
+            } else if (await exists(dbgconnJar)) {
+                await syncFile(dbgconnJar, distDbgconnJar, { package: true });
+            }
+        }
+    };
+}
+
 // =============================================================================
 // Module Definition
 // =============================================================================
@@ -177,6 +311,11 @@ module.exports = {
         { name: 'java:setup-jdk', action: makeSetupJdkAction },
         { name: 'java:setup-maven', action: makeSetupMavenAction },
         { name: 'java:setup-jre', action: makeSetupJreAction },
+        { name: 'java:sync-source', action: makeSyncSourceAction },
+        { name: 'java:build-core', action: makeBuildCoreAction },
+        { name: 'java:build-dbgconn', action: makeBuildDbgconnAction },
+        { name: 'java:sync', action: makeSyncOutputsAction },
+        { name: 'java:test-dbgconn', action: makeTestDbgconnAction },
 
         // Submodule actions (called by server:build-core / server:clean-all)
         { name: 'java:submodule-build', action: () => ({
@@ -185,13 +324,24 @@ module.exports = {
                     'java:setup-jdk',
                     'java:setup-maven',
                     'java:setup-jre'
-                ], 'Setup Java tools')
+                ], 'Setup Java tools'),
+                'java:sync-source',
+                // Sequential: they share one maven repository
+                'java:build-core',
+                'java:build-dbgconn',
+                'java:sync'
+            ]
+        })},
+        { name: 'java:submodule-test', action: () => ({
+            steps: [
+                'java:submodule-build',
+                'java:test-dbgconn'
             ]
         })},
         { name: 'java:submodule-clean', action: () => ({
             run: async (ctx, task) => {
                 await withLock('java-setup', async () => {
-                    await removeDir(BUILD_DIR);
+                    await removeDirs([BUILD_DIR, M2_DIR, DIST_DIR]);
                     await setState('java.jdk', null);
                     await setState('java.maven', null);
                     await setState('java.jre', null);
@@ -206,3 +356,6 @@ module.exports = {
 module.exports.JDK_DIR = JDK_DIR;
 module.exports.JRE_DIR = JRE_DIR;
 module.exports.MAVEN_DIR = MAVEN_DIR;
+module.exports.M2_DIR = M2_DIR;
+module.exports.DIST_DIR = DIST_DIR;
+module.exports.execMaven = execMaven;
