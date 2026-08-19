@@ -50,6 +50,8 @@ invoke-time parameters — never node config.
 
 from __future__ import annotations
 
+import urllib.parse
+
 from io import BytesIO
 
 from rocketlib import tool_function
@@ -225,7 +227,7 @@ class IInstance(MicrosoftToolInstanceBase):
         data = request(
             self.IGlobal.auth,
             'PUT',
-            f'{base}/drive/root:/{path}:/content',
+            f'{base}/drive/root:/{urllib.parse.quote(path, safe=chr(47))}:/content',
             data=buf.getvalue(),
             content_type=WORD_CONTENT_TYPE,
         )

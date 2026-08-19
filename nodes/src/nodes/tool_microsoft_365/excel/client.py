@@ -29,6 +29,7 @@
 from __future__ import annotations
 
 import functools
+import re
 import io
 import urllib.parse
 import zipfile
@@ -41,6 +42,19 @@ token_scope_report = functools.partial(graph_client.token_scope_report, SERVICE)
 request = functools.partial(graph_client.request, SERVICE)
 
 
+def _seg(value: str) -> str:
+    """URL-encode a single path segment (item/permission ids may contain '!' etc.)."""
+    return urllib.parse.quote(value, safe='')
+
+
+_ITEM_ID_RE = re.compile(r'[A-Za-z0-9!]{15,}$')
+
+
+def looks_like_item_id(value: str) -> bool:
+    """True for Graph item-id-shaped tokens (or the 'root' alias) — see wb()."""
+    return value == 'root' or bool(_ITEM_ID_RE.fullmatch(value))
+
+
 def wb(base: str, file: str) -> str:
     """Workbook URL prefix for a drive path ('Reports/q3.xlsx') or item id.
 
@@ -50,9 +64,9 @@ def wb(base: str, file: str) -> str:
     space raises ``http.client.InvalidURL`` and an unencoded ``#`` truncates
     the path, silently addressing the wrong item.
     """
-    if '/' in file or file.lower().endswith('.xlsx'):
-        return f'{base}/drive/root:/{urllib.parse.quote(file, safe="/")}:/workbook'
-    return f'{base}/drive/items/{file}/workbook'
+    if looks_like_item_id(file):
+        return f'{base}/drive/items/{_seg(file)}/workbook'
+    return f'{base}/drive/root:/{urllib.parse.quote(file, safe="/")}:/workbook'
 
 
 # ---------------------------------------------------------------------------

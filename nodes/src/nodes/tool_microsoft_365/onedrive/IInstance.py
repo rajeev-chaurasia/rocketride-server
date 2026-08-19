@@ -40,6 +40,8 @@ invoke-time parameters — never node config.
 
 from __future__ import annotations
 
+import urllib.parse
+
 import base64
 import binascii
 
@@ -84,7 +86,7 @@ class IInstance(MicrosoftToolInstanceBase):
         session = request(
             self.IGlobal.auth,
             'POST',
-            f'{self._base()}/drive/root:/{path}:/createUploadSession',
+            f'{self._base()}/drive/root:/{urllib.parse.quote(path, safe=chr(47))}:/createUploadSession',
             json_body={'item': {'@microsoft.graph.conflictBehavior': 'replace'}},
         )
         upload_url = session.get('uploadUrl')
@@ -263,7 +265,7 @@ class IInstance(MicrosoftToolInstanceBase):
             data = request(
                 self.IGlobal.auth,
                 'PUT',
-                f'{self._base()}/drive/root:/{path}:/content',
+                f'{self._base()}/drive/root:/{urllib.parse.quote(path, safe=chr(47))}:/content',
                 data=content,
                 content_type='application/octet-stream',
             )

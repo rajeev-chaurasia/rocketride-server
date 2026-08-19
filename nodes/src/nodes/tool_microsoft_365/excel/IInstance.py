@@ -472,7 +472,7 @@ class IInstance(MicrosoftToolInstanceBase):
         args = normalize_tool_input(args, tool_name='tool_excel')
         self.IGlobal.access.require_write('excel_create_workbook')
         path_arg = require_str(args, 'path', tool_name='excel_create_workbook')
-        upload_path = f'{self._base()}/drive/root:/{path_arg}:/content'
+        upload_path = f'{self._base()}/drive/root:/{urllib.parse.quote(path_arg, safe=chr(47))}:/content'
         data = request(
             self.IGlobal.auth,
             'PUT',

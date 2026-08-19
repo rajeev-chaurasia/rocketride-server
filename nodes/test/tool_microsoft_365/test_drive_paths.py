@@ -103,7 +103,13 @@ class TestExcelWorkbookPathEncoding:
         assert '#' not in url
 
     def test_item_id_branch_is_unaffected(self):
-        assert excel_client.wb('/me', 'ABC123') == '/me/drive/items/ABC123/workbook'
+        item_id = 'EC61DF107D0F1F05!s1a2b3c4d5e'
+        assert excel_client.wb('/me', item_id) == '/me/drive/items/EC61DF107D0F1F05%21s1a2b3c4d5e/workbook'
+
+    def test_bare_workbook_names_are_paths(self):
+        # names with spaces/dots (incl. bare 'smoke.xlsx') take the path branch
+        assert excel_client.wb('/me', 'Q3 Budget.xlsx') == '/me/drive/root:/Q3%20Budget.xlsx:/workbook'
+        assert excel_client.wb('/me', 'smoke.xlsx') == '/me/drive/root:/smoke.xlsx:/workbook'
 
     def test_request_url_contains_encoded_space(self):
         with mock.patch.object(gc, '_urlopen', return_value=_resp({'value': []})) as u:
