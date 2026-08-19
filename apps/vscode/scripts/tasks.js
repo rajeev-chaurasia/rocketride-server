@@ -28,7 +28,7 @@
  */
 const path = require('path');
 const { glob } = require('glob');
-const { execCommand, removeDirs, removeMatching, PROJECT_ROOT, BUILD_ROOT, DIST_ROOT, hasSourceChanged, saveSourceHash, setState, exists, copyFile, mkdir, rm, readFile, writeFile, syncDir } = require('../../../scripts/lib');
+const { execCommand, removeDirs, removeDirAndParents, removeMatching, PROJECT_ROOT, BUILD_ROOT, DIST_ROOT, hasSourceChanged, saveSourceHash, setState, exists, copyFile, mkdir, rm, readFile, writeFile, syncDir, formatSyncStats } = require('../../../scripts/lib');
 
 // Paths
 const APP_ROOT = path.join(__dirname, '..');
@@ -55,6 +55,9 @@ const BUILD_WEBVIEW_DIR = path.join(BUILD_DIR, 'webview');
 
 // .vsix output directory
 const VSCODE_DIST_DIR = path.join(DIST_ROOT, 'vscode');
+// Serve-side copy of the vsix: the engine's GET /client/vscode reads the
+// static clients directory beside the binary, like the other client SDKs.
+const SERVER_STATIC_DIR = path.join(DIST_ROOT, 'server', 'static', 'clients', 'vscode');
 
 // =============================================================================
 // Helpers: change detection (vscode src + shared, which webview bundles)
@@ -261,6 +264,9 @@ function makePackageVsixAction() {
 			const vsixFiles = (await exists(VSCODE_DIST_DIR)) ? await glob('*.vsix', { cwd: VSCODE_DIST_DIR, nodir: true, absolute: true }) : [];
 
 			if (!changed && vsixFiles.length > 0) {
+				// Packaging is skipped, but the served copy still heals — the
+				// server static tree cleans independently of dist/vscode.
+				await syncDir(VSCODE_DIST_DIR, SERVER_STATIC_DIR, { pattern: '*.vsix', package: true });
 				task.output = 'No changes detected';
 				return;
 			}
@@ -269,7 +275,9 @@ function makePackageVsixAction() {
 			const vsceOut = path.relative(BUILD_DIR, VSCODE_DIST_DIR);
 			await execCommand('npx', ['vsce', 'package', '--no-dependencies', '-o', vsceOut], { task, cwd: BUILD_DIR });
 
-			task.output = `Package created in ${VSCODE_DIST_DIR}`;
+			// Stage the vsix where GET /client/vscode serves from.
+			const stats = await syncDir(VSCODE_DIST_DIR, SERVER_STATIC_DIR, { pattern: '*.vsix', package: true });
+			task.output = `Package created in ${VSCODE_DIST_DIR} (${formatSyncStats(stats)})`;
 		},
 	};
 }
@@ -350,6 +358,7 @@ module.exports = {
 				description: 'Clean vscode',
 				run: async (ctx, task) => {
 					await removeDirs([BUILD_DIR, path.join(APP_ROOT, 'dist'), path.join(APP_ROOT, 'out'), VSCODE_DIST_DIR]);
+					await removeDirAndParents(PROJECT_ROOT, [SERVER_STATIC_DIR]);
 					await removeMatching(APP_ROOT, '.vsix');
 					await setState(SRC_HASH_KEY, null);
 					await setState(BUNDLE_HASH_KEY, null);
