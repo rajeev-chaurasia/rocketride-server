@@ -112,7 +112,7 @@ IconButtonProps<T, S, F> & { formContext?: Record<string, any> }) {
 		const SERVICE_TIER_SCOPES: Record<string, Record<string, string[]>> = {
 			excel: { readonly: ['Files.Read'], write: ['Files.ReadWrite'] },
 			word: { readonly: ['Files.Read'], write: ['Files.ReadWrite'] },
-			onedrive: { readonly: ['Files.Read'], write: ['Files.ReadWrite'] },
+			onedrive: { readonly: ['Files.Read'], write: ['Files.ReadWrite', 'User.ReadBasic.All'] },
 			outlook_mail: {
 				readonly: ['Mail.Read'],
 				send: ['Mail.Read', 'Mail.Send'],

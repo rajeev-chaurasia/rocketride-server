@@ -70,6 +70,16 @@ def test_gate_flag_default_off_and_non_bool_rejected():
         resolve_microsoft_access({'allowPublicSharing': 'true'}, ONEDRIVE)
 
 
+def test_onedrive_write_tier_never_requires_directory_scope():
+    # User.ReadBasic.All is requested at sign-in (widget/broker) for the invite
+    # gate, but must never be REQUIRED here: personal accounts cannot grant
+    # directory scopes, and requiring it would block their entire write tier.
+    acc = resolve_microsoft_access({}, ONEDRIVE)
+    assert acc.scopes == ['Files.ReadWrite']
+    assert 'User.ReadBasic.All' not in acc.scopes
+    assert resolve_microsoft_access({'access': 'readonly'}, ONEDRIVE).scopes == ['Files.Read']
+
+
 def test_mail_tiers():
     scopes = resolve_microsoft_access({'access': 'send'}, OUTLOOK_MAIL).scopes
     assert scopes == ['Mail.Read', 'Mail.Send']

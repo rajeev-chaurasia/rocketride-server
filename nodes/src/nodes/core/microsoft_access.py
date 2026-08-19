@@ -152,6 +152,10 @@ WORD = AccessSpec(
     default='write',
 )
 ONEDRIVE = AccessSpec(
+    # The invite gate also uses User.ReadBasic.All, but that scope is REQUESTED
+    # (widget/broker), never REQUIRED here: personal Microsoft accounts cannot
+    # grant directory scopes, and requiring it would block their whole write
+    # tier. Without it the invite gate fails closed at runtime.
     scopes={'readonly': ['Files.Read'], 'write': ['Files.ReadWrite']},
     default='write',
     flags=('allowPublicSharing', 'allowHardDelete'),

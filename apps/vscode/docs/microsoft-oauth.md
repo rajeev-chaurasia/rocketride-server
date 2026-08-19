@@ -91,7 +91,7 @@ The five services and their tiers (see `SERVICE_TIER_SCOPES` in
 | --- | --- | --- |
 | Excel | `readonly`, `write` (default) | `Files.Read` / `Files.ReadWrite` |
 | Word | `readonly`, `write` (default) | `Files.Read` / `Files.ReadWrite` |
-| OneDrive | `readonly`, `write` (default) | `Files.Read` / `Files.ReadWrite` |
+| OneDrive | `readonly`, `write` (default) | `Files.Read` / `Files.ReadWrite` (sign-in also requests `User.ReadBasic.All` for invite recipient lookup; personal accounts cannot grant it, and the invite gate then refuses invites) |
 | Outlook Mail | `readonly`, `send`, `modify` (default) | `Mail.Read` / `Mail.Read` + `Mail.Send` / `Mail.ReadWrite` + `Mail.Send` |
 | Outlook Calendar | `readonly`, `write` (default) | `Calendars.Read` / `Calendars.ReadWrite` |
 

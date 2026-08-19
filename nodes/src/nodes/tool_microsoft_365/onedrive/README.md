@@ -35,7 +35,7 @@ treated as a path; anything else is treated as an item id.
 | Tier | Scope | Capability |
 |------|-------|------------|
 | `readonly` | `Files.Read` | list, search, read metadata, and download only |
-| `write` | `Files.ReadWrite` | full read/write (default) |
+| `write` | `Files.ReadWrite` (+ requests `User.ReadBasic.All` at sign-in) | full read/write (default); the optional directory scope backs the invite gate and is unavailable to personal accounts |
 
 ### Gate flags
 
