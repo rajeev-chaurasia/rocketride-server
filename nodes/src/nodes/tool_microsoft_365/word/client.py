@@ -28,6 +28,8 @@
 
 from __future__ import annotations
 
+import re
+
 import functools
 import urllib.parse
 
@@ -46,6 +48,14 @@ def _seg(value: str) -> str:
     return urllib.parse.quote(value, safe='')
 
 
+_ITEM_ID_RE = re.compile(r'[A-Za-z0-9!]{15,}$')
+
+
+def looks_like_item_id(value: str) -> bool:
+    """True for Graph item-id-shaped tokens (or the 'root' alias) — see it()."""
+    return value == 'root' or bool(_ITEM_ID_RE.fullmatch(value))
+
+
 def it(base: str, item: str) -> str:
     """Item address for a drive path ('Docs/report.docx', containing '/') or a single-segment item id.
 
@@ -57,9 +67,9 @@ def it(base: str, item: str) -> str:
     space raises ``http.client.InvalidURL`` and an unencoded ``#`` truncates
     the path, silently addressing the wrong item.
     """
-    if '/' in item:
-        return f'{base}/drive/root:/{urllib.parse.quote(item, safe="/")}:'
-    return f'{base}/drive/items/{_seg(item)}'
+    if looks_like_item_id(item):
+        return f'{base}/drive/items/{_seg(item)}'
+    return f'{base}/drive/root:/{urllib.parse.quote(item, safe="/")}:'
 
 
 def download_docx(auth, base: str, file: str) -> tuple[bytes, str]:

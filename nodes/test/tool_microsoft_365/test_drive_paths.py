@@ -125,7 +125,21 @@ class TestOneDrivePathEncoding:
         assert '#' not in url
 
     def test_item_id_branch_still_uses_seg(self):
-        assert onedrive_client.it('/me', 'ABC!123') == '/me/drive/items/ABC%21123'
+        # realistic personal-drive id shape (alnum + '!', 15+ chars)
+        item_id = 'EC61DF107D0F1F05!s1a2b3c4d5e'
+        # _seg percent-encodes '!' -> %21; Graph accepts the encoded form
+        assert onedrive_client.it('/me', item_id) == '/me/drive/items/EC61DF107D0F1F05%21s1a2b3c4d5e'
+
+    def test_bare_names_are_paths_not_ids(self):
+        # Live-Graph finding: a bare folder name with a space was misrouted as
+        # an item id (HTTP 400). Names with spaces/dots must take the path branch.
+        assert onedrive_client.it('/me', 'RocketRide Smoke') == '/me/drive/root:/RocketRide%20Smoke:'
+        assert onedrive_client.it('/me', 'smoke.xlsx') == '/me/drive/root:/smoke.xlsx:'
+        assert onedrive_client.it('/me', 'root') == '/me/drive/items/root'
+
+    def test_parent_ref_encodes_paths_and_keeps_ids(self):
+        assert onedrive_client.parent_ref('Reports/Q3 Budget') == {'path': '/drive/root:/Reports/Q3%20Budget'}
+        assert onedrive_client.parent_ref('EC61DF107D0F1F05!s1a2b3c4d5e') == {'id': 'EC61DF107D0F1F05!s1a2b3c4d5e'}
 
     def test_request_url_contains_encoded_hash(self):
         with mock.patch.object(gc, '_urlopen', return_value=_resp({'id': '1'})) as u:
@@ -146,7 +160,11 @@ class TestWordPathEncoding:
         assert '%23' in url
 
     def test_item_id_branch_still_uses_seg(self):
-        assert word_client.it('/me', 'ABC!123') == '/me/drive/items/ABC%21123'
+        item_id = 'EC61DF107D0F1F05!s1a2b3c4d5e'
+        assert word_client.it('/me', item_id) == '/me/drive/items/EC61DF107D0F1F05%21s1a2b3c4d5e'
+
+    def test_bare_names_are_paths_not_ids(self):
+        assert word_client.it('/me', 'Meeting Notes.docx') == '/me/drive/root:/Meeting%20Notes.docx:'
 
     def test_request_url_contains_encoded_space(self):
         with mock.patch.object(gc, '_urlopen', return_value=_resp({'id': '1'})) as u:

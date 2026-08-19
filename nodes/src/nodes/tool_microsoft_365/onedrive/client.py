@@ -28,6 +28,8 @@
 
 from __future__ import annotations
 
+import re
+
 import functools
 import json
 import urllib.error
@@ -55,6 +57,14 @@ def _seg(value: str) -> str:
     return urllib.parse.quote(value, safe='')
 
 
+_ITEM_ID_RE = re.compile(r'[A-Za-z0-9!]{15,}$')
+
+
+def looks_like_item_id(value: str) -> bool:
+    """True for Graph item-id-shaped tokens (or the 'root' alias) — see it()."""
+    return value == 'root' or bool(_ITEM_ID_RE.fullmatch(value))
+
+
 def it(base: str, item: str) -> str:
     """Item address for a drive path ('Docs/a.pdf', containing '/') or a single-segment item id.
 
@@ -65,16 +75,16 @@ def it(base: str, item: str) -> str:
     the path, silently addressing the wrong item. A bare item id is a single
     path component and is URL-escaped via ``_seg``.
     """
-    if '/' in item:
-        return f'{base}/drive/root:/{urllib.parse.quote(item, safe="/")}:'
-    return f'{base}/drive/items/{_seg(item)}'
+    if looks_like_item_id(item):
+        return f'{base}/drive/items/{_seg(item)}'
+    return f'{base}/drive/root:/{urllib.parse.quote(item, safe="/")}:'
 
 
 def parent_ref(target_folder: str) -> dict:
     """``parentReference`` body for a target given as a drive path or an item id."""
-    if '/' in target_folder:
-        return {'path': f'/drive/root:/{target_folder}'}
-    return {'id': target_folder}
+    if looks_like_item_id(target_folder):
+        return {'id': target_folder}
+    return {'path': f'/drive/root:/{urllib.parse.quote(target_folder, safe="/")}'}
 
 
 def upload_chunk(auth, session_url: str, chunk: bytes, start: int, end: int, total: int) -> dict:
