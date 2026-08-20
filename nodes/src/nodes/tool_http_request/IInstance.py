@@ -24,9 +24,9 @@
 """
 HTTP Request tool node instance.
 
-Exposes a single ``http_request`` tool that can call any HTTP API endpoint.
-Security guardrails (allowed methods + URL whitelist) are enforced before
-every request.
+Exposes a single ``http_request`` tool that can call public HTTP API endpoints.
+Security guardrails (allowed methods, URL whitelist, and public-network-only
+destinations) are enforced before every request.
 """
 
 from __future__ import annotations
@@ -139,6 +139,7 @@ class IInstance(IInstanceBase):
             'For JSON bodies, pass "body_json" as a JSON object (e.g. {"name": "foo"}) — it is serialized automatically. '
             'For bearer auth, pass "bearer_token" as a string. '
             'For basic auth, pass "basic_auth": {"username": "...", "password": "..."}. '
+            'Non-public network destinations are blocked, and redirects are returned without being followed. '
             'Optional: "headers", "query_params", "path_params", "timeout" (seconds, default 30, max 300).'
         ),
     )

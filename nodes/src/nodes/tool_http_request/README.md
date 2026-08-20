@@ -1,6 +1,6 @@
 # tool_http_request
 
-A RocketRide tool node that lets an AI agent make HTTP requests to any API endpoint, like curl for agents.
+A RocketRide tool node that lets an AI agent make HTTP requests to public API endpoints, like curl for agents.
 
 ## What it does
 
@@ -12,12 +12,15 @@ structured response containing status, headers, body text, parsed JSON, and timi
 Uses the **requests** library to execute calls. The node has no lanes; it is attached to
 an agent purely as a tool.
 
-Three security guardrails are enforced before every request, all configured on the node:
+Four security guardrails are enforced before every request:
 
 - **Allowed methods**: per-method toggles. `GET`, `POST`, `PUT`, `PATCH`, `DELETE` are
   enabled by default; `HEAD` and `OPTIONS` are disabled by default.
 - **URL whitelist**: regex patterns the request URL must match. **Empty by default,
-  which allows all URLs** (config validation emits a warning when the whitelist is empty).
+  which allows all public URLs** (config validation emits a warning when the whitelist is empty).
+- **Network boundary**: loopback, private, link-local, shared, reserved, unspecified,
+  and multicast destination addresses are blocked. Redirects are returned to the agent
+  as 3xx responses and are not followed automatically.
 - **Rate limiting**: token-bucket limits per second and per minute, plus a concurrency
   cap. On by default (10/s, 100/min, 5 concurrent).
 
@@ -37,7 +40,7 @@ Three security guardrails are enforced before every request, all configured on t
 | `allowHEAD` | boolean | Default false.  |
 | `allowOPTIONS` | boolean | Default false.  |
 | `whitelistPattern` | string | Default empty.  |
-| `urlWhitelist` | array | Regex patterns for allowed URLs. A request URL must match at least one pattern. If empty, all URLs are allowed. |
+| `urlWhitelist` | array | Regex patterns for allowed public URLs. A request URL must match at least one pattern. If empty, all public URLs are allowed; non-public network destinations remain blocked. |
 | `rateLimitPerSecond` | number | Default 10. Maximum number of HTTP requests allowed per second. Uses a token-bucket algorithm for smooth enforcement. |
 | `rateLimitPerMinute` | number | Default 100. Maximum number of HTTP requests allowed per minute. Provides a broader throttle beyond the per-second limit. |
 | `maxConcurrentRequests` | number | Default 5. Maximum number of HTTP requests that can be in-flight simultaneously. |
@@ -47,7 +50,12 @@ The node ships one profile, **Default**, which sets `serverName` to `http`.
 
 Invalid whitelist regexes are skipped with a warning rather than failing the pipeline,
 so a typo in a pattern silently widens (or, if it was the only pattern, removes) the
-restriction, check the logs after editing the whitelist.
+URL restriction; non-public network destinations remain blocked. Check the logs after
+editing the whitelist.
+
+Keep an outbound firewall or equivalent egress policy around the engine as a second
+boundary. Application-level DNS checks cannot prevent every DNS-rebinding or proxy-resolver
+race, where a hostname resolves differently between validation and connection.
 
 ---
 
@@ -174,7 +182,7 @@ non-zero value is clamped to a minimum of `1`.
 | `http_request.rateLimitPerMinute` | `number` | **Max requests per minute**<br/>Maximum number of HTTP requests allowed per minute. Provides a broader throttle beyond the per-second limit. | `100` |
 | `http_request.rateLimitPerSecond` | `number` | **Max requests per second**<br/>Maximum number of HTTP requests allowed per second. Uses a token-bucket algorithm for smooth enforcement. | `10` |
 | `http_request.serverName` | `string` | **Server name**<br/>Namespace prefix for the tool: <serverName>.http_request | `"http"` |
-| `http_request.urlWhitelist` | `array` | **URL Whitelist**<br/>Regex patterns for allowed URLs. A request URL must match at least one pattern. If empty, all URLs are allowed. |  |
+| `http_request.urlWhitelist` | `array` | **URL Whitelist**<br/>Regex patterns for allowed public URLs. A request URL must match at least one pattern. If empty, all public URLs are allowed; non-public network destinations remain blocked. |  |
 | `http_request.whitelistPattern` | `string` | **URL Pattern (regex)** | `""` |
 
 ## Source

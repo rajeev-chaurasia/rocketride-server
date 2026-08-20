@@ -30,10 +30,12 @@ params) and returns a structured response dict.  Uses the ``requests`` library.
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -58,6 +60,7 @@ def execute_request(
     Raises ``requests.RequestException`` on transport-level failures.
     """
     resolved_url = _resolve_path_params(url, path_params)
+    _validate_public_url(resolved_url)
 
     req_headers = dict(headers or {})
     req_auth = None
@@ -75,6 +78,9 @@ def execute_request(
         'headers': req_headers,
         'params': merged_params or None,
         'auth': req_auth,
+        # Redirect targets have not passed the URL whitelist or network-address
+        # checks. Return 3xx responses to the caller instead of following them.
+        'allow_redirects': False,
     }
 
     _apply_body(body, req_headers, req_kwargs)
@@ -94,6 +100,67 @@ def execute_request(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_public_url(url: str) -> None:
+    """Reject malformed URLs and destinations outside the public Internet."""
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {'http', 'https'}:
+        raise ValueError('URL scheme must be http or https')
+    if not parsed.hostname:
+        raise ValueError('URL must include a hostname')
+
+    try:
+        parsed_port = parsed.port
+    except ValueError:
+        raise ValueError('URL port is invalid') from None
+    port = parsed_port if parsed_port is not None else (443 if parsed.scheme.lower() == 'https' else 80)
+    if port == 0:
+        raise ValueError('URL port is invalid')
+
+    try:
+        resolved = socket.getaddrinfo(
+            parsed.hostname,
+            port,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+    except socket.gaierror:
+        raise requests.ConnectionError(f'URL hostname {parsed.hostname!r} could not be resolved') from None
+
+    if not resolved:
+        raise requests.ConnectionError(f'URL hostname {parsed.hostname!r} could not be resolved')
+
+    for _family, _socktype, _proto, _canonname, sockaddr in resolved:
+        raw_address = sockaddr[0].split('%', 1)[0]
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError:
+            raise requests.ConnectionError(
+                f'URL hostname {parsed.hostname!r} resolved to an invalid network address'
+            ) from None
+        if not _is_public_address(address):
+            raise ValueError(f'URL hostname {parsed.hostname!r} resolves to a non-public network address')
+
+
+def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return whether an address is safe for an Internet-only HTTP client."""
+    if not address.is_global or address.is_multicast:
+        return False
+    if isinstance(address, ipaddress.IPv4Address):
+        return True
+    if address.is_site_local or address in ipaddress.IPv6Network('::/96'):
+        return False
+
+    embedded = []
+    if address.ipv4_mapped is not None:
+        embedded.append(address.ipv4_mapped)
+    if address.sixtofour is not None:
+        embedded.append(address.sixtofour)
+    if address.teredo is not None:
+        embedded.extend(address.teredo)
+    return all(item.is_global and not item.is_multicast for item in embedded)
 
 
 def _resolve_path_params(url: str, path_params: Optional[Dict[str, str]]) -> str:
