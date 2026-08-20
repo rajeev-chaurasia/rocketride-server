@@ -25,13 +25,13 @@
 // =============================================================================
 
 /**
- * The DEPLOY view (the centerpiece): Publish snapshots an immutable version
- * (author, time, sha, commit-style message); Deploy pins a rung to one —
+ * The DEPLOY view (the centerpiece): Deploy snapshots an immutable version
+ * (author, time, sha, commit-style message); Publish pins a rung to one —
  * the single verb covering first publish, update, promote, and rollback
  * ("repoint, never rebuild").
  *
  * Layout per the v3 mockup: a horizontal rail of version cards headed by a
- * dashed "+ Publish" card, then the "Where this app is live" reverse index
+ * dashed "+ Deploy" card, then the "Where this app is live" reverse index
  * (rung → pinned version → state → audience → time). Data arrives through
  * the host adapter; hosts that have not wired deploy yet get teaching empty
  * states instead of dead chrome.

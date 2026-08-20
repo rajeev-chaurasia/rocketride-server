@@ -58,6 +58,7 @@ import { syncServiceCatalog } from './agents/services';
 import { CloudAuthProvider } from './auth/CloudAuthProvider';
 import { AppScreenProvider } from './providers/AppScreenProvider';
 import { initWatchManager } from './appdev/watchManager';
+import { ensureShell, refreshVendoredPlatform } from './appdev/appTypes';
 import { debugApp } from './appdev/debug';
 
 // Extension context — set once in activate(), available via getExtensionContext()
@@ -407,6 +408,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					agentMgr.autoInstall(context.extensionPath, workspaceFolder.uri).catch((error) => {
 						logger.output(`${icons.warning} Auto agent integration failed: ${error}`);
 					});
+
+					// Vendor the platform packages (shell + client SDK tgzs)
+					// into .rocketride/ at BOOT — offline fallbacks included —
+					// so agents and scripts always find them at the well-known
+					// locations without waiting for an App Builder open.
+					void ensureShell(context);
 				}
 
 				//-------------------------------------
@@ -615,6 +622,14 @@ function registerUtilityCommands(context: vscode.ExtensionContext): void {
  */
 function setupConnectionEventHandlers(): void {
 	// Pipeline data changes are now handled by SidebarProvider's event listeners
+
+	// Re-vendor the platform packages against the freshly connected server
+	// — the boot pass may have used the offline fallbacks (or a previous
+	// server's packages), and the session memo would otherwise keep them.
+	connectionManager?.on('shell:connected', () => {
+		if (!vscode.workspace.workspaceFolders?.[0] || !extensionContext) return;
+		void refreshVendoredPlatform(extensionContext);
+	});
 
 	// Sync service catalog + schemas to .rocketride/ when services are fetched
 	connectionManager?.on('shell:servicesUpdated', (payload: { services: Record<string, unknown>; servicesError?: string }) => {

@@ -413,10 +413,10 @@ To ship a node so it becomes part of RocketRide, clone the
 [rocketride-server](https://github.com/rocketride-org/rocketride-server) repo,
 move your node into `nodes/src/nodes/<node>/`, change its `services.json`
 `"path"` to `nodes.<node>`, and open a pull request following the
-[contributing guide](../CONTRIBUTING.md).
+[contributing guide](../../CONTRIBUTING.md).
 
 ---
 
 ## License
 
-MIT License, see [LICENSE](../LICENSE).
+MIT License, see [LICENSE](../../LICENSE).

@@ -190,6 +190,11 @@ class MiscCommands(DAPConn):
 
             args = request.get('arguments', {})
             pipeline = args.get('pipeline', {})
+            # Accept the wrapped .pipe file form too — the config is
+            # whatever sits under its 'pipeline' key; everything below
+            # (env resolution, source inference) walks the flat config.
+            if isinstance(pipeline.get('pipeline'), dict):
+                pipeline = pipeline['pipeline']
 
             # Build merged environment for variable resolution (same as execute)
             merged_env: Dict[str, str] = {}
@@ -224,13 +229,18 @@ class MiscCommands(DAPConn):
             if not source:
                 source = resolve_implied_source(pipeline)
 
-            # Build the C++ payload with resolved source and default version
+            # Build the C++ payload with resolved source and default version.
+            # The engine's config loader requires the FILE-form root
+            # ({'pipeline': <config>}) — handing it the flat config rejects
+            # every wire-correct client with "'pipeline' is missing or
+            # invalid". Clients send the flat config per the DAP contract
+            # above; the wrap happens HERE.
             inner = {**pipeline, 'version': pipeline.get('version', 1)}
             if source:
                 inner['source'] = source
 
             # Validate it
-            data = validatePipeline(inner)
+            data = validatePipeline({'pipeline': inner, 'version': inner['version']})
 
             # Return the results
             return self.build_response(request, body=data)

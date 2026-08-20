@@ -1097,16 +1097,25 @@ importers:
 
   packages/client-typescript:
     dependencies:
+      adm-zip:
+        specifier: '>=0.6.0 <1'
+        version: 0.6.0
       commander:
         specifier: ^12.0.0
         version: 12.1.0
       glob:
         specifier: '>=11.1.0'
         version: 11.1.0
+      ignore:
+        specifier: ^7.0.5
+        version: 7.0.5
     devDependencies:
       '@jest/globals':
         specifier: ^30.4.1
         version: 30.4.1
+      '@types/adm-zip':
+        specifier: ^0.5.8
+        version: 0.5.8
       '@types/jest':
         specifier: ^30.0.0
         version: 30.0.0

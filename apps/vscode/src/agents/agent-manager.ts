@@ -57,8 +57,16 @@ const DOCS_DIR = '.rocketride/docs';
  */
 const GITIGNORE_ENTRIES = ['.rocketride/', '.env'] as const;
 
-/** Doc files shipped in the extension's docs/ directory. */
-const DOC_FILES = ['ROCKETRIDE_README.md', 'ROCKETRIDE_QUICKSTART.md', 'ROCKETRIDE_PIPELINE_RULES.md', 'ROCKETRIDE_COMPONENT_REFERENCE.md', 'ROCKETRIDE_COMMON_MISTAKES.md', 'ROCKETRIDE_python_API.md', 'ROCKETRIDE_typescript_API.md', 'ROCKETRIDE_OBSERVABILITY.md'];
+/**
+ * Filename shape of the agent docs shipped in the extension's docs/
+ * directory. The shipped directory IS the doc-set manifest: whatever
+ * ROCKETRIDE_*.md files the vsix carries get installed, and workspace
+ * copies not in the shipped set are removed as obsolete. This replaces a
+ * hardcoded filename list whose failure mode was silent deletion — a doc
+ * added to the source directory but not the list shipped in the vsix and
+ * was then deleted from every workspace by the obsolete-cleanup pass.
+ */
+const DOC_FILE_PATTERN = /^ROCKETRIDE_.*\.md$/;
 
 /** Map from installer name to the VS Code config key under rocketride.integrations.* */
 const INTEGRATION_CONFIG_KEYS: Record<string, string> = {
@@ -266,10 +274,30 @@ export class AgentManager {
 		await vscode.workspace.fs.createDirectory(targetDir);
 
 		const sourceDir = `${extensionPath}/docs`;
-		const expectedFiles = new Set(DOC_FILES);
+
+		// The shipped directory is the manifest: enumerate the vsix's own
+		// ROCKETRIDE_*.md files rather than trusting a hardcoded list.
+		let docFiles: string[];
+		try {
+			const sourceEntries = await vscode.workspace.fs.readDirectory(vscode.Uri.file(sourceDir));
+			docFiles = sourceEntries
+				.filter(([name, type]) => type === vscode.FileType.File && DOC_FILE_PATTERN.test(name))
+				.map(([name]) => name)
+				.sort();
+		} catch (err) {
+			// Unreadable bundle docs dir — install nothing and, critically,
+			// DELETE nothing: an empty manifest must never wipe a workspace.
+			logger.output(`${icons.warning} Could not enumerate bundled docs: ${err}`);
+			return;
+		}
+		if (docFiles.length === 0) {
+			logger.output(`${icons.warning} No bundled docs found in ${sourceDir} — skipping sync`);
+			return;
+		}
+		const expectedFiles = new Set(docFiles);
 
 		// Add or update files from the source
-		for (const file of DOC_FILES) {
+		for (const file of docFiles) {
 			const sourceUri = vscode.Uri.file(`${sourceDir}/${file}`);
 			const targetUri = vscode.Uri.joinPath(targetDir, file);
 

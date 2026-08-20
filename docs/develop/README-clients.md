@@ -20,9 +20,9 @@ URIs: clients accept `http`/`https` or `ws`/`wss` and convert to WebSocket (`htt
 
 | Client         | Package          | Document                                                   |
 | -------------- | ---------------- | ---------------------------------------------------------- |
-| **TypeScript** | `rocketride`     | [README-typescript-client.md](README-typescript-client.md) |
-| **Python**     | `rocketride`     | [README-python-client.md](README-python-client.md)         |
-| **MCP**        | `rocketride-mcp` | [README-mcp-client.md](README-mcp-client.md)               |
+| **TypeScript** | `rocketride`     | [README-typescript-client.md](../README-typescript-client.md) |
+| **Python**     | `rocketride`     | [README-python-client.md](../README-python-client.md)         |
+| **MCP**        | `rocketride-mcp` | [README-mcp-client.md](../README-mcp-client.md)               |
 
 Each document lists every constructor option, method, type, and usage example for that client.
 
@@ -73,4 +73,4 @@ These endpoints are public (no authentication required) and automatically serve 
 
 ## License
 
-MIT License -- see [LICENSE](../LICENSE).
+MIT License -- see [LICENSE](../../LICENSE).

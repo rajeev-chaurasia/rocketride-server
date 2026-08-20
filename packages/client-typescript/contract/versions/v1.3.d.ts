@@ -24,7 +24,7 @@
 // FROZEN rocketride SDK contract — floor v1.3 — never edit by hand
 // =============================================================================
 // Floor key:     1.3 (MAJOR.MINOR of packages/client-typescript/package.json)
-// Source commit: 733316f33fb2590af88ca4e96507548b68a06a43
+// Source commit: 75aecaf961c00cbfa2e389d8ef0754f37b5969bf
 // Generator:     dts-bundle-generator@9.5.1
 // Produced by:   ./builder client-typescript:freeze
 //
@@ -3964,6 +3964,39 @@ export declare class DatabaseApi {
         sequelizeOptions?: import("sequelize").Options;
     }): import("sequelize").Sequelize;
 }
+interface AppVerifyCheck {
+    /** Stable check id (e.g. 'manifest', 'id', 'include', 'pack-size'). */
+    id: string;
+    /** Whether the check passed. */
+    ok: boolean;
+    /** Human-readable outcome, actionable on failure. */
+    note: string;
+}
+interface AppVerifyReport {
+    /** True when every check passed. */
+    ok: boolean;
+    /** Every check that ran, in order. */
+    checks: AppVerifyCheck[];
+    /** Files the pack would carry (0 when selection failed). */
+    fileCount: number;
+    /** Uncompressed bytes the pack would carry. */
+    uncompressedBytes: number;
+}
+interface CreatedApp {
+    /** The full app id (`<developerId>.<slug>`). */
+    appId: string;
+    /** Workspace-relative POSIX path of the created folder. */
+    folder: string;
+    /** Project-relative paths of the files written. */
+    files: string[];
+    /** Which server-matched packages were vendored this pass. */
+    vendored: {
+        shell: boolean;
+        client: boolean;
+    };
+    /** Whether the workspace `pnpm install` ran and succeeded. */
+    installed: boolean;
+}
 declare class DeployApi {
     /** @param client - The parent RocketRideClient that owns this namespace. */
     constructor(client: RocketRideClient);
@@ -4009,6 +4042,86 @@ declare class DeployApi {
         comment?: string;
         deployTo?: string;
     }): Promise<PublishResult>;
+    /**
+     * Packs an app folder's source and deploys it as the next immutable
+     * registry version — the ONE call behind the App Builder's Deploy
+     * button, the CLI's `app deploy`, and CI scripts (Node.js only).
+     *
+     * Verify → pack → send: the pack applies the canonical rules
+     * (workspace-rooted zip layout, `appManifest.include` honored,
+     * hierarchical gitignore filtering with the hard baseline
+     * node_modules/dist/.git, symlink containment, 50MB zipped / 512MB
+     * uncompressed caps) and every step can narrate through `onProgress`.
+     * Deploying never activates anything — bind an audience with
+     * `publishApp` afterwards. Run `verifyApp` first for a no-side-effect
+     * precheck of the same rules.
+     *
+     * @param appRoot - The app folder: absolute, or relative to
+     *   `options.workspaceRoot`.
+     * @param options.workspaceRoot - The workspace the zip is rooted at and
+     *   that `appManifest.include` entries resolve against
+     *   (default: `process.cwd()`).
+     * @param options.comment - "What changed" note kept in the registry.
+     * @param options.metadata - Extra metadata merged over the packed
+     *   defaults (e.g. projectId provenance); `appRoot` is always set from
+     *   the pack.
+     * @param options.onProgress - Receives one line per pack step (include
+     *   checks, per-file adds, totals) for hosts that surface progress.
+     * @returns The artifact entry for the new version.
+     */
+    addApp(appRoot: string, options?: {
+        workspaceRoot?: string;
+        comment?: string;
+        metadata?: Record<string, unknown>;
+        onProgress?: (line: string) => void;
+    }): Promise<PublishResult>;
+    /**
+     * Scaffolds a new app in the workspace — the programmatic twin of the
+     * App Builder's New App wizard, rendering the identical templates
+     * (Node.js only). Writes `./apps/<slug>`, ensures the pnpm workspace
+     * file and ignore hygiene, vendors the connected server's shell +
+     * client packages, and runs the workspace install. Scaffolding only —
+     * nothing is deployed; the normal lifecycle (edit → `verifyApp` →
+     * `addApp` → `publishApp`) follows.
+     *
+     * @param slug - The app-name slug (lowercase; digits/-/_ after the
+     *   first character). The id becomes `<developerId>.<slug>`.
+     * @param options - Template, display name, developer id (default
+     *   'local'), frame options, install toggle, `onProgress`, and
+     *   `workspaceRoot` (default `process.cwd()`). The server base URL for
+     *   vendoring defaults to this client's own connection.
+     * @returns The created app's identity and a report of what ran.
+     */
+    createApp(slug: string, options?: {
+        workspaceRoot?: string;
+        template?: "Blank" | "Dashboard";
+        displayName?: string;
+        developerId?: string;
+        sidebar?: boolean;
+        statusFooter?: boolean;
+        docTabs?: boolean;
+        install?: boolean;
+        serverBaseUrl?: string;
+        onProgress?: (line: string) => void;
+    }): Promise<CreatedApp>;
+    /**
+     * Pre-checks everything `addApp` needs, WITHOUT deploying (Node.js
+     * only, purely local — no server call). Verifies the manifest shape and
+     * id grammar, declared icon/README assets, `appManifest.include`
+     * entries, and a pack dry run against the size caps. Server-side
+     * concerns (the build, store review) are out of scope — the Package
+     * tab's readiness and the review ladder cover those.
+     *
+     * @param appRoot - The app folder: absolute, or relative to
+     *   `options.workspaceRoot`.
+     * @param options.workspaceRoot - The workspace the pack would be rooted
+     *   at (default: `process.cwd()`).
+     * @returns The structured report — `ok` plus every check with an
+     *   actionable note.
+     */
+    verifyApp(appRoot: string, options?: {
+        workspaceRoot?: string;
+    }): Promise<AppVerifyReport>;
     /**
      * Points a team at a published version.
      *

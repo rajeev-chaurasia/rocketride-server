@@ -44,6 +44,10 @@ const README_DEST = path.join(APP_ROOT, 'README.md');
 const SRC_HASH_KEY = 'vscode.srcHash';
 const BUNDLE_HASH_KEY = 'vscode.bundleHash';
 const SHARED_UI_HASH_KEY = 'vscode.sharedUiHash';
+// Agent docs/stubs fingerprints — consumed ONLY by vscode:package-vsix, so a
+// docs-only edit repacks the vsix without invalidating the webview build.
+const AGENT_DOCS_HASH_KEY = 'vscode.agentDocsHash';
+const AGENT_STUBS_HASH_KEY = 'vscode.agentStubsHash';
 // The extension-host bundle's OWN shared fingerprint — esbuild inlines
 // shared (appdev templates) into rocketride.js, and reusing the webview's
 // SHARED_UI_HASH_KEY would let whichever step ran first mark the other clean.
@@ -170,7 +174,7 @@ function makeStageFilesAction() {
 			const pkg = JSON.parse(await readFile(pkgPath));
 			pkg.main = './rocketride.js';
 			pkg.icon = 'rocketride-dark-icon.png';
-			pkg.files = ['rocketride.js', 'rocketride.js.map', 'webview/**', 'docs/**', 'shell.tgz', 'devServerGuard.cjs', 'rocketride-dark-icon.png', 'rocketride-light-icon.png', 'docker.svg', 'onprem.svg', 'package.json', 'LICENSE', 'README.md'];
+			pkg.files = ['rocketride.js', 'rocketride.js.map', 'webview/**', 'docs/**', 'shell.tgz', 'rocketride-client.tgz', 'devServerGuard.cjs', 'rocketride-dark-icon.png', 'rocketride-light-icon.png', 'docker.svg', 'onprem.svg', 'package.json', 'LICENSE', 'README.md'];
 			const stagedPkg = JSON.stringify(pkg, null, 2);
 			const manifestChanged = !buildHasManifest || String(await readFile(stagedPkgPath)) !== stagedPkg;
 
@@ -184,6 +188,20 @@ function makeStageFilesAction() {
 			if (await exists(shellTgzSrc)) {
 				await mkdir(BUILD_DIR);
 				await copyFile(shellTgzSrc, path.join(BUILD_DIR, 'shell.tgz'));
+			}
+
+			// The client SDK package: the OFFLINE fallback for the same
+			// vendoring pass (server -> .rocketride/client/rocketride.tgz).
+			// Newest packed tarball wins; staged under a stable name so the
+			// extension can locate it without knowing the version.
+			const clientTgzDir = path.join(DIST_ROOT, 'clients', 'typescript');
+			if (await exists(clientTgzDir)) {
+				const clientTgzs = (await glob('rocketride-*.tgz', { cwd: clientTgzDir, nodir: true, absolute: true })).sort();
+				const newest = clientTgzs[clientTgzs.length - 1];
+				if (newest) {
+					await mkdir(BUILD_DIR);
+					await copyFile(newest, path.join(BUILD_DIR, 'rocketride-client.tgz'));
+				}
 			}
 
 			if (!changed && !manifestChanged) {
@@ -229,25 +247,7 @@ function makeStageFilesAction() {
 				await copyFile(README_DEST, path.join(BUILD_DIR, 'README.md'));
 			}
 
-			// Copy agent documentation and stubs into build/vscode/docs/
-			const buildDocsDir = path.join(BUILD_DIR, 'docs');
-			const buildStubsDir = path.join(BUILD_DIR, 'docs', 'stubs');
-			await mkdir(buildDocsDir);
-			await mkdir(buildStubsDir);
-
-			if (await exists(AGENT_DOCS_DIR)) {
-				const agentDocs = await glob('*.md', { cwd: AGENT_DOCS_DIR, nodir: true, absolute: true });
-				for (const doc of agentDocs) {
-					await copyFile(doc, path.join(buildDocsDir, path.basename(doc)));
-				}
-			}
-
-			if (await exists(STUBS_DIR)) {
-				const stubs = await glob('*', { cwd: STUBS_DIR, nodir: true, absolute: true });
-				for (const stub of stubs) {
-					await copyFile(stub, path.join(buildStubsDir, path.basename(stub)));
-				}
-			}
+			await stageAgentDocs();
 
 			await saveVscodeAndSharedUiHashes(srcHash, sharedUiHash);
 			task.output = 'Manifest staged in build/vscode';
@@ -255,10 +255,47 @@ function makeStageFilesAction() {
 	};
 }
 
+/**
+ * Stages agent documentation and stubs into build/vscode/docs/ — RESET
+ * first: the staged docs ARE the shipped doc manifest (the installer
+ * enumerates them), so a file retired from docs/agents must not survive
+ * here as a fossil and ride every future vsix. Called by BOTH the stage
+ * step and the vsix packaging step, so a bare `vscode:package-vsix` after
+ * a docs edit can never zip a stale staging.
+ */
+async function stageAgentDocs() {
+	const buildDocsDir = path.join(BUILD_DIR, 'docs');
+	const buildStubsDir = path.join(BUILD_DIR, 'docs', 'stubs');
+	if (await exists(buildDocsDir)) {
+		await rm(buildDocsDir);
+	}
+	await mkdir(buildDocsDir);
+	await mkdir(buildStubsDir);
+
+	if (await exists(AGENT_DOCS_DIR)) {
+		const agentDocs = await glob('*.md', { cwd: AGENT_DOCS_DIR, nodir: true, absolute: true });
+		for (const doc of agentDocs) {
+			await copyFile(doc, path.join(buildDocsDir, path.basename(doc)));
+		}
+	}
+
+	if (await exists(STUBS_DIR)) {
+		const stubs = await glob('*', { cwd: STUBS_DIR, nodir: true, absolute: true });
+		for (const stub of stubs) {
+			await copyFile(stub, path.join(buildStubsDir, path.basename(stub)));
+		}
+	}
+}
+
 function makePackageVsixAction() {
 	return {
 		run: async (ctx, task) => {
-			const { changed } = await hasVscodeOrSharedUiChanged();
+			const { changed: srcChanged } = await hasVscodeOrSharedUiChanged();
+			// The vsix carries the agent docs + stubs, so a docs-only edit
+			// must repack even when no source changed — otherwise the served
+			// package silently keeps stale documentation.
+			const [docs, stubs] = await Promise.all([hasSourceChanged(AGENT_DOCS_DIR, AGENT_DOCS_HASH_KEY), hasSourceChanged(STUBS_DIR, AGENT_STUBS_HASH_KEY)]);
+			const changed = srcChanged || docs.changed || stubs.changed;
 
 			// Check if .vsix already exists
 			const vsixFiles = (await exists(VSCODE_DIST_DIR)) ? await glob('*.vsix', { cwd: VSCODE_DIST_DIR, nodir: true, absolute: true }) : [];
@@ -271,12 +308,24 @@ function makePackageVsixAction() {
 				return;
 			}
 
+			// Re-stage the docs into the build dir before zipping: packaging
+			// must never depend on a prior stage step having run after the
+			// last docs edit (a bare `vscode:package-vsix` would otherwise
+			// pack stale staging).
+			if (await exists(BUILD_DIR)) {
+				await stageAgentDocs();
+			}
+
 			await mkdir(VSCODE_DIST_DIR);
 			const vsceOut = path.relative(BUILD_DIR, VSCODE_DIST_DIR);
 			await execCommand('npx', ['vsce', 'package', '--no-dependencies', '-o', vsceOut], { task, cwd: BUILD_DIR });
 
 			// Stage the vsix where GET /client/vscode serves from.
 			const stats = await syncDir(VSCODE_DIST_DIR, SERVER_STATIC_DIR, { pattern: '*.vsix', package: true });
+			// The packaged vsix now reflects the docs/stubs — record their
+			// fingerprints so the next docs-only build knows whether to repack.
+			await saveSourceHash(AGENT_DOCS_HASH_KEY, docs.hash);
+			await saveSourceHash(AGENT_STUBS_HASH_KEY, stubs.hash);
 			task.output = `Package created in ${VSCODE_DIST_DIR} (${formatSyncStats(stats)})`;
 		},
 	};
@@ -363,6 +412,8 @@ module.exports = {
 					await setState(SRC_HASH_KEY, null);
 					await setState(BUNDLE_HASH_KEY, null);
 					await setState(SHARED_UI_HASH_KEY, null);
+					await setState(AGENT_DOCS_HASH_KEY, null);
+					await setState(AGENT_STUBS_HASH_KEY, null);
 					task.output = 'Cleaned vscode';
 				},
 			}),

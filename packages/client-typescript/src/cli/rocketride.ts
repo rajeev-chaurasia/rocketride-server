@@ -1211,6 +1211,102 @@ export class RocketRideCLI {
 			});
 		addCommonOptions(storeStatCmd);
 
+		// App lifecycle commands. These are DEPLOYMENT-TARGET verbs, so the
+		// defaults read the ROCKETRIDE_DEPLOY_* pair — and an absent pair is
+		// an explicit stop: lifecycle verbs must never fall back to the
+		// development connection as a guess.
+		const appCmd = program.command('app').description('App lifecycle operations (deployment target)');
+		const appDeployCmd = appCmd
+			.command('deploy <folder>')
+			.description("Pack an app folder's source and deploy it as the next registry version")
+			.option('--workspace <dir>', 'Workspace root the zip is rooted at; include entries resolve against it (default: current directory)')
+			.option('--comment <text>', 'What-changed note kept in the registry')
+			.option('--uri <uri>', 'Deployment target URI (can use ROCKETRIDE_DEPLOY_URI env var)', process.env.ROCKETRIDE_DEPLOY_URI)
+			.option('--apikey <key>', 'Deployment target API key (can use ROCKETRIDE_DEPLOY_APIKEY env var)', process.env.ROCKETRIDE_DEPLOY_APIKEY)
+			.option('--verbose', 'Narrate every pack step (include checks, per-file adds, totals)')
+			.action(async (folder, options) => {
+				this.args = { command: 'app', subcommand: 'deploy', folder, ...options };
+				if (!options.uri) {
+					console.error('No deployment target configured. Set ROCKETRIDE_DEPLOY_URI / ROCKETRIDE_DEPLOY_APIKEY (or pass --uri/--apikey) - the development connection is never a deploy fallback.');
+					process.exit(1);
+				}
+				this.uri = options.uri;
+				try {
+					const client = await this.createAndConnectClient();
+					const result = await client.deploy.addApp(folder, {
+						workspaceRoot: options.workspace,
+						comment: options.comment,
+						onProgress: options.verbose ? (line: string) => console.log(`  ${line}`) : undefined,
+					});
+					const artifact = result.artifact as { projectId?: string; version?: number; name?: string } | undefined;
+					console.log(`Deployed app version v${artifact?.version ?? '?'}${artifact?.name ? ` (${artifact.name})` : ''}`);
+					if (artifact?.projectId) {
+						console.log(`Project: ${artifact.projectId}`);
+					}
+					console.log('Deploying activates nothing - publish a rung to serve it.');
+					process.exit(0);
+				} finally {
+					this.cancel();
+					await this.cleanupClient();
+				}
+			});
+		void appDeployCmd;
+
+		// app create — scaffold a new app, the programmatic twin of the App
+		// Builder wizard. A DEV-workspace operation: vendoring reads the
+		// DEVELOPMENT server (ROCKETRIDE_URI), no DAP connection needed.
+		appCmd
+			.command('create <slug>')
+			.description('Scaffold a new app under ./apps/<slug> (same templates as the App Builder wizard)')
+			.option('--template <name>', 'Template: Blank or Dashboard', 'Blank')
+			.option('--name <text>', 'Display name (default: title-cased slug)')
+			.option('--developer <id>', "Developer id for <developerId>.<slug> (default: 'local')")
+			.option('--sidebar', 'Two-column layout with a navigation sidebar')
+			.option('--no-status-footer', 'Omit the bottom status bar')
+			.option('--doc-tabs', 'Document tab strip (Documents + DocTabs)')
+			.option('--workspace <dir>', 'Workspace root (default: current directory)')
+			.option('--uri <uri>', 'Development server to vendor platform packages from (can use ROCKETRIDE_URI env var)', process.env.ROCKETRIDE_URI)
+			.option('--no-install', 'Skip the workspace pnpm install')
+			.action(async (slug, options) => {
+				const { createAppWorkspace } = await import('../app-pack/index.js');
+				const serverBaseUrl = options.uri ? String(options.uri).replace(/^ws:/i, 'http:').replace(/^wss:/i, 'https:').replace(/\/task\/service\/?$/i, '').replace(/\/+$/, '') : undefined;
+				try {
+					const created = await createAppWorkspace(options.workspace ?? process.cwd(), slug, {
+						template: options.template,
+						displayName: options.name,
+						developerId: options.developer,
+						sidebar: Boolean(options.sidebar),
+						statusFooter: options.statusFooter !== false,
+						docTabs: Boolean(options.docTabs),
+						install: options.install !== false,
+						serverBaseUrl,
+						onProgress: (line: string) => console.log(`  ${line}`),
+					});
+					console.log(`Created ${created.appId} at ${created.folder}`);
+					console.log(`Open ${created.folder}/${slug}.rrapp in VS Code for the App Builder, or edit ${created.folder}/src/App.tsx directly.`);
+					process.exit(0);
+				} catch (error) {
+					console.error(error instanceof Error ? error.message : String(error));
+					process.exit(1);
+				}
+			});
+
+		// app verify — the no-side-effect precheck: everything `app deploy`
+		// needs, verified locally with no server connection at all.
+		appCmd
+			.command('verify <folder>')
+			.description('Pre-check an app folder for deploy: manifest, id grammar, assets, includes, pack dry run')
+			.option('--workspace <dir>', 'Workspace root the pack would be rooted at (default: current directory)')
+			.action(async (folder, options) => {
+				const { verifyAppSource } = await import('../app-pack/index.js');
+				const report = verifyAppSource(options.workspace ?? process.cwd(), folder);
+				for (const check of report.checks) {
+					console.log(`${check.ok ? 'OK  ' : 'FAIL'}  ${check.id}: ${check.note}`);
+				}
+				console.log(report.ok ? `Ready to deploy: ${report.fileCount} files, ${report.uncompressedBytes} bytes uncompressed.` : 'Not ready - fix the FAIL lines above.');
+				process.exit(report.ok ? 0 : 1);
+			});
+
 		return program;
 	}
 

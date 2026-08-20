@@ -49,6 +49,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 from .types.deploy import (
@@ -171,6 +172,81 @@ class DeployApi:
         if deploy_to is not None:
             kwargs['deployTo'] = deploy_to
         return await self._client.call('rrext_deploy', **kwargs)
+
+    async def add_app(
+        self,
+        app_root: str,
+        *,
+        workspace_root: str | None = None,
+        comment: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        on_progress: Any = None,
+    ) -> PublishResult:
+        """
+        Pack an app folder's source and deploy it as the next immutable
+        registry version — the ONE call behind the App Builder's Deploy
+        button and CI scripts.
+
+        Packing follows the exact App Builder rules (workspace-rooted zip
+        layout, ``appManifest.include`` honored, hierarchical gitignore
+        filtering with the hard baseline node_modules/dist/.git, symlink
+        containment, 50MB zipped / 512MB uncompressed caps); every step can
+        narrate through ``on_progress``. Deploying never activates anything
+        — bind an audience with
+        :meth:`~rocketride.mixins.apps.AppsMixin.publish_app` afterwards.
+        Run :meth:`verify_app` first for a no-side-effect precheck.
+
+        Args:
+            app_root: The app folder — absolute, or relative to
+                ``workspace_root``.
+            workspace_root: The workspace the zip is rooted at and that
+                ``appManifest.include`` entries resolve against
+                (default: the current working directory).
+            comment: Optional "what changed" note kept in the registry.
+            metadata: Extra metadata merged over the packed defaults
+                (``appRoot`` is always set from the pack).
+            on_progress: Optional ``callable(line: str)`` receiving one
+                line per pack step.
+
+        Returns:
+            The artifact entry for the new version.
+        """
+        # step: pack with the shared rules (raises ValueError on a missing
+        # folder, a bad include entry, or a breached size cap)
+        from ._app_pack import pack_app_source
+
+        packed = pack_app_source(workspace_root or os.getcwd(), app_root, on_progress)
+        merged: dict[str, Any] = dict(metadata or {})
+        if packed.app_root:
+            merged['appRoot'] = packed.app_root
+        return await self.add(
+            kind='app',
+            data=packed.data,
+            metadata=merged,
+            comment=comment,
+        )
+
+    async def verify_app(self, app_root: str, *, workspace_root: str | None = None) -> Any:
+        """
+        Pre-check everything :meth:`add_app` needs, WITHOUT deploying —
+        purely local, no server call. Verifies the manifest shape and id
+        grammar, declared icon/README assets, ``appManifest.include``
+        entries, and a pack dry run against the size caps. Server-side
+        concerns (the build, store review) are out of scope.
+
+        Args:
+            app_root: The app folder — absolute, or relative to
+                ``workspace_root``.
+            workspace_root: The workspace the pack would be rooted at
+                (default: the current working directory).
+
+        Returns:
+            :class:`~rocketride._app_pack.AppVerifyReport` — ``ok`` plus
+            every check with an actionable note.
+        """
+        from ._app_pack import verify_app_source
+
+        return verify_app_source(workspace_root or os.getcwd(), app_root)
 
     # =========================================================================
     # DEPLOY — point a team at a version (promotion and rollback alike)
