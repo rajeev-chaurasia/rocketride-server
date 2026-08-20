@@ -313,8 +313,18 @@ class IInstance(MicrosoftToolInstanceBase):
         args = normalize_tool_input(args, tool_name='tool_excel')
         file = require_str(args, 'file', tool_name='excel_read_table')
         table = require_str(args, 'table', tool_name='excel_read_table')
-        data = request(self.IGlobal.auth, 'GET', f'{self._wb(file)}/tables/{_seg(table)}/rows')
-        return {'rows': [row.get('values') for row in data.get('value') or []]}
+        rows: list = []
+        # Graph may page large tables; follow @odata.nextLink so "every row"
+        # holds. Each workbookTableRow.values is a one-row 2-D array
+        # ([[a, b, c]]); unwrap it to the documented per-row value-array.
+        path = f'{self._wb(file)}/tables/{_seg(table)}/rows'
+        while path:
+            data = request(self.IGlobal.auth, 'GET', path)
+            for row in data.get('value') or []:
+                values = row.get('values')
+                rows.append(values[0] if isinstance(values, list) and len(values) == 1 else values)
+            path = data.get('@odata.nextLink')
+        return {'rows': rows}
 
     # =======================================================================
     # TABLES — write

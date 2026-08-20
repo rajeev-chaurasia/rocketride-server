@@ -69,6 +69,7 @@ from .. import graph_client
 from ..IInstance import MicrosoftToolInstanceBase
 from .client import (
     ATTACHMENT_SELECT,
+    MAX_INLINE_ATTACHMENT_BYTES,
     MAX_TOP,
     MESSAGE_SELECT,
     SERVICE,
@@ -183,7 +184,9 @@ class IInstance(MicrosoftToolInstanceBase):
             if looks_like_odata_filter(query):
                 params['$filter'] = query
             else:
-                params['$search'] = f'"{query}"'
+                # Graph's $search is a quoted KQL phrase; a literal double quote
+                # inside it must be backslash-escaped or it ends the phrase early.
+                params['$search'] = '"{}"'.format(query.replace('"', '\\"'))
         data = request(self.IGlobal.auth, 'GET', f'{self._folder_path(folder)}/messages', params=params)
         return {'messages': [clean_message(m) for m in data.get('value') or []]}
 
@@ -573,9 +576,15 @@ class IInstance(MicrosoftToolInstanceBase):
         name = require_str(args, 'name', tool_name='outlook_mail_add_attachment')
         content_b64 = require_str(args, 'content_base64', tool_name='outlook_mail_add_attachment')
         try:
-            base64.b64decode(content_b64, validate=True)
+            decoded = base64.b64decode(content_b64, validate=True)
         except (binascii.Error, ValueError) as exc:
             raise ValueError(f'outlook_mail_add_attachment: "content_base64" is not valid base64 ({exc})') from exc
+        if len(decoded) >= MAX_INLINE_ATTACHMENT_BYTES:
+            raise ValueError(
+                f'outlook_mail_add_attachment: attachment is {len(decoded)} bytes; Graph accepts inline '
+                f'fileAttachments only below {MAX_INLINE_ATTACHMENT_BYTES} bytes (3 MB). Larger files need '
+                'a Graph upload session, which this tool does not support — attach a smaller file.'
+            )
         data = request(
             self.IGlobal.auth,
             'POST',

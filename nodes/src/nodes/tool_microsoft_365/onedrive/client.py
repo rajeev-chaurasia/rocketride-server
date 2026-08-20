@@ -90,36 +90,62 @@ def parent_ref(target_folder: str) -> dict:
 def upload_chunk(auth, session_url: str, chunk: bytes, start: int, end: int, total: int) -> dict:
     """PUT one chunk of a resumable upload session directly via urllib.
 
-    ``graph_client.request()`` has no extra-headers kwarg yet (Task 9 adds
-    one); a chunked upload PUT must carry a ``Content-Range`` header
-    alongside the bearer token, so this call goes straight through urllib
-    instead of the shared ``request()`` helper. It reuses
-    ``graph_client._urlopen`` — the module's one HTTP seam — so tests can
-    monkeypatch every Graph call, chunked or not, in one place.
+    The session ``uploadUrl`` Graph returns is pre-authenticated and lives on
+    a non-Graph host, so the chunk PUT must **not** carry a bearer token (the
+    shared ``graph_client.request()`` always attaches one and only allows
+    Graph hosts), which is why this call goes straight through urllib. It
+    reuses ``graph_client._urlopen`` — the module's one HTTP seam — so tests
+    can monkeypatch every Graph call, chunked or not, in one place.
+
+    A chunk PUT is idempotent by ``Content-Range``, so transient failures
+    (429/5xx and connection errors) are retried with the same bounded
+    exponential backoff as ``request()``: up to 4 attempts, sleeping 1s, 2s,
+    4s (or a capped numeric ``Retry-After``).
     """
+    del auth  # accepted for call-site symmetry; the session URL is pre-authenticated
     req = urllib.request.Request(
         session_url,
         data=chunk,
         headers={
-            'Authorization': f'Bearer {auth.token()}',
             'Content-Length': str(len(chunk)),
             'Content-Range': f'bytes {start}-{end}/{total}',
             'Content-Type': 'application/octet-stream',
         },
         method='PUT',
     )
-    try:
-        with graph_client._urlopen(req, timeout=60) as resp:
-            raw = resp.read()
-    except urllib.error.HTTPError as exc:
+    for attempt in range(4):
         try:
-            detail = exc.read().decode(errors='replace')
-        except Exception:
-            detail = str(exc)
-        raise graph_client.GraphError(f'OneDrive: chunked upload failed (HTTP {exc.code}; {detail[:200]}).') from exc
-    except urllib.error.URLError as exc:
-        raise graph_client.GraphError(f'OneDrive: chunked upload failed (connection error: {exc}).') from exc
-    return json.loads(raw.decode()) if raw.strip() else {}
+            with graph_client._urlopen(req, timeout=60) as resp:
+                raw = resp.read()
+            return json.loads(raw.decode()) if raw.strip() else {}
+        except urllib.error.HTTPError as exc:
+            if exc.code in graph_client._RETRY_STATUSES and attempt < 3:
+                graph_client._time.sleep(_retry_delay(exc, attempt))
+                continue
+            try:
+                detail = exc.read().decode(errors='replace')
+            except Exception:
+                detail = str(exc)
+            raise graph_client.GraphError(
+                f'OneDrive: chunked upload failed (HTTP {exc.code}; {detail[:200]}).'
+            ) from exc
+        except urllib.error.URLError as exc:
+            if attempt < 3:
+                graph_client._time.sleep(2**attempt)
+                continue
+            raise graph_client.GraphError(f'OneDrive: chunked upload failed (connection error: {exc}).') from exc
+    raise RuntimeError('upload_chunk: retry loop exhausted unexpectedly')  # unreachable
+
+
+def _retry_delay(exc: urllib.error.HTTPError, attempt: int) -> float:
+    """Backoff for a retryable chunk PUT: capped numeric Retry-After, else 1s/2s/4s."""
+    retry_after = exc.headers.get('Retry-After') if exc.headers else None
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), graph_client._MAX_RETRY_AFTER)
+        except ValueError:
+            pass  # HTTP-date Retry-After: fall back to exponential backoff
+    return float(2**attempt)
 
 
 # ---------------------------------------------------------------------------

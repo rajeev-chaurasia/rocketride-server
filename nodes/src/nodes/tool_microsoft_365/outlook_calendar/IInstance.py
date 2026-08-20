@@ -177,7 +177,9 @@ class IInstance(MicrosoftToolInstanceBase):
         },
         description=(
             'List events in a calendar view between start and end (calendarView — recurring series are '
-            'expanded into their individual occurrences). Uses the default calendar unless "calendar" is given.'
+            'expanded into their individual occurrences). Uses the default calendar unless "calendar" is given. '
+            f'Returns at most {MAX_TOP} events per call; "next_link" is the Graph @odata.nextLink continuation URL '
+            'when the window holds more, else null — narrow the window to page through them.'
         ),
     )
     def outlook_calendar_list_events(self, args: dict) -> dict:
@@ -189,7 +191,10 @@ class IInstance(MicrosoftToolInstanceBase):
         calendar = optional_str(args, 'calendar', default='', tool_name=op) or ''
         params = {'startDateTime': start, 'endDateTime': end, '$top': MAX_TOP, '$select': EVENT_SELECT}
         data = request(self.IGlobal.auth, 'GET', f'{self._calendar_events_base(calendar)}/calendarView', params=params)
-        return {'events': [clean_event(e) for e in data.get('value') or []]}
+        return {
+            'events': [clean_event(e) for e in data.get('value') or []],
+            'next_link': data.get('@odata.nextLink'),
+        }
 
     @tool_function(
         input_schema={
@@ -392,6 +397,8 @@ class IInstance(MicrosoftToolInstanceBase):
         duration_minutes = int_arg(args, 'duration_minutes', default=30, lo=5, hi=480, tool_name=op)
         window_start = optional_str(args, 'window_start', default='', tool_name=op) or ''
         window_end = optional_str(args, 'window_end', default='', tool_name=op) or ''
+        if bool(window_start) != bool(window_end):
+            raise ValueError(f'{op}: "window_start" and "window_end" must be provided together')
         body: dict = {
             'attendees': attendee_list(attendees),
             'meetingDuration': f'PT{duration_minutes}M',

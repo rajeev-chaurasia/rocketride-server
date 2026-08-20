@@ -95,5 +95,17 @@ def test_scope_supersets():
     expected = ['Files.Read', 'Files.ReadWrite']
     assert missing_scopes({'Files.ReadWrite.All'}, expected) == []
     assert missing_scopes({'Mail.Read'}, ['Mail.Send']) == ['Mail.Send']
+    # Family-wide ReadWrite.All never satisfies an action scope (Mail.Send is
+    # a separate Graph grant), only the family's Read/ReadWrite scopes.
+    assert missing_scopes({'Mail.ReadWrite.All'}, ['Mail.Send']) == ['Mail.Send']
+    assert missing_scopes({'Mail.ReadWrite.All'}, ['Mail.Read', 'Mail.ReadWrite']) == []
     # Fail-open on unknown grant (empty set), mirroring google_access
     assert missing_scopes(set(), ['Mail.Send']) == []
+
+
+def test_excel_readonly_tier_requests_files_readwrite():
+    # Graph workbook endpoints accept only delegated Files.ReadWrite, even for
+    # reads; readonly stays a node-side write gate, not a narrower scope.
+    ro = resolve_microsoft_access({'access': 'readonly'}, EXCEL)
+    assert ro.scopes == ['Files.ReadWrite']
+    assert ro.can_write is False

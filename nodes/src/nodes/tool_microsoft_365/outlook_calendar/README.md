@@ -80,7 +80,7 @@ delegated, matching the auth mode and the configured tier) with admin consent.
 
 An agent creates a meeting and later syncs changes:
 
-```
+```text
 outlook_calendar_create_event { "subject": "Sync", "start": "2026-08-11T14:00:00",
                                  "end": "2026-08-11T14:30:00",
                                  "attendees": ["alex@contoso.com"] }

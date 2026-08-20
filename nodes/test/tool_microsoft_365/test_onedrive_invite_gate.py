@@ -183,6 +183,70 @@ class TestInviteDirectoryLookupGate:
             req = u.call_args[0][0]
             assert req.full_url.endswith('/invite')
 
+    def test_directory_lookup_selects_only_id(self):
+        # ``userType`` is outside the User.ReadBasic.All property set; selecting it
+        # would 403 the lookup under the delegated scope the README documents.
+        inst = _instance(allow_public_sharing=False)
+        with mock.patch.object(gc, '_urlopen', return_value=_resp({'id': '1'})) as u:
+            inst._require_individual_directory_user('alex@contoso.com')
+        url = u.call_args[0][0].full_url
+        assert '/users/alex%40contoso.com' in url
+        assert '%24select=id' in url and 'userType' not in url
+
     def test_no_org_wide_alias_helper_left_behind(self):
         assert not hasattr(odc, 'is_org_wide_alias')
         assert not hasattr(odc, 'ORG_WIDE_ALIAS_LOCALPARTS')
+
+
+class TestRestorePersonalOnly:
+    def test_service_auth_refused_without_graph_call(self):
+        inst = _instance(allow_public_sharing=False)
+        inst.IGlobal.cfg = {'authType': 'service', 'userPrincipalName': 'alex@contoso.com'}
+        with mock.patch.object(gc, '_urlopen') as u:
+            with pytest.raises(gc.GraphError, match='OneDrive Personal'):
+                inst.onedrive_restore({'item': '01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K'})
+        u.assert_not_called()
+
+    def test_user_auth_issues_restore(self):
+        inst = _instance(allow_public_sharing=False)
+        with mock.patch.object(gc, '_urlopen', return_value=_resp({'id': 'X', 'name': 'a.pdf'})) as u:
+            out = inst.onedrive_restore({'item': '01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K'})
+        assert out == {'id': 'X', 'name': 'a.pdf'}
+        assert u.call_args[0][0].full_url.endswith('/me/drive/items/01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K/restore')
+
+
+class TestChunkedUploadSession:
+    _URL = 'https://sn3302.up.1drv.com/up/fe6987415ace7X4e1eF866337'
+
+    def _put(self, side_effect):
+        auth = mock.MagicMock()
+        auth.token.return_value = 'TOK'
+        with (
+            mock.patch.object(gc, '_urlopen', side_effect=side_effect) as u,
+            mock.patch.object(gc._time, 'sleep') as sl,
+        ):
+            out = odc.upload_chunk(auth, self._URL, b'abc', 0, 2, 3)
+        return out, u, sl
+
+    def test_chunk_put_omits_bearer_and_sets_content_range(self):
+        # The session uploadUrl is pre-authenticated and on a non-Graph host: no Authorization.
+        out, u, _ = self._put([_resp({'id': 'X'})])
+        req = u.call_args[0][0]
+        assert req.full_url == self._URL and req.get_method() == 'PUT'
+        assert not req.has_header('Authorization')
+        assert req.get_header('Content-range') == 'bytes 0-2/3'
+        assert out == {'id': 'X'}
+
+    def test_transient_failures_are_retried_with_backoff(self):
+        out, u, sl = self._put([_http_error(503), urllib.error.URLError('reset'), _http_error(429), _resp({'id': 'X'})])
+        assert out == {'id': 'X'}
+        assert u.call_count == 4
+        assert [c.args[0] for c in sl.call_args_list] == [1.0, 2, 4.0]
+
+    def test_non_transient_failure_raises_immediately(self):
+        with pytest.raises(gc.GraphError, match='HTTP 416'):
+            self._put([_http_error(416)])
+
+    def test_retry_budget_is_bounded(self):
+        with pytest.raises(gc.GraphError, match='HTTP 503'):
+            self._put([_http_error(503)] * 4)

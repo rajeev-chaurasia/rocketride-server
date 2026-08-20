@@ -31,6 +31,7 @@ import json
 import sys
 import time
 import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -177,6 +178,16 @@ class TestBrokerUserAuth:
         granted, ok, missing = gc.token_scope_report(SVC, self._payload(), ['Files.Read'])
         assert 'Files.ReadWrite' in granted and ok and missing == []
 
+    def test_token_expiring_within_leeway_is_refreshed(self):
+        # 30s of life left is inside the 60s leeway: refresh now rather than
+        # risk the token dying mid-request (401 is fatal, not retried).
+        cfg = self._payload(expiry_date=int((time.time() + 30) * 1000))
+        with mock.patch.object(
+            gc, '_urlopen', return_value=_resp({'access_token': 'B', 'expiry_date': int((time.time() + 3600) * 1000)})
+        ) as u:
+            assert gc.build_auth(SVC, 'user', cfg, []).token() == 'B'
+            assert u.call_count == 1
+
     def test_garbage_expiry_date_raises_readable_error(self):
         cfg = self._payload(expiry_date='not-a-number')
         with pytest.raises(ValueError, match='Excel.*Please disconnect and reconnect your Microsoft account'):
@@ -292,3 +303,72 @@ class TestRequest:
         with mock.patch.object(gc, '_urlopen', side_effect=err):
             with pytest.raises(gc.GraphError, match='conflict'):
                 gc.request(SVC, self._auth(), 'PUT', '/me/drive/items/1/content', data=b'x')
+
+    def test_retry_after_is_clamped(self):
+        err = urllib.error.HTTPError('u', 429, 'throttle', {'Retry-After': '600'}, None)
+        with (
+            mock.patch.object(gc, '_urlopen', side_effect=[err, _resp({'ok': 1})]),
+            mock.patch.object(gc._time, 'sleep') as sleep,
+        ):
+            assert gc.request(SVC, self._auth(), 'GET', '/me') == {'ok': 1}
+            sleep.assert_called_once_with(gc._MAX_RETRY_AFTER)
+
+    def test_negative_retry_after_is_clamped_to_zero(self):
+        err = urllib.error.HTTPError('u', 429, 'throttle', {'Retry-After': '-5'}, None)
+        with (
+            mock.patch.object(gc, '_urlopen', side_effect=[err, _resp({'ok': 1})]),
+            mock.patch.object(gc._time, 'sleep') as sleep,
+        ):
+            assert gc.request(SVC, self._auth(), 'GET', '/me') == {'ok': 1}
+            sleep.assert_called_once_with(0.0)
+
+    def test_post_is_not_retried_on_5xx(self):
+        # A POST may already have been applied before Graph reported 503;
+        # replaying it could send a message or create an event twice.
+        err = urllib.error.HTTPError('u', 503, 'unavailable', {}, None)
+        with (
+            mock.patch.object(gc, '_urlopen', side_effect=[err, _resp({'ok': 1})]) as u,
+            mock.patch.object(gc._time, 'sleep'),
+        ):
+            with pytest.raises(gc.GraphError, match='HTTP 503'):
+                gc.request(SVC, self._auth(), 'POST', '/me/sendMail', json_body={})
+            assert u.call_count == 1
+
+    def test_post_is_retried_on_429(self):
+        # 429 means Graph did not process the request: safe to replay any method.
+        err = urllib.error.HTTPError('u', 429, 'throttle', {'Retry-After': '0'}, None)
+        with (
+            mock.patch.object(gc, '_urlopen', side_effect=[err, _resp({'ok': 1})]) as u,
+            mock.patch.object(gc._time, 'sleep'),
+        ):
+            assert gc.request(SVC, self._auth(), 'POST', '/me/sendMail', json_body={}) == {'ok': 1}
+            assert u.call_count == 2
+
+    def test_get_is_retried_on_5xx(self):
+        err = urllib.error.HTTPError('u', 503, 'unavailable', {}, None)
+        with (
+            mock.patch.object(gc, '_urlopen', side_effect=[err, _resp({'ok': 1})]) as u,
+            mock.patch.object(gc._time, 'sleep'),
+        ):
+            assert gc.request(SVC, self._auth(), 'GET', '/me') == {'ok': 1}
+            assert u.call_count == 2
+
+    def test_absolute_graph_url_is_accepted(self):
+        link = 'https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=abc'
+        with mock.patch.object(gc, '_urlopen', return_value=_resp({'value': []})) as u:
+            assert gc.request(SVC, self._auth(), 'GET', link) == {'value': []}
+            assert u.call_args[0][0].full_url == link
+
+    @pytest.mark.parametrize(
+        'link',
+        [
+            'https://evil.example.net/v1.0/me/calendarView/delta',
+            'http://graph.microsoft.com/v1.0/me/calendarView/delta',
+            'https://graph.microsoft.com.evil.example.net/v1.0/me',
+        ],
+    )
+    def test_absolute_non_graph_url_never_receives_bearer(self, link):
+        with mock.patch.object(gc, '_urlopen') as u:
+            with pytest.raises(ValueError, match='non-Graph URL'):
+                gc.request(SVC, self._auth(), 'GET', link)
+            u.assert_not_called()

@@ -114,7 +114,9 @@ IconButtonProps<T, S, F> & { formContext?: Record<string, any> }) {
 		// param rather than guessing another service's scopes.
 		// offline_access + identity scopes are appended by the broker, matching the Google flow.
 		const SERVICE_TIER_SCOPES: Record<string, Record<string, string[]>> = {
-			excel: { readonly: ['Files.Read'], write: ['Files.ReadWrite'] },
+			// Graph's workbook API accepts only delegated Files.ReadWrite, reads
+			// included; the excel readonly tier is a node-side write gate.
+			excel: { readonly: ['Files.ReadWrite'], write: ['Files.ReadWrite'] },
 			word: { readonly: ['Files.Read'], write: ['Files.ReadWrite'] },
 			onedrive: { readonly: ['Files.Read'], write: ['Files.ReadWrite', 'User.ReadBasic.All'] },
 			outlook_mail: {

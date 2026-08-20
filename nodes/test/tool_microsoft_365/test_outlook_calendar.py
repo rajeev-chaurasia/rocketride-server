@@ -220,6 +220,45 @@ class TestRespondEnumValidation:
             inst.outlook_calendar_respond({'event_id': 'e1', 'response': 'accept'})
 
 
+class TestListEvents:
+    def test_list_events_exposes_next_link(self):
+        inst = _instance(tier='readonly')
+        with mock.patch.object(gc, '_urlopen', return_value=_resp({'value': [], '@odata.nextLink': 'https://next'})):
+            out = inst.outlook_calendar_list_events({'start': '2026-08-01T00:00:00', 'end': '2026-08-08T00:00:00'})
+            assert out == {'events': [], 'next_link': 'https://next'}
+
+    def test_list_events_next_link_is_none_on_last_page(self):
+        inst = _instance(tier='readonly')
+        with mock.patch.object(gc, '_urlopen', return_value=_resp({'value': []})):
+            out = inst.outlook_calendar_list_events({'start': '2026-08-01T00:00:00', 'end': '2026-08-08T00:00:00'})
+            assert out['next_link'] is None
+
+
+class TestFindMeetingTimes:
+    @pytest.mark.parametrize(
+        'partial', [{'window_start': '2026-08-11T09:00:00'}, {'window_end': '2026-08-11T17:00:00'}]
+    )
+    def test_partial_window_is_rejected_not_ignored(self, partial):
+        inst = _instance(tier='readonly')
+        with mock.patch.object(gc, '_urlopen') as u:
+            with pytest.raises(ValueError, match='window_start.*window_end'):
+                inst.outlook_calendar_find_meeting_times({'attendees': ['a@contoso.com'], **partial})
+            u.assert_not_called()
+
+    def test_full_window_sets_time_constraint(self):
+        inst = _instance(tier='readonly')
+        with mock.patch.object(gc, '_urlopen', return_value=_resp({'meetingTimeSuggestions': []})) as u:
+            inst.outlook_calendar_find_meeting_times(
+                {
+                    'attendees': ['a@contoso.com'],
+                    'window_start': '2026-08-11T09:00:00',
+                    'window_end': '2026-08-11T17:00:00',
+                }
+            )
+            body = json.loads(u.call_args[0][0].data)
+            assert body['timeConstraint']['timeslots'][0]['start']['dateTime'] == '2026-08-11T09:00:00'
+
+
 class TestDeltaSync:
     def test_delta_sync_with_delta_link_gets_that_absolute_url(self):
         # (d) a caller-provided delta_link is GETed directly, not rebuilt from start/end.

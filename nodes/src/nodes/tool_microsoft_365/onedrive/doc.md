@@ -9,8 +9,10 @@ Operates on the acting user's OneDrive.
 List and search files and folders; read metadata; download and upload
 content; create folders; copy, move, and rename items; trash and restore;
 and manage sharing (links, permission grants, and invites). Items are
-addressed by drive-relative path or item id — a value containing `/` is
-treated as a path, anything else as an item id.
+addressed by drive-relative path or item id: the literal `root`, or a value of
+15+ characters drawn only from `[A-Za-z0-9!]` (the shape of a Graph item id), is
+treated as an item id; anything else — including a bare root-level filename
+such as `report.pdf` — is treated as a path under the drive root.
 
 ## Agent tools
 
@@ -26,7 +28,7 @@ treated as a path, anything else as an item id.
 | `onedrive_move` | `PATCH /drive/items/{item}` | Move an item to another folder. |
 | `onedrive_rename` | `PATCH /drive/items/{item}` | Rename an item in place. |
 | `onedrive_trash` | `DELETE /drive/items/{item}` | Move an item to the recycle bin. |
-| `onedrive_restore` | `POST /drive/items/{item}/restore` | Restore a trashed item. |
+| `onedrive_restore` | `POST /drive/items/{item}/restore` | Restore a trashed item. **OneDrive Personal only** (Graph limitation): refused under `service` auth; work/school accounts get Graph's error. |
 | `onedrive_permanently_delete` | `POST .../permanentDelete` | Permanently delete an item (gated). |
 | `onedrive_create_sharing_link` | `POST .../createLink` | Create a view/edit sharing link (anonymous scope gated). |
 | `onedrive_list_permissions` | `GET .../permissions` | List sharing permissions on an item. |
@@ -65,8 +67,17 @@ The agent discovers the `onedrive_*` tools and calls them per its instructions.
 ## Where to get your credentials
 
 Register an app in the **Entra admin center** (`entra.microsoft.com` → App
-registrations), grant it the Graph `Files.Read` or `Files.ReadWrite`
-application permission (or delegated, for user OAuth) and admin consent. See
+registrations) and grant it the Graph permission matching the auth mode and
+tier, then admin consent:
+
+- **User OAuth (delegated):** `Files.Read` (`readonly`) or `Files.ReadWrite`
+  (`write`); plus `User.ReadBasic.All` for the `onedrive_invite` directory
+  lookup when `allowPublicSharing` is off (not available to personal accounts).
+- **Entra app (application, admin consent required):** `Files.Read.All`
+  (`readonly`) or `Files.ReadWrite.All` (`write`); plus `User.Read.All` for the
+  invite directory lookup when `allowPublicSharing` is off.
+
+See
 `microsoft-oauth.md` for the full setup shared by every Microsoft 365 tool
 service (excel, word, onedrive, outlook mail, outlook calendar).
 

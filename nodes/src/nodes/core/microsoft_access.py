@@ -89,7 +89,8 @@ def _scope_satisfied(required: str, granted: set[str]) -> bool:
 
     Graph semantics: '<Family>.ReadWrite' supersets '<Family>.Read';
     '<scope>.All' supersets the same scope without '.All'; and
-    '<Family>.ReadWrite.All' supersets the whole family.
+    '<Family>.ReadWrite.All' supersets the family's Read/ReadWrite scopes only
+    (never action scopes such as 'Mail.Send', which Graph grants separately).
     """
     if required in granted:
         return True
@@ -99,7 +100,8 @@ def _scope_satisfied(required: str, granted: set[str]) -> bool:
     if base.endswith('.Read'):
         rw = base[: -len('.Read')] + '.ReadWrite'
         candidates |= {rw, f'{rw}.All'}
-    candidates |= {f'{family}.ReadWrite.All'}
+    if base.endswith(('.Read', '.ReadWrite')):
+        candidates |= {f'{family}.ReadWrite.All'}
     return bool(candidates & granted)
 
 
@@ -144,7 +146,11 @@ def resolve_microsoft_access(config: dict, spec: AccessSpec) -> MicrosoftAccess:
 
 
 EXCEL = AccessSpec(
-    scopes={'readonly': ['Files.Read'], 'write': ['Files.ReadWrite']},
+    # Graph's workbook API documents delegated Files.ReadWrite as the least
+    # privileged scope for EVERY endpoint, reads included (Files.Read is not
+    # accepted), so both tiers request it; 'readonly' is enforced node-side by
+    # require_write on the mutating tools.
+    scopes={'readonly': ['Files.ReadWrite'], 'write': ['Files.ReadWrite']},
     default='write',
 )
 WORD = AccessSpec(

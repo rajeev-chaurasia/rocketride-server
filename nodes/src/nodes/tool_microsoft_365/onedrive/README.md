@@ -15,8 +15,12 @@ config. Outputs are cleaned shapes (`id`, `name`, `size`, `webUrl`,
 Graph JSON.
 
 Items are addressed by either a drive-relative path (`'Reports/q3.pdf'`) or a
-drive item id — whichever the caller has on hand. A value containing `/` is
-treated as a path; anything else is treated as an item id.
+drive item id — whichever the caller has on hand. The rule (shared
+`looks_like_item_id()` in `client.py`): the literal `root`, or a value that is
+**15+ characters drawn only from `[A-Za-z0-9!]`** (Graph item ids look like
+`01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K`), is treated as an item id; anything else
+— including a bare root-level filename such as `report.pdf` — is treated as a
+path under the drive root.
 
 ## Configuration
 
@@ -46,8 +50,8 @@ treated as a path; anything else is treated as an item id.
   distribution lists and unresolvable addresses included. Fails closed: a
   lookup permission error is treated the same as a non-user address.
 - **`allowHardDelete`**: off by default. When off, `onedrive_permanently_delete`
-  is refused; `onedrive_trash` / `onedrive_restore` are always available as
-  the recoverable alternative.
+  is refused; `onedrive_trash` is always available as the recoverable
+  alternative (see the `onedrive_restore` limit below).
 
 ## Tools
 
@@ -72,9 +76,20 @@ Authenticate with either an **Entra app** (`microsoft.tenantId` /
 `microsoft.clientId` / `microsoft.clientSecret` / `microsoft.userPrincipalName`,
 client-credentials flow) or **user OAuth** (click sign-in to populate
 `microsoft.userToken`). See `microsoft-oauth.md` for the Entra app / consent
-setup shared by every Microsoft 365 tool service. The app must be granted the
-Graph `Files.Read` or `Files.ReadWrite` permission (application or delegated,
-matching the auth mode) with admin consent.
+setup shared by every Microsoft 365 tool service. The Graph permissions differ
+by auth mode:
+
+| Auth mode | Tier | Graph permission | Invite directory lookup (`allowPublicSharing` off) |
+|-----------|------|------------------|-----------------------------------------------------|
+| User OAuth (delegated) | `readonly` | `Files.Read` | `User.ReadBasic.All` (requested at sign-in; unavailable to personal accounts) |
+| User OAuth (delegated) | `write` | `Files.ReadWrite` | `User.ReadBasic.All` |
+| Entra app (application, admin consent) | `readonly` | `Files.Read.All` | `User.Read.All` |
+| Entra app (application, admin consent) | `write` | `Files.ReadWrite.All` | `User.Read.All` |
+
+Application permissions always require admin consent. The directory-lookup
+permission is only needed when `onedrive.allowPublicSharing` is off and the
+agent calls `onedrive_invite`; without it the invite fails closed with a hint
+naming the missing scope.
 
 ## Limits
 
@@ -83,13 +98,19 @@ matching the auth mode) with admin consent.
 - `onedrive_upload` chunks large files at 5 MiB per PUT to the resumable
   upload session, per Graph's recommended chunk size.
 - Rate limits are per Entra app / tenant; the node retries `429`/`5xx` with
-  exponential backoff.
+  exponential backoff (chunked-upload PUTs included — they are idempotent by
+  `Content-Range`).
+- `onedrive_restore` is **OneDrive Personal only** — Microsoft Graph does not
+  support `POST /drive/items/{id}/restore` for work or school accounts. The
+  tool refuses up front under Entra app (service) auth; a work/school user
+  OAuth account surfaces Graph's own error. Use the OneDrive web recycle bin
+  instead.
 
 ## Examples
 
 An agent uploads a report, then shares it with a named colleague:
 
-```
+```text
 onedrive_upload  { "path": "Reports/q3.pdf", "content_base64": "..." }
 onedrive_invite  { "item": "Reports/q3.pdf", "emails": ["alex@contoso.com"],
                     "role": "read" }

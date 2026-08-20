@@ -32,8 +32,13 @@ the need for sessions.
 
 | Tier | Scope | Capability |
 |------|-------|------------|
-| `readonly` | `Files.Read` | read worksheets, ranges, and tables only |
+| `readonly` | `Files.ReadWrite` | read worksheets, ranges, and tables only (writes refused node-side) |
 | `write` | `Files.ReadWrite` | full read/write (default) |
+
+Both tiers request `Files.ReadWrite`: Graph's workbook API documents delegated
+`Files.ReadWrite` as the least-privileged scope for every endpoint, reads
+included (`Files.Read` is not accepted), and lists application permissions as
+not supported.
 
 There are no destructive gate flags.
 
@@ -58,8 +63,10 @@ Authenticate with either an **Entra app** (`microsoft.tenantId` /
 client-credentials flow) or **user OAuth** (click sign-in to populate
 `microsoft.userToken`). See `microsoft-oauth.md` for the Entra app / consent
 setup shared by every Microsoft 365 tool service. The app must be granted the
-Graph `Files.Read` or `Files.ReadWrite` permission (application or delegated,
-matching the auth mode) with admin consent.
+delegated Graph `Files.ReadWrite` permission with admin consent — Graph's
+workbook API accepts only delegated `Files.ReadWrite` (not `Files.Read`) and
+documents application-only tokens as not supported, so user OAuth is the
+documented path.
 
 ## Limits
 

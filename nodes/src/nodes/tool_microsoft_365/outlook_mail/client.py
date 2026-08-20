@@ -41,6 +41,9 @@ request = functools.partial(graph_client.request, SERVICE)
 
 # Graph's ceiling this node applies to list_messages' $top.
 MAX_TOP = 100
+# Graph accepts inline fileAttachment bodies only *below* 3 MB; larger files
+# need an upload session (not supported by this tool).
+MAX_INLINE_ATTACHMENT_BYTES = 3 * 1024 * 1024
 
 # Odata relational/function hints: a query containing one of these is passed
 # through as a raw $filter expression instead of being wrapped as a $search
@@ -102,13 +105,18 @@ _BLOCK_BREAK_RE = _re.compile(r'</(?:p|div|li|tr|h[1-6])\s*>|<br\s*/?>', _re.IGN
 # body (tag-stripping alone only removes the <style>/<script> tags, not what's
 # between them).
 _STYLE_SCRIPT_RE = _re.compile(r'<(style|script)\b[^>]*>.*?</\1\s*>', _re.IGNORECASE | _re.DOTALL)
+# Likewise Outlook's conditional comments (``<!--[if gte mso 9]><xml>...
+# <![endif]-->``): _TAG_RE only eats up to the first ``>``, so the comment's
+# contents must be dropped as a block too.
+_COMMENT_RE = _re.compile(r'<!--.*?-->', _re.DOTALL)
 
 
 def html_to_text(content: str) -> str:
     """Pragmatically convert an HTML message body to readable plain text.
 
     Not a full HTML parser (no extra dependency pulled in for it): entire
-    ``<style>``/``<script>`` elements (tag and contents) are dropped first,
+    ``<style>``/``<script>`` elements and ``<!-- -->`` comments (including
+    their contents) are dropped first,
     then block-level closing tags and ``<br>`` become newlines, remaining
     tags are stripped, entities are unescaped, and blank-line runs are
     collapsed. Good enough to surface a readable body from Graph's
@@ -117,6 +125,7 @@ def html_to_text(content: str) -> str:
     if not content:
         return ''
     text = _STYLE_SCRIPT_RE.sub('', content)
+    text = _COMMENT_RE.sub('', text)
     text = _BLOCK_BREAK_RE.sub('\n', text)
     text = _TAG_RE.sub('', text)
     text = _html.unescape(text)

@@ -55,13 +55,15 @@ The agent discovers the `excel_*` tools and calls them per its instructions.
 | `microsoft.tenantId` / `microsoft.clientId` / `microsoft.clientSecret` | for `service` | Entra app registration credentials. |
 | `microsoft.userPrincipalName` | for `service` | Acting user's UPN — app-only calls target `/users/{upn}`. |
 | `microsoft.userToken` | for `user` | Populated by the sign-in button; broker-refreshed. |
-| `excel.access` | no | `readonly` or `write` (default). Resolved by the shared `EXCEL` access spec — scopes are never hand-entered. |
+| `excel.access` | no | `readonly` or `write` (default). Resolved by the shared `EXCEL` access spec — scopes are never hand-entered. Both tiers request delegated `Files.ReadWrite` (the only scope Graph's workbook API accepts, reads included); `readonly` refuses the mutating tools node-side. |
 
 ## Where to get your credentials
 
 Register an app in the **Entra admin center** (`entra.microsoft.com` → App
-registrations), grant it the Graph `Files.Read` or `Files.ReadWrite`
-application permission (or delegated, for user OAuth) and admin consent. See
+registrations), grant it the delegated Graph `Files.ReadWrite` permission and
+admin consent. Graph's workbook API accepts only delegated `Files.ReadWrite`
+(not `Files.Read`) and documents application-only tokens as not supported, so
+user OAuth is the documented path. See
 `microsoft-oauth.md` for the full setup shared by every Microsoft 365 tool
 service (excel, word, onedrive, outlook mail, outlook calendar).
 

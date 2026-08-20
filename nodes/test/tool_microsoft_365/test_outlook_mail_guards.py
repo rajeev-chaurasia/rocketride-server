@@ -38,11 +38,13 @@ module-level ``_require_modify`` helper, and send-class tools by
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import sys
 import types
 import urllib.error
+import urllib.parse
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from unittest import mock
@@ -289,3 +291,39 @@ class TestHtmlToTextStripsStyleAndScript:
         assert 'evil()' not in text
         assert 'keep' in text
         assert 'me' in text
+
+    def test_conditional_comment_contents_do_not_leak(self):
+        html = (
+            '<!--[if gte mso 9]><xml><o:OfficeDocumentSettings/></xml><![endif]--><p>visible</p><!-- plain\ncomment -->'
+        )
+        text = omc.html_to_text(html)
+        assert 'OfficeDocumentSettings' not in text
+        assert 'endif' not in text
+        assert 'comment' not in text
+        assert text == 'visible'
+
+
+class TestListMessagesSearchEscaping:
+    def test_double_quotes_in_query_are_backslash_escaped(self):
+        inst = _instance(tier='readonly')
+        with mock.patch.object(gc, '_urlopen', return_value=_resp({'value': []})) as u:
+            inst.outlook_mail_list_messages({'query': 'say "hi" now'})
+            url = urllib.parse.unquote_plus(u.call_args[0][0].full_url)
+            assert '$search="say \\"hi\\" now"' in url
+
+
+class TestAddAttachmentSizeGuard:
+    def test_attachment_at_or_above_3mb_is_rejected_before_request(self):
+        inst = _instance(tier='modify')
+        big = base64.b64encode(b'x' * omc.MAX_INLINE_ATTACHMENT_BYTES).decode()
+        with mock.patch.object(gc, '_urlopen') as u:
+            with pytest.raises(ValueError, match='3 MB'):
+                inst.outlook_mail_add_attachment({'message_id': 'm1', 'name': 'big.bin', 'content_base64': big})
+            u.assert_not_called()
+
+    def test_small_attachment_is_posted(self):
+        inst = _instance(tier='modify')
+        small = base64.b64encode(b'hello').decode()
+        with mock.patch.object(gc, '_urlopen', return_value=_resp({'id': 'a1', 'name': 'hi.txt'})) as u:
+            inst.outlook_mail_add_attachment({'message_id': 'm1', 'name': 'hi.txt', 'content_base64': small})
+            assert json.loads(u.call_args[0][0].data)['contentBytes'] == small

@@ -102,13 +102,15 @@ class IInstance(MicrosoftToolInstanceBase):
     def _require_individual_directory_user(self, email: str) -> None:
         """Fail closed unless ``email`` resolves to an individual directory user.
 
-        Looked up via ``GET /users/{email}?$select=id,userType`` — a directory
-        lookup under GRAPH_BASE, not the acting user's drive. Any failure
+        Looked up via ``GET /users/{email}?$select=id`` — a directory lookup
+        under GRAPH_BASE, not the acting user's drive. Only ``id`` is selected:
+        it is within the ``User.ReadBasic.All`` property set (``userType`` is
+        not, and would turn the lookup into a 403 under that scope). Any failure
         (404 = not a user, e.g. a distribution list; 403 = missing lookup
         permission; anything else) refuses the invite rather than guessing.
         """
         try:
-            request(self.IGlobal.auth, 'GET', f'/users/{_seg(email)}', params={'$select': 'id,userType'})
+            request(self.IGlobal.auth, 'GET', f'/users/{_seg(email)}', params={'$select': 'id'})
         except Exception as exc:
             is_permission_error = isinstance(exc, graph_client.GraphError) and 'access denied' in str(exc)
             hint = (
@@ -382,7 +384,11 @@ class IInstance(MicrosoftToolInstanceBase):
                 'item': {'type': 'string', 'description': 'Path or item id of the file/folder to trash'},
             },
         },
-        description="Move a file or folder to OneDrive's recycle bin (recoverable via onedrive_restore). Requires the write tier.",
+        description=(
+            "Move a file or folder to OneDrive's recycle bin. Requires the write tier. Recoverable via "
+            'onedrive_restore on OneDrive Personal only; on work/school accounts restore it from the recycle '
+            'bin in the OneDrive web UI.'
+        ),
     )
     def onedrive_trash(self, args: dict) -> dict:
         """Move an item to the recycle bin. Requires the write tier."""
@@ -400,13 +406,30 @@ class IInstance(MicrosoftToolInstanceBase):
                 'item': {'type': 'string', 'description': 'Item id of the trashed file/folder to restore'},
             },
         },
-        description='Restore a previously trashed file or folder back to its original location. Requires the write tier.',
+        description=(
+            'Restore a previously trashed file or folder back to its original location. Requires the write '
+            'tier. Graph only supports restore for OneDrive Personal (personal Microsoft account) drives: '
+            'it is unavailable under Entra app (service) auth and for work/school accounts.'
+        ),
     )
     def onedrive_restore(self, args: dict) -> dict:
-        """Restore a trashed item. Requires the write tier."""
+        """Restore a trashed item. Requires the write tier; OneDrive Personal only.
+
+        ``POST /drive/items/{id}/restore`` is documented by Microsoft as
+        available only for OneDrive Personal. App-only (service) auth can
+        never act on a personal account, so it is refused up front with a
+        clear message; a work/school user-OAuth account surfaces Graph's own
+        error instead, since the account type is not knowable from config.
+        """
         args = normalize_tool_input(args, tool_name='tool_onedrive')
         self.IGlobal.access.require_write('onedrive_restore')
         item = require_str(args, 'item', tool_name='onedrive_restore')
+        if self._base() != '/me':
+            raise graph_client.GraphError(
+                'onedrive_restore: Graph supports restoring trashed items only for OneDrive Personal '
+                '(personal Microsoft accounts); it is unavailable under Entra app (service) authentication. '
+                'Restore the item from the OneDrive recycle bin in the web UI instead.'
+            )
         data = request(self.IGlobal.auth, 'POST', f'{self._base()}/drive/items/{_seg(item)}/restore')
         return clean_item(data)
 

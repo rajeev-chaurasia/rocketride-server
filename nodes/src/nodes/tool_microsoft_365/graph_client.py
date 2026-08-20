@@ -79,6 +79,19 @@ _MS_TOKEN_HOSTS = frozenset({'login.microsoftonline.com'})
 
 # HTTP status codes worth retrying (rate-limit + transient server errors).
 _RETRY_STATUSES = {429, 500, 502, 503, 504}
+# 429 means Graph did not process the request, so it is safe to replay for any
+# method. 5xx may have been applied before the error surfaced, so only methods
+# whose replay is harmless are retried on 5xx (a replayed POST could send a
+# message or create an event/drive item twice).
+_IDEMPOTENT_METHODS = frozenset({'GET', 'HEAD', 'PUT', 'DELETE'})
+# Upper bound on a server-supplied Retry-After (seconds). Graph can send large
+# delta-seconds values under throttling; an unbounded sleep would pin the
+# calling thread for minutes.
+_MAX_RETRY_AFTER = 30.0
+# Hosts an absolute URL passed to request() may target. Absolute URLs arrive
+# from callers (e.g. a tool-supplied deltaLink) or from Graph payloads
+# (nextLink); the bearer token is attached, so only Graph's own host is allowed.
+_GRAPH_HOSTS = frozenset({'graph.microsoft.com'})
 
 
 class _AuthStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -285,7 +298,9 @@ class BrokerUserAuth(GraphAuth):
     def _is_expired(self) -> bool:
         if self._expiry_ms is None:
             return False
-        return (self._expiry_ms / 1000.0) < _time.time()
+        # Same 60s leeway as AppOnlyAuth: refresh before the token can expire
+        # mid-request, because request() fails fast on 401 instead of retrying.
+        return (self._expiry_ms / 1000.0) < (_time.time() + 60)
 
     def token(self) -> str:
         if self._token and not self._is_expired():
@@ -457,7 +472,12 @@ def request(
     ``binary=True`` returns the raw response bytes (download content);
     otherwise the JSON dict (or {} when the body is empty/whitespace). With 4
     attempts the sleeps are 1s, 2s, 4s (or a numeric Retry-After header when
-    present) — worst case ~7s before the final raise. ``extra_headers`` are
+    present, clamped to 0..30s) — worst case ~7s before the final raise. 429
+    is retried for every method (Graph did not process the request); 5xx is
+    retried only for idempotent methods (GET/HEAD/PUT/DELETE) because a POST
+    may already have been applied. An absolute ``path`` (deltaLink/nextLink)
+    must be https on a Graph host, else ValueError — the bearer token is never
+    sent to a foreign host. ``extra_headers`` are
     merged in after the defaults (e.g. an ``If-Match`` etag on a docx
     round-trip write), so a caller-supplied value can override
     Authorization/Content-Type when it needs to. 401/403 fail fast with an
@@ -466,7 +486,18 @@ def request(
     re-read and retry; other HTTP errors fail fast with the status and
     Graph error detail.
     """
-    url = path if path.startswith('http') else GRAPH_BASE + path
+    if path.startswith('http'):
+        parsed = urllib.parse.urlparse(path)
+        host = (parsed.hostname or '').lower()
+        if parsed.scheme != 'https' or host not in _GRAPH_HOSTS:
+            raise ValueError(
+                f'{svc.product}: refusing to send credentials to a non-Graph URL '
+                f'(expected https and one of: {", ".join(sorted(_GRAPH_HOSTS))}).'
+            )
+        url = path
+    else:
+        url = GRAPH_BASE + path
+    retry_5xx = method.upper() in _IDEMPOTENT_METHODS
     if params:
         url += ('&' if '?' in url else '?') + urllib.parse.urlencode(params)
     base_delay = 1.0
@@ -487,12 +518,12 @@ def request(
             return json.loads(raw.decode()) if raw.strip() else {}
         except urllib.error.HTTPError as exc:
             status = exc.code
-            if status in _RETRY_STATUSES and attempt < 3:
+            if status in _RETRY_STATUSES and attempt < 3 and (status == 429 or retry_5xx):
                 retry_after = exc.headers.get('Retry-After') if exc.headers else None
                 delay = base_delay * (2**attempt)
                 if retry_after:
                     try:
-                        delay = float(retry_after)
+                        delay = min(max(float(retry_after), 0.0), _MAX_RETRY_AFTER)
                     except ValueError:
                         # Graph may send an HTTP-date instead of a delta-seconds
                         # value; fall back to the exponential backoff delay
