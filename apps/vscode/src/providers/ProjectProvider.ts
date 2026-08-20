@@ -39,6 +39,7 @@ import type { LogSessionWebviewToHost } from './types/logTypes';
 
 const PREFS_KEY = 'rocketride.prefs';
 const LAYOUTS_KEY = 'rocketride.layouts';
+const GLOBAL_PREF_KEYS = new Set(['cloudCanvasPromptDismissed']);
 // workspaceState key prefix for the auto-backup of an untitled pipeline's
 // content. VS Code does not hot-exit-back-up a custom-editor untitled document,
 // so we persist it ourselves (keyed by the untitled URI) and restore it when
@@ -270,12 +271,62 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 		}
 	}
 
-	private updatePreferences(updatedPrefs: Record<string, unknown>): Promise<void> {
+	private getPreferences(): Record<string, unknown> {
+		const workspacePrefs = this.context.workspaceState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
+		const globalPrefs = this.context.globalState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
+		const prefs = { ...workspacePrefs };
+		for (const key of GLOBAL_PREF_KEYS) {
+			// globalState is authoritative, but a value left in workspaceState by an earlier
+			// build is honoured as a fallback so a prior "Don't show again" keeps applying.
+			if (Object.prototype.hasOwnProperty.call(globalPrefs, key)) {
+				prefs[key] = globalPrefs[key];
+			}
+		}
+		return prefs;
+	}
+
+	private broadcastPreferences(prefs: Record<string, unknown>, originatingWebview: vscode.Webview): void {
+		for (const editorState of this.editorStates.values()) {
+			const webview = editorState.webviewPanel.webview;
+			if (editorState.isReady && !editorState.isDisposed && webview && webview !== originatingWebview) {
+				webview.postMessage({ type: 'project:initialPrefs', prefs }).then(undefined, (err: unknown) => {
+					this.logger.error(`Failed to post initialPrefs to webview: ${err}`);
+				});
+			}
+		}
+	}
+
+	/** Merges preference updates; keys cannot currently be deleted through this path. */
+	private updatePreferences(updatedPrefs: Record<string, unknown>, originatingWebview: vscode.Webview): Promise<void> {
 		this.preferenceUpdateQueue = this.preferenceUpdateQueue
 			.then(async () => {
-				const storedPrefs = this.context.workspaceState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
-				const prefs = { ...storedPrefs, ...updatedPrefs };
-				await this.context.workspaceState.update(PREFS_KEY, prefs);
+				const workspacePrefs = this.context.workspaceState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
+				const globalPrefs = this.context.globalState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
+				// Webviews send their whole bag, so keep only keys whose value actually
+				// changed. Without this, every layout drag would rewrite global storage.
+				const workspaceUpdates: Record<string, unknown> = {};
+				const globalUpdates: Record<string, unknown> = {};
+				for (const [key, value] of Object.entries(updatedPrefs)) {
+					const isGlobal = GLOBAL_PREF_KEYS.has(key);
+					const current = isGlobal ? globalPrefs[key] : workspacePrefs[key];
+					if (current === value) continue;
+					if (isGlobal) globalUpdates[key] = value;
+					else workspaceUpdates[key] = value;
+				}
+
+				// Only touch a scope that actually has updates — most pref writes (layout,
+				// navigation mode) are workspace-only and should not rewrite global storage.
+				await Promise.all([
+					Object.keys(workspaceUpdates).length > 0 ? this.context.workspaceState.update(PREFS_KEY, { ...workspacePrefs, ...workspaceUpdates }) : Promise.resolve(),
+					Object.keys(globalUpdates).length > 0 ? this.context.globalState.update(PREFS_KEY, { ...globalPrefs, ...globalUpdates }) : Promise.resolve(),
+				]);
+
+				// Broadcast only the global-scoped changes. Workspace prefs (layout,
+				// navigation mode) are per-editor view state: propagating them would let one
+				// editor's stale full-bag write revert another editor's live UI.
+				if (Object.keys(globalUpdates).length > 0) {
+					this.broadcastPreferences(globalUpdates, originatingWebview);
+				}
 			})
 			.catch((err: unknown) => {
 				this.logger.error(`Failed to persist preferences: ${err}`);
@@ -579,7 +630,7 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 					// Load layout defaults + prefs
 					const layouts = this.context.workspaceState.get<Record<string, Record<string, unknown>>>(LAYOUTS_KEY) ?? {};
 					const layout = layouts[document.uri.toString()] ?? {};
-					const storedPrefs = this.context.workspaceState.get<Record<string, unknown>>(PREFS_KEY) ?? {};
+					const storedPrefs = this.getPreferences();
 					const cached = this.connectionManager.getCachedServices();
 					const client = this.connectionManager.getClient();
 					let envKeys: string[] | undefined;
@@ -708,7 +759,10 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 				}
 
 				case 'project:openCloudSetup': {
-					await vscode.commands.executeCommand('rocketride.page.settings.open', 'development', 'cloud');
+					// Focus the Development tab only. The prompt must not stage a connection-mode
+					// change the user never typed: `development.connectionMode` is workspace-global,
+					// and a later Save would tear down their running dev engine.
+					await vscode.commands.executeCommand('rocketride.page.settings.open', 'development');
 					break;
 				}
 
@@ -847,10 +901,10 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 					break;
 				}
 
-				// Prefs change — persist globally
+				// Prefs change — dismissal is global; other preferences remain workspace-scoped.
 				case 'project:prefsChange': {
-					if (data.prefs) {
-						await this.updatePreferences(data.prefs);
+					if (typeof data.prefs === 'object' && data.prefs !== null && !Array.isArray(data.prefs)) {
+						await this.updatePreferences(data.prefs, webview);
 					}
 					break;
 				}
@@ -1003,14 +1057,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			}
 		});
 
-		let wasVisible = webviewPanel.visible;
-		const viewStateSubscription = webviewPanel.onDidChangeViewState((event) => {
-			if (event.webviewPanel.visible && !wasVisible && editorState.isReady) {
-				webview.postMessage({ type: 'shell:viewActivated', viewId: document.uri.toString() });
-			}
-			wasVisible = event.webviewPanel.visible;
-		});
-
 		// Clean up when panel is disposed
 		webviewPanel.onDidDispose(async () => {
 			await this.stopMonitoring(webviewPanel);
@@ -1021,7 +1067,6 @@ export class ProjectProvider implements vscode.CustomTextEditorProvider {
 			this.editorStates.delete(webviewPanel);
 			changeDocumentSubscription.dispose();
 			saveDocumentSubscription.dispose();
-			viewStateSubscription.dispose();
 		});
 
 		// Start monitoring immediately if connected

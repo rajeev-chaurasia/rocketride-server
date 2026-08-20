@@ -47,10 +47,11 @@ import '../../styles/root.css';
 /** Available connection modes for dev/deploy targets. */
 export type ConnectionMode = 'cloud' | 'docker' | 'service' | 'onprem' | 'local';
 
-const CONNECTION_MODES: readonly ConnectionMode[] = ['cloud', 'docker', 'service', 'onprem', 'local'];
+const SETTINGS_TAB_IDS = ['development', 'deployment', 'pipeline', 'integrations'] as const;
+type SettingsTabId = typeof SETTINGS_TAB_IDS[number];
 
-function isConnectionMode(value: unknown): value is ConnectionMode {
-	return typeof value === 'string' && (CONNECTION_MODES as readonly string[]).includes(value);
+function isSettingsTabId(value: unknown): value is SettingsTabId {
+	return typeof value === 'string' && (SETTINGS_TAB_IDS as readonly string[]).includes(value);
 }
 
 /**
@@ -608,12 +609,9 @@ export const Settings: React.FC = () => {
 				}
 
 				case 'setFocus' as any: {
-					const { focus, connectionMode } = message as unknown as { focus?: unknown; connectionMode?: unknown };
-					if (focus !== 'development' && focus !== 'deployment') break;
+					const { focus } = message as unknown as { focus?: unknown };
+					if (!isSettingsTabId(focus)) break;
 					setActiveTab(focus);
-					if (isConnectionMode(connectionMode) && !dirty) {
-						handleSettingsChange({ [focus]: { connectionMode } } as Partial<SettingsData>);
-					}
 					break;
 				}
 

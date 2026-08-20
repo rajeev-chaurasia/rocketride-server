@@ -433,7 +433,8 @@ const ProjectWebview: React.FC = () => {
 				});
 				break;
 			case 'project:initialPrefs':
-				setPrefs(msg.prefs ?? {});
+				// Merge: the host broadcasts only the keys that changed, not the whole bag.
+				setPrefs((prev) => ({ ...prev, ...(msg.prefs ?? {}) }));
 				break;
 			case 'project:dirtyState':
 				setIsDirty(msg.isDirty);
