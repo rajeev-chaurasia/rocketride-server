@@ -13,7 +13,9 @@ cryptography>=46.0.7,<47
 # Pinned to cover GHSA-65pc-fj4g-8rjx (crafted input to idna.encode() can
 # bypass the CVE-2024-3651 fix), patched in 3.10.
 idna>=3.10
-requests
+# HTTPAdapter.get_connection_with_tls_context is required by tool_http_request
+# to pin validated DNS addresses and prevent DNS rebinding.
+requests>=2.32.3
 urllib3
 numpy
 httpx

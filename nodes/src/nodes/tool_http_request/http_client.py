@@ -52,6 +52,12 @@ MAX_TIMEOUT_SECONDS = 300
 
 ResolvedAddress = tuple[int, int, int, tuple]
 
+if not all(
+    hasattr(HTTPAdapter, method)
+    for method in ('get_connection_with_tls_context', 'build_connection_pool_key_attributes')
+):
+    raise RuntimeError('tool_http_request requires requests>=2.32.3 for safe DNS address pinning')
+
 
 class _PinnedConnectionMixin:
     """Open a socket only to addresses that passed SSRF validation."""

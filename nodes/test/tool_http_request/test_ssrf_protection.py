@@ -34,6 +34,12 @@ def _mock_dns(monkeypatch: pytest.MonkeyPatch, *addresses: str) -> Mock:
     return resolver
 
 
+def test_requests_exposes_secure_adapter_hook():
+    """The installed Requests API must support the pinned connection adapter."""
+    assert hasattr(http_client.HTTPAdapter, 'get_connection_with_tls_context')
+    assert hasattr(http_client.HTTPAdapter, 'build_connection_pool_key_attributes')
+
+
 @pytest.mark.parametrize(
     'address',
     [
