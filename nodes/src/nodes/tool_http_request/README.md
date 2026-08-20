@@ -20,7 +20,8 @@ Four security guardrails are enforced before every request:
   which allows all public URLs** (config validation emits a warning when the whitelist is empty).
 - **Network boundary**: loopback, private, link-local, shared, reserved, unspecified,
   and multicast destination addresses are blocked. Redirects are returned to the agent
-  as 3xx responses and are not followed automatically.
+  as 3xx responses and are not followed automatically. There is no private-network
+  override: localhost and internal API endpoints are intentionally unsupported.
 - **Rate limiting**: token-bucket limits per second and per minute, plus a concurrency
   cap. On by default (10/s, 100/min, 5 concurrent).
 
@@ -48,14 +49,22 @@ Four security guardrails are enforced before every request:
 
 The node ships one profile, **Default**, which sets `serverName` to `http`.
 
-Invalid whitelist regexes are skipped with a warning rather than failing the pipeline,
-so a typo in a pattern silently widens (or, if it was the only pattern, removes) the
-URL restriction; non-public network destinations remain blocked. Check the logs after
-editing the whitelist.
+Whitelist patterns are checked against the final URL after path parameters are resolved.
+Invalid, empty, or malformed whitelist entries fail configuration validation instead of
+silently removing the intended restriction. Regex matching starts at the beginning of
+the URL; add `$` when the entire URL must match.
+
+The node connects directly to the validated destination and does not use environment
+proxies or implicit `.netrc` credentials. `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE`
+remain supported for custom HTTPS certificate authorities. A caller-supplied `Host`
+header is rejected because it could route an allowlisted URL to a different virtual host.
+The network classifier requires Python `3.10.14+`, `3.11.9+`, `3.12.4+`, or `3.13+`
+and the transport is bounded to the audited urllib3 `2.7.x` line.
 
 Keep an outbound firewall or equivalent egress policy around the engine as a second
-boundary. It limits impact if application-level guardrails are bypassed or their behavior
-changes in a future release.
+boundary. RFC 6052 permits operator-chosen NAT64 prefixes that cannot be identified from
+an IPv6 address alone; the egress boundary must also block translated access to private
+networks.
 
 ---
 
@@ -90,8 +99,8 @@ is only applied when the corresponding advanced field is not also set.
 | Parameter      | Description                                                              |
 |----------------|---------------------------------------------------------------------------|
 | `query_params` | Key-value pairs appended to the URL as the query string                  |
-| `headers`      | Custom request headers                                                   |
-| `path_params`  | Replacements for `:name` placeholders in the URL (e.g. `{"id": "123"}` replaces `:id`) |
+| `headers`      | Custom request headers. `Host` cannot be overridden.                     |
+| `path_params`  | Replacements for `:name` placeholders in the URL path only (e.g. `{"id": "123"}` replaces `:id`) |
 | `timeout`      | Request timeout in seconds. Default `30`, capped at `300`.               |
 | `auth`         | Advanced auth config (see Authentication below). Prefer the shortcuts.   |
 | `body`         | Advanced body config (see Request bodies below). Prefer `body_json`.     |
@@ -112,7 +121,7 @@ is only applied when the corresponding advanced field is not also set.
 
 `json` is populated automatically when the response `Content-Type` contains `json` (or
 `javascript`) and the body parses; otherwise it is `null` and the raw text is in `body`.
-`elapsed_ms` is wall-clock request time in milliseconds.
+`elapsed_ms` is wall-clock request time, including DNS validation, in milliseconds.
 
 ---
 

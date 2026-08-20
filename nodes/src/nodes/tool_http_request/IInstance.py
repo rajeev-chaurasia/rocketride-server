@@ -35,7 +35,7 @@ import json
 
 from rocketlib import IInstanceBase, tool_function
 
-from .http_client import execute_request
+from .http_client import _canonicalize_url, _resolve_path_params, execute_request
 from .IGlobal import IGlobal
 
 
@@ -84,7 +84,7 @@ class IInstance(IInstanceBase):
                 },
                 'path_params': {
                     'type': 'object',
-                    'description': 'Path parameter replacements (e.g. {"id": "123"} replaces :id in the URL)',
+                    'description': 'Path-only parameter replacements (e.g. {"id": "123"} replaces :id in the URL path)',
                     'additionalProperties': {'type': 'string'},
                 },
                 'auth': {
@@ -151,8 +151,9 @@ class IInstance(IInstanceBase):
         # Expand convenience shortcuts into canonical form
         _normalize_shortcuts(args)
 
-        # Validate guardrails from config
-        self._validate_guardrails(args)
+        # Resolve path-only placeholders first so the whitelist sees the exact
+        # URL that will be sent.
+        resolved_url = self._validate_guardrails(args)
 
         # Enforce rate limits before executing the request
         rate_limiter = self.IGlobal.rate_limiter
@@ -161,10 +162,10 @@ class IInstance(IInstanceBase):
 
         try:
             return execute_request(
-                url=args.get('url', ''),
+                url=resolved_url,
                 method=args.get('method', 'GET'),
                 query_params=args.get('query_params'),
-                path_params=args.get('path_params'),
+                path_params=None,
                 headers=args.get('headers'),
                 auth=args.get('auth'),
                 body=args.get('body'),
@@ -194,8 +195,9 @@ class IInstance(IInstanceBase):
         url = args.get('url')
         if not url or not isinstance(url, str):
             raise ValueError('url is required and must be a non-empty string')
-        if self.IGlobal.url_patterns and not any(p.search(url) for p in self.IGlobal.url_patterns):
-            raise ValueError(f'URL "{url}" does not match any allowed URL pattern.')
+        resolved_url = _canonicalize_url(_resolve_path_params(url, args.get('path_params')))
+        if self.IGlobal.url_patterns and not any(p.match(resolved_url) for p in self.IGlobal.url_patterns):
+            raise ValueError(f'URL "{resolved_url}" does not match any allowed URL pattern.')
 
         auth = args.get('auth')
         if auth is not None:
@@ -234,6 +236,8 @@ class IInstance(IInstanceBase):
                     raise ValueError(
                         f'body.raw.content_type must be one of {sorted(valid_raw_content_types)}; got {ct!r}'
                     )
+
+        return resolved_url
 
 
 def _normalize_shortcuts(args):

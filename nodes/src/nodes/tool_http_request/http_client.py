@@ -31,14 +31,16 @@ params) and returns a structured response dict.  Uses the ``requests`` library.
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import socket
 import sys
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import requests
+import urllib3
 from requests.auth import HTTPBasicAuth
 from requests.adapters import HTTPAdapter
 from requests.exceptions import ProxyError
@@ -46,17 +48,63 @@ from requests.utils import select_proxy
 from urllib3.connection import HTTPConnection, HTTPSConnection
 from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
+from urllib3.poolmanager import SSL_KEYWORDS
 
 DEFAULT_TIMEOUT_SECONDS = 30
 MAX_TIMEOUT_SECONDS = 300
 
 ResolvedAddress = tuple[int, int, int, tuple]
 
+_NAT64_WELL_KNOWN_NETWORK = ipaddress.IPv6Network('64:ff9b::/96')
+_NAT64_LOCAL_USE_NETWORK = ipaddress.IPv6Network('64:ff9b:1::/48')
+_MINIMUM_SAFE_IPADDRESS_PATCH = {
+    (3, 10): 14,
+    (3, 11): 9,
+    (3, 12): 4,
+}
+
 if not all(
     hasattr(HTTPAdapter, method)
     for method in ('get_connection_with_tls_context', 'build_connection_pool_key_attributes')
 ):
     raise RuntimeError('tool_http_request requires requests>=2.32.3 for safe DNS address pinning')
+
+if not (
+    HTTPConnectionPool.ConnectionCls is HTTPConnection
+    and HTTPSConnectionPool.ConnectionCls is HTTPSConnection
+    and hasattr(HTTPConnection, '_new_conn')
+    and hasattr(HTTPSConnection, '_new_conn')
+):
+    raise RuntimeError('tool_http_request requires the supported urllib3 pinned-connection hooks')
+
+
+def _has_supported_urllib3_runtime(version: str) -> bool:
+    """Return whether urllib3 is on the audited minor line."""
+    try:
+        major, minor = (int(part) for part in version.split('.')[:2])
+    except (TypeError, ValueError):
+        return False
+    return (major, minor) == (2, 7)
+
+
+if not _has_supported_urllib3_runtime(urllib3.__version__):
+    raise RuntimeError('tool_http_request requires urllib3>=2.7,<2.8 for safe DNS address pinning')
+
+
+def _has_safe_ipaddress_runtime(version_info) -> bool:
+    """Return whether CPython contains the patched special-address tables."""
+    major, minor, patch = version_info[:3]
+    if major != 3 or minor < 10:
+        return False
+    minimum_patch = _MINIMUM_SAFE_IPADDRESS_PATCH.get((major, minor))
+    return minimum_patch is None or patch >= minimum_patch
+
+
+if not _has_safe_ipaddress_runtime(sys.version_info):
+    raise RuntimeError(
+        'tool_http_request requires a Python security patch level with corrected IP address classification: '
+        'Python >=3.10.14, >=3.11.9, >=3.12.4, or >=3.13'
+    )
 
 
 class _PinnedConnectionMixin:
@@ -128,6 +176,12 @@ class _PinnedAddressAdapter(HTTPAdapter):
 
         host_params, pool_kwargs = self.build_connection_pool_key_attributes(request, verify, cert)
         scheme = host_params.pop('scheme')
+        if scheme != 'https':
+            # Requests includes TLS-only pool options even for HTTP. urllib3's
+            # PoolManager normally strips them, but this adapter constructs the
+            # pinned pool directly and must mirror that behavior.
+            for keyword in SSL_KEYWORDS:
+                pool_kwargs.pop(keyword, None)
         pool_class = _PinnedHTTPSConnectionPool if scheme == 'https' else _PinnedHTTPConnectionPool
         pool = pool_class(
             **host_params,
@@ -161,7 +215,8 @@ def execute_request(
 
     Raises ``requests.RequestException`` on transport-level failures.
     """
-    resolved_url = _resolve_path_params(url, path_params)
+    start = time.monotonic()
+    resolved_url = _canonicalize_url(_resolve_path_params(url, path_params))
     validated_addresses = _validate_public_url(resolved_url)
 
     req_headers = dict(headers or {})
@@ -170,6 +225,9 @@ def execute_request(
 
     _apply_auth(auth, req_headers, extra_params, req_auth_out := [None])
     req_auth = req_auth_out[0]
+
+    if any(name.lower() == 'host' for name in req_headers):
+        raise ValueError('The Host header is derived from the validated URL and cannot be overridden')
 
     merged_params = dict(query_params or {})
     merged_params.update(extra_params)
@@ -192,7 +250,6 @@ def execute_request(
     else:
         req_kwargs['timeout'] = DEFAULT_TIMEOUT_SECONDS
 
-    start = time.monotonic()
     resp = _request_with_validated_addresses(req_kwargs, validated_addresses)
     elapsed_ms = round((time.monotonic() - start) * 1000)
 
@@ -209,6 +266,9 @@ def _request_with_validated_addresses(req_kwargs: Dict[str, Any], addresses: tup
     scheme = urlsplit(req_kwargs['url']).scheme.lower()
     with requests.Session() as session:
         session.trust_env = False
+        # Preserve the established Requests custom-CA behavior without
+        # re-enabling environment proxies or implicit .netrc credentials.
+        session.verify = os.environ.get('REQUESTS_CA_BUNDLE') or os.environ.get('CURL_CA_BUNDLE') or True
         session.mount(f'{scheme}://', _PinnedAddressAdapter(addresses))
         return session.request(**req_kwargs)
 
@@ -220,6 +280,9 @@ def _validate_public_url(url: str) -> tuple[ResolvedAddress, ...]:
         raise ValueError('URL scheme must be http or https')
     if not parsed.hostname:
         raise ValueError('URL must include a hostname')
+
+    if _url_has_dot_segments(url):
+        raise ValueError('URL path must not contain dot segments')
 
     try:
         parsed_port = parsed.port
@@ -264,7 +327,7 @@ def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -
         return False
     if isinstance(address, ipaddress.IPv4Address):
         return True
-    if address.is_site_local or address in ipaddress.IPv6Network('::/96'):
+    if address.is_site_local or address in ipaddress.IPv6Network('::/96') or address in _NAT64_LOCAL_USE_NETWORK:
         return False
 
     embedded = []
@@ -274,22 +337,57 @@ def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -
         embedded.append(address.sixtofour)
     if address.teredo is not None:
         embedded.extend(address.teredo)
+    if address in _NAT64_WELL_KNOWN_NETWORK:
+        embedded.append(ipaddress.IPv4Address(address.packed[-4:]))
     return all(item.is_global and not item.is_multicast for item in embedded)
 
 
+def _url_has_dot_segments(url: str) -> bool:
+    """Detect traversal segments; fail closed on excessive encoding layers."""
+    path = urlsplit(url).path
+    for _decode_attempt in range(5):
+        normalized_separators = path.replace('\\', '/')
+        if any(segment in {'.', '..'} for segment in normalized_separators.split('/')):
+            return True
+        decoded = unquote(path)
+        if decoded == path:
+            return False
+        path = decoded
+    return True
+
+
+def _canonicalize_url(url: str) -> str:
+    """Return the stable URL form Requests will put on the wire."""
+    # Fragments are client-side only and HTTPAdapter removes them from the
+    # request target, so they must not influence whitelist matching.
+    prepared_url = urlsplit(url)._replace(fragment='').geturl()
+    for _attempt in range(3):
+        if _url_has_dot_segments(prepared_url):
+            raise ValueError('URL path must not contain dot segments')
+        normalized_url = requests.Request('GET', prepared_url).prepare().url
+        if normalized_url == prepared_url:
+            return normalized_url
+        prepared_url = normalized_url
+    raise ValueError('URL normalization did not stabilize')
+
+
 def _resolve_path_params(url: str, path_params: Optional[Dict[str, str]]) -> str:
-    """Replace ``:name`` placeholders in the URL with values from *path_params*."""
+    """Replace ``:name`` placeholders in the URL path with literal segments."""
     if not path_params:
         return url
-    resolved = url
+    parsed = urlsplit(url)
+    resolved_path = parsed.path
     for key, value in path_params.items():
+        if str(value) in {'.', '..'}:
+            raise ValueError('Path parameter values cannot be dot segments')
         # Encode (safe='') so the value stays one path segment and cannot slip
-        # past the URL allowlist, which is checked against the unresolved
-        # template. The function replacement keeps it literal (no re.sub
-        # backslash/group-ref interpretation, e.g. '\1' -> re.error).
+        # past the final URL allowlist. The function replacement keeps it
+        # literal (no re.sub backslash/group-ref interpretation, e.g. '\1' ->
+        # re.error). Only the parsed path is eligible for substitution, so a
+        # parameter cannot replace the URL's scheme, hostname, port, or query.
         replacement = quote(str(value), safe='')
-        resolved = re.sub(rf':{re.escape(key)}\b', lambda _m, r=replacement: r, resolved)
-    return resolved
+        resolved_path = re.sub(rf':{re.escape(key)}\b', lambda _m, r=replacement: r, resolved_path)
+    return parsed._replace(path=resolved_path).geturl()
 
 
 def _apply_auth(

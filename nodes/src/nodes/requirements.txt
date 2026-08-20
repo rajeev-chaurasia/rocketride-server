@@ -15,8 +15,10 @@ cryptography>=46.0.7,<47
 idna>=3.10
 # HTTPAdapter.get_connection_with_tls_context is required by tool_http_request
 # to pin validated DNS addresses and prevent DNS rebinding.
-requests>=2.32.3
-urllib3
+requests>=2.32.3,<3
+# The pinned-address adapter depends on urllib3 2.7 connection hooks. Keep the
+# minor line bounded so an internal transport change cannot silently bypass it.
+urllib3>=2.7,<2.8
 numpy
 httpx
 fastapi

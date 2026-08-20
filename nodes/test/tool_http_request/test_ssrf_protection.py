@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import socket
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -38,6 +40,42 @@ def test_requests_exposes_secure_adapter_hook():
     """The installed Requests API must support the pinned connection adapter."""
     assert hasattr(http_client.HTTPAdapter, 'get_connection_with_tls_context')
     assert hasattr(http_client.HTTPAdapter, 'build_connection_pool_key_attributes')
+    assert http_client.HTTPConnectionPool.ConnectionCls is http_client.HTTPConnection
+    assert http_client.HTTPSConnectionPool.ConnectionCls is http_client.HTTPSConnection
+    assert hasattr(http_client.HTTPConnection, '_new_conn')
+    assert hasattr(http_client.HTTPSConnection, '_new_conn')
+
+
+@pytest.mark.parametrize(
+    'version,expected',
+    [
+        ('2.6.9', False),
+        ('2.7.0', True),
+        ('2.7.4', True),
+        ('2.8.0', False),
+        ('invalid', False),
+    ],
+)
+def test_urllib3_runtime_is_bounded_to_audited_minor(version, expected):
+    """Unknown urllib3 transport internals fail closed instead of bypassing the pin."""
+    assert http_client._has_supported_urllib3_runtime(version) is expected
+
+
+@pytest.mark.parametrize(
+    'version_info,expected',
+    [
+        ((3, 10, 13), False),
+        ((3, 10, 14), True),
+        ((3, 11, 8), False),
+        ((3, 11, 9), True),
+        ((3, 12, 3), False),
+        ((3, 12, 4), True),
+        ((3, 13, 0), True),
+    ],
+)
+def test_ipaddress_runtime_security_patch_floor(version_info, expected):
+    """Known-vulnerable Python patch levels fail closed before URL validation."""
+    assert http_client._has_safe_ipaddress_runtime(version_info) is expected
 
 
 @pytest.mark.parametrize(
@@ -60,6 +98,10 @@ def test_requests_exposes_secure_adapter_hook():
         '::7f00:1',
         '::ffff:127.0.0.1',
         '2002:7f00:1::',
+        '64:ff9b::7f00:1',
+        '64:ff9b::a9fe:a9fe',
+        '64:ff9b:1::7f00:1',
+        '64:ff9b:1::808:808',
         'ff02::1',
     ],
 )
@@ -96,7 +138,14 @@ def test_validate_public_url_rejects_disguised_loopback_hosts(monkeypatch, url):
         http_client._validate_public_url(url)
 
 
-@pytest.mark.parametrize('address', ['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'])
+@pytest.mark.parametrize(
+    'address',
+    [
+        '93.184.216.34',
+        '2606:2800:220:1:248:1893:25c8:1946',
+        '64:ff9b::808:808',
+    ],
+)
 def test_validate_public_url_allows_public_addresses(monkeypatch, address):
     """Ordinary public IPv4 and IPv6 destinations remain usable."""
     resolver = _mock_dns(monkeypatch, address)
@@ -120,6 +169,11 @@ def test_validate_public_url_allows_public_addresses(monkeypatch, address):
         ('https:///missing-host', 'hostname'),
         ('https://service.example:invalid/data', 'port'),
         ('https://service.example:0/data', 'port'),
+        ('https://service.example/public/../admin', 'dot segments'),
+        ('https://service.example/public/%2e%2e/admin', 'dot segments'),
+        ('https://service.example/public/%252e%252e/admin', 'dot segments'),
+        ('https://service.example/public/%2e%2e%5cadmin', 'dot segments'),
+        ('https://service.example/public/%25252525252541/admin', 'dot segments'),
     ],
 )
 def test_validate_public_url_rejects_malformed_or_unsupported_urls(url, error):
@@ -213,6 +267,58 @@ def test_pinned_adapter_keeps_original_https_hostname():
     adapter.close()
 
 
+def test_pinned_adapter_builds_plain_http_connection_without_tls_options():
+    """TLS-only kwargs never reach urllib3's plain HTTP connection class."""
+    addresses = ((socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, ('93.184.216.34', 80)),)
+    adapter = http_client._PinnedAddressAdapter(addresses)
+    request = http_client.requests.Request('GET', 'http://service.example/data').prepare()
+
+    pool = adapter.get_connection_with_tls_context(request, verify=True, proxies={})
+    connection = pool._new_conn()
+
+    assert isinstance(pool, http_client._PinnedHTTPConnectionPool)
+    assert isinstance(connection, http_client._PinnedHTTPConnection)
+    assert not set(http_client.SSL_KEYWORDS).intersection(pool.conn_kw)
+    adapter.close()
+
+
+def test_execute_plain_http_request_through_pinned_transport(monkeypatch):
+    """A real HTTP exchange uses the pinned address and keeps the URL hostname."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.server.received_host = self.headers['Host']
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'pinned transport works')
+
+        def log_message(self, _format, *_args):
+            pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    addresses = ((socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, ('127.0.0.1', port)),)
+    monkeypatch.setattr(http_client, '_validate_public_url', Mock(return_value=addresses))
+
+    try:
+        result = http_client.execute_request(
+            url=f'http://service.example:{port}/data',
+            method='GET',
+            timeout=2,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result['status_code'] == 200
+    assert result['body'] == 'pinned transport works'
+    assert server.received_host == f'service.example:{port}'
+
+
 def test_pinned_adapter_rejects_explicit_proxy():
     """A proxy cannot take over destination resolution after validation."""
     addresses = ((socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, ('93.184.216.34', 443)),)
@@ -248,6 +354,46 @@ def test_pinned_transport_ignores_environment_proxies(monkeypatch):
     session.mount.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    'environment,expected',
+    [
+        ({}, True),
+        ({'REQUESTS_CA_BUNDLE': '/custom/requests-ca.pem'}, '/custom/requests-ca.pem'),
+        ({'CURL_CA_BUNDLE': '/custom/curl-ca.pem'}, '/custom/curl-ca.pem'),
+        (
+            {
+                'REQUESTS_CA_BUNDLE': '/custom/requests-ca.pem',
+                'CURL_CA_BUNDLE': '/custom/curl-ca.pem',
+            },
+            '/custom/requests-ca.pem',
+        ),
+    ],
+)
+def test_pinned_transport_preserves_custom_ca_bundle(monkeypatch, environment, expected):
+    """Custom CA files remain usable without re-enabling proxies or netrc."""
+    monkeypatch.delenv('REQUESTS_CA_BUNDLE', raising=False)
+    monkeypatch.delenv('CURL_CA_BUNDLE', raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    session = Mock()
+    session.trust_env = True
+    session.verify = True
+    session.__enter__ = Mock(return_value=session)
+    session.__exit__ = Mock(return_value=False)
+    session.request = Mock(return_value=Mock())
+    monkeypatch.setattr(http_client.requests, 'Session', Mock(return_value=session))
+    addresses = ((socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, ('93.184.216.34', 443)),)
+
+    http_client._request_with_validated_addresses(
+        {'url': 'https://service.example/data', 'method': 'GET'},
+        addresses,
+    )
+
+    assert session.trust_env is False
+    assert session.verify == expected
+
+
 def test_execute_request_blocks_private_destination_before_network(monkeypatch):
     """A direct request to an unsafe destination never reaches requests."""
     _mock_dns(monkeypatch, '169.254.169.254')
@@ -256,6 +402,31 @@ def test_execute_request_blocks_private_destination_before_network(monkeypatch):
 
     with pytest.raises(ValueError, match='non-public network address'):
         http_client.execute_request(url='http://169.254.169.254/latest/meta-data/', method='GET')
+
+    request.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    'headers,auth',
+    [
+        ({'Host': 'internal.example'}, None),
+        ({'hOsT': 'internal.example'}, None),
+        (None, {'type': 'api_key', 'api_key': {'key': 'Host', 'value': 'internal.example'}}),
+    ],
+)
+def test_execute_request_rejects_host_header_override(monkeypatch, headers, auth):
+    """Callers cannot route an allowlisted URL to a different virtual host."""
+    _mock_dns(monkeypatch, '93.184.216.34')
+    request = Mock()
+    monkeypatch.setattr(http_client, '_request_with_validated_addresses', request)
+
+    with pytest.raises(ValueError, match='Host header'):
+        http_client.execute_request(
+            url='https://service.example/data',
+            method='GET',
+            headers=headers,
+            auth=auth,
+        )
 
     request.assert_not_called()
 
@@ -289,11 +460,26 @@ def test_execute_request_validates_path_resolved_url(monkeypatch):
     http_client.execute_request(
         url='https://service.example/users/:id',
         method='GET',
-        path_params={'id': '../admin'},
+        path_params={'id': 'team/admin'},
     )
 
-    assert request.call_args.args[0]['url'] == 'https://service.example/users/..%2Fadmin'
+    assert request.call_args.args[0]['url'] == 'https://service.example/users/team%2Fadmin'
     assert request.call_args.args[0]['allow_redirects'] is False
+
+
+def test_execute_request_rejects_encoded_path_param_traversal(monkeypatch):
+    """Encoded separators cannot hide a dot segment until Requests prepares the URL."""
+    request = Mock()
+    monkeypatch.setattr(http_client, '_request_with_validated_addresses', request)
+
+    with pytest.raises(ValueError, match='dot segments'):
+        http_client.execute_request(
+            url='https://service.example/users/:id/profile',
+            method='GET',
+            path_params={'id': '../admin'},
+        )
+
+    request.assert_not_called()
 
 
 def test_execute_request_query_value_cannot_change_destination(monkeypatch):
