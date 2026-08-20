@@ -289,6 +289,29 @@ function makeCleanStagingAction() {
 	};
 }
 
+function makeTestAction() {
+	return {
+		description: 'Testing vscode',
+		run: async (ctx, task) => {
+			const testFiles = (await glob('src/test/*.test.ts', { cwd: APP_ROOT, nodir: true }))
+				// extension.test.ts requires the real extension-host-only `vscode` module.
+				// Compare basenames: glob yields backslash-separated paths on Windows.
+				.filter((file) => path.basename(file) !== 'extension.test.ts')
+				.sort();
+
+			if (testFiles.length === 0) {
+				task.output = 'No vscode test files found';
+				return;
+			}
+
+			// The VS Code package has no package scripts or test dependencies of its own;
+			// resolve the same workspace-installed tsx loader used by shared:test.
+			const tsxLoader = require.resolve('tsx', { paths: [path.join(PROJECT_ROOT, 'apps', 'shared')] });
+			await execCommand('node', ['--import', tsxLoader, '--test', '--test-reporter=spec', ...testFiles], { task, cwd: APP_ROOT });
+		},
+	};
+}
+
 // =============================================================================
 // Module Definition
 // =============================================================================
@@ -309,6 +332,7 @@ module.exports = {
 		{ name: 'vscode:stage-files', action: makeStageFilesAction },
 		{ name: 'vscode:package-vsix', action: makePackageVsixAction },
 		{ name: 'vscode:clean-staging', action: makeCleanStagingAction },
+		{ name: 'vscode:test', action: makeTestAction },
 
 		// Public actions (have descriptions)
 		{

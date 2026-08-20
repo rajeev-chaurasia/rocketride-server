@@ -63,3 +63,12 @@ test('cloud connection is not configured for non-cloud modes', () => {
 		}), false);
 	}
 });
+
+// The loop above pins deployment to null, so it cannot catch a check that tests
+// "deployment is set" instead of "deployment is cloud". This is the shape that would.
+test('cloud connection is not configured when both groups are set but neither is cloud', () => {
+	assert.equal(isCloudConnectionConfigured({
+		development: { connectionMode: 'local' },
+		deployment: { connectionMode: 'onprem' },
+	}), false);
+});
