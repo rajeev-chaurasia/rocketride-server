@@ -27,6 +27,7 @@
  * RocketRide extension for Visual Studio Code.
  */
 const path = require('path');
+const { pathToFileURL } = require('url');
 const { glob } = require('glob');
 const { execCommand, removeDirs, removeMatching, PROJECT_ROOT, BUILD_ROOT, DIST_ROOT, hasSourceChanged, saveSourceHash, setState, exists, copyFile, mkdir, rm, readFile, writeFile, syncDir } = require('../../../scripts/lib');
 
@@ -306,7 +307,9 @@ function makeTestAction() {
 
 			// The VS Code package has no package scripts or test dependencies of its own;
 			// resolve the same workspace-installed tsx loader used by shared:test.
-			const tsxLoader = require.resolve('tsx', { paths: [path.join(PROJECT_ROOT, 'apps', 'shared')] });
+			// `--import` takes a URL: a bare Windows path (D:\...) is rejected by the ESM
+			// loader as an unsupported 'd:' protocol, so pass a file:// URL on every platform.
+			const tsxLoader = pathToFileURL(require.resolve('tsx', { paths: [path.join(PROJECT_ROOT, 'apps', 'shared')] })).href;
 			await execCommand('node', ['--import', tsxLoader, '--test', '--test-reporter=spec', ...testFiles], { task, cwd: APP_ROOT });
 		},
 	};
