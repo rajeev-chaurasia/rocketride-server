@@ -53,13 +53,24 @@ function makeSyncAiAction() {
     return {
         run: async (ctx, task) => {
             task.output = 'Scanning for changes...';
-            // node_modules must never reach dist/server: dev installs inside src
-            // (e.g. modules/mcp/apps) carry pnpm symlinks that copyfile cannot
-            // handle (ENOTSUP), and runtime JS deps ship bundled, not raw.
             const stats = await syncDir(SRC_DIR, DIST_DIR, {
                 mirror: false,
                 package: true,
-                ignore: ['**/__pycache__/**', '**/node_modules/**'],
+                // The mcp-widgets vite workspace lives inside the module
+                // (modules/mcp/apps); only its built dist/ belongs in the
+                // server dist — never the toolchain, sources, or node_modules.
+                // node_modules is excluded everywhere, not just there: dev
+                // installs inside src carry pnpm symlinks that copyfile cannot
+                // handle (ENOTSUP), and runtime JS deps ship bundled, not raw.
+                ignore: [
+                    '**/__pycache__/**',
+                    '**/node_modules/**',
+                    'modules/mcp/apps/src/**',
+                    'modules/mcp/apps/scripts/**',
+                    'modules/mcp/apps/package.json',
+                    'modules/mcp/apps/tsconfig.json',
+                    'modules/mcp/apps/vite.config.ts',
+                ],
             });
             task.output = formatSyncStats(stats);
         }
