@@ -54,8 +54,8 @@ URL restriction; non-public network destinations remain blocked. Check the logs 
 editing the whitelist.
 
 Keep an outbound firewall or equivalent egress policy around the engine as a second
-boundary. Application-level DNS checks cannot prevent every DNS-rebinding or proxy-resolver
-race, where a hostname resolves differently between validation and connection.
+boundary. It limits impact if application-level guardrails are bypassed or their behavior
+changes in a future release.
 
 ---
 

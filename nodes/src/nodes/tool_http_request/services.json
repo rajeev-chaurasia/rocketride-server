@@ -9,7 +9,7 @@
 	"prefix": "http",
 	"icon": "http.svg",
 	"documentation": "https://docs.rocketride.org",
-	"description": ["Makes HTTP requests to public API endpoints, like curl for agents.", "The agent provides the full request (method, URL, headers, body, auth).", "The node blocks non-public network destinations and automatic redirects, then enforces URL patterns and enabled HTTP methods."],
+	"description": ["Makes HTTP requests to public API endpoints, like curl for agents.", "The agent provides the full request (method, URL, headers, body, auth).", "The node blocks non-public network destinations, returns 3xx responses without following them automatically, and enforces URL patterns and enabled HTTP methods."],
 	"tile": ["Tool: ${parameters.http_request.serverName}.http_request"],
 	"lanes": {},
 	"preconfig": {

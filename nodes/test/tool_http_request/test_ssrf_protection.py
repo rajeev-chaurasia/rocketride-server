@@ -148,11 +148,105 @@ def test_validate_public_url_rejects_invalid_resolver_address(monkeypatch):
         http_client._validate_public_url('https://service.example/data')
 
 
+def test_pinned_connection_reuses_validated_dns_address(monkeypatch):
+    """A later private DNS answer cannot replace the public address that was validated."""
+    resolver = Mock(
+        side_effect=[
+            [_dns_result('93.184.216.34')],
+            [_dns_result('127.0.0.1')],
+        ]
+    )
+    monkeypatch.setattr(http_client.socket, 'getaddrinfo', resolver)
+    validated = http_client._validate_public_url('https://service.example/data')
+
+    class FakeSocket:
+        def __init__(self):
+            self.connected_to = None
+
+        def setsockopt(self, *_args):
+            pass
+
+        def settimeout(self, _timeout):
+            pass
+
+        def bind(self, _source_address):
+            pass
+
+        def connect(self, sockaddr):
+            self.connected_to = sockaddr
+
+        def close(self):
+            pass
+
+    fake_socket = FakeSocket()
+    monkeypatch.setattr(http_client.socket, 'socket', Mock(return_value=fake_socket))
+    connection = http_client._PinnedHTTPSConnection(
+        'service.example',
+        443,
+        timeout=1,
+        validated_addresses=validated,
+    )
+
+    assert connection._new_conn() is fake_socket
+    assert resolver.call_count == 1
+    assert fake_socket.connected_to == ('93.184.216.34', 443)
+    assert connection.host == 'service.example'
+
+
+def test_pinned_adapter_keeps_original_https_hostname():
+    """The pinned pool retains the original host for Host, SNI, and certificate verification."""
+    addresses = ((socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, ('93.184.216.34', 443)),)
+    adapter = http_client._PinnedAddressAdapter(addresses)
+    request = http_client.requests.Request('GET', 'https://service.example/data').prepare()
+
+    pool = adapter.get_connection_with_tls_context(request, verify=True, proxies={})
+
+    assert isinstance(pool, http_client._PinnedHTTPSConnectionPool)
+    assert pool.host == 'service.example'
+    assert pool.conn_kw['validated_addresses'] == addresses
+    adapter.close()
+
+
+def test_pinned_adapter_rejects_explicit_proxy():
+    """A proxy cannot take over destination resolution after validation."""
+    addresses = ((socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, ('93.184.216.34', 443)),)
+    adapter = http_client._PinnedAddressAdapter(addresses)
+    request = http_client.requests.Request('GET', 'https://service.example/data').prepare()
+
+    with pytest.raises(http_client.ProxyError, match='Proxies are not supported'):
+        adapter.get_connection_with_tls_context(
+            request,
+            verify=True,
+            proxies={'https': 'http://proxy.example:8080'},
+        )
+
+    adapter.close()
+
+
+def test_pinned_transport_ignores_environment_proxies(monkeypatch):
+    """Environment proxy settings cannot move DNS and connection control outside the node."""
+    session = Mock()
+    session.trust_env = True
+    session.__enter__ = Mock(return_value=session)
+    session.__exit__ = Mock(return_value=False)
+    session.request = Mock(return_value=Mock())
+    monkeypatch.setattr(http_client.requests, 'Session', Mock(return_value=session))
+    addresses = ((socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, ('93.184.216.34', 443)),)
+
+    http_client._request_with_validated_addresses(
+        {'url': 'https://service.example/data', 'method': 'GET'},
+        addresses,
+    )
+
+    assert session.trust_env is False
+    session.mount.assert_called_once()
+
+
 def test_execute_request_blocks_private_destination_before_network(monkeypatch):
     """A direct request to an unsafe destination never reaches requests."""
     _mock_dns(monkeypatch, '169.254.169.254')
     request = Mock()
-    monkeypatch.setattr(http_client.requests, 'request', request)
+    monkeypatch.setattr(http_client, '_request_with_validated_addresses', request)
 
     with pytest.raises(ValueError, match='non-public network address'):
         http_client.execute_request(url='http://169.254.169.254/latest/meta-data/', method='GET')
@@ -171,12 +265,12 @@ def test_execute_request_disables_automatic_redirects(monkeypatch, status_code):
         text='',
     )
     request = Mock(return_value=response)
-    monkeypatch.setattr(http_client.requests, 'request', request)
+    monkeypatch.setattr(http_client, '_request_with_validated_addresses', request)
 
     result = http_client.execute_request(url='https://service.example/redirect', method='GET')
 
     assert result['status_code'] == status_code
-    assert request.call_args.kwargs['allow_redirects'] is False
+    assert request.call_args.args[0]['allow_redirects'] is False
 
 
 def test_execute_request_validates_path_resolved_url(monkeypatch):
@@ -184,7 +278,7 @@ def test_execute_request_validates_path_resolved_url(monkeypatch):
     _mock_dns(monkeypatch, '93.184.216.34')
     response = Mock(status_code=200, reason='OK', headers={'Content-Type': 'text/plain'}, text='ok')
     request = Mock(return_value=response)
-    monkeypatch.setattr(http_client.requests, 'request', request)
+    monkeypatch.setattr(http_client, '_request_with_validated_addresses', request)
 
     http_client.execute_request(
         url='https://service.example/users/:id',
@@ -192,8 +286,8 @@ def test_execute_request_validates_path_resolved_url(monkeypatch):
         path_params={'id': '../admin'},
     )
 
-    assert request.call_args.kwargs['url'] == 'https://service.example/users/..%2Fadmin'
-    assert request.call_args.kwargs['allow_redirects'] is False
+    assert request.call_args.args[0]['url'] == 'https://service.example/users/..%2Fadmin'
+    assert request.call_args.args[0]['allow_redirects'] is False
 
 
 def test_execute_request_query_value_cannot_change_destination(monkeypatch):
@@ -201,7 +295,7 @@ def test_execute_request_query_value_cannot_change_destination(monkeypatch):
     resolver = _mock_dns(monkeypatch, '93.184.216.34')
     response = Mock(status_code=200, reason='OK', headers={'Content-Type': 'text/plain'}, text='ok')
     request = Mock(return_value=response)
-    monkeypatch.setattr(http_client.requests, 'request', request)
+    monkeypatch.setattr(http_client, '_request_with_validated_addresses', request)
 
     http_client.execute_request(
         url='https://service.example/fetch',
@@ -210,7 +304,7 @@ def test_execute_request_query_value_cannot_change_destination(monkeypatch):
     )
 
     assert resolver.call_args.args[0] == 'service.example'
-    assert request.call_args.kwargs['params'] == {'target': 'http://127.0.0.1/admin'}
+    assert request.call_args.args[0]['params'] == {'target': 'http://127.0.0.1/admin'}
 
 
 def test_execute_request_preserves_existing_request_options(monkeypatch):
@@ -218,7 +312,7 @@ def test_execute_request_preserves_existing_request_options(monkeypatch):
     _mock_dns(monkeypatch, '93.184.216.34')
     response = Mock(status_code=200, reason='OK', headers={'Content-Type': 'text/plain'}, text='ok')
     request = Mock(return_value=response)
-    monkeypatch.setattr(http_client.requests, 'request', request)
+    monkeypatch.setattr(http_client, '_request_with_validated_addresses', request)
 
     http_client.execute_request(
         url='https://service.example/data',
@@ -229,7 +323,7 @@ def test_execute_request_preserves_existing_request_options(monkeypatch):
         timeout=12,
     )
 
-    kwargs = request.call_args.kwargs
+    kwargs = request.call_args.args[0]
     assert kwargs['method'] == 'POST'
     assert kwargs['headers'] == {
         'X-Test': 'value',

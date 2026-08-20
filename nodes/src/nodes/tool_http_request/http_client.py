@@ -33,15 +33,111 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import sys
 import time
 from typing import Any, Dict, Optional
 from urllib.parse import quote, urlsplit
 
 import requests
 from requests.auth import HTTPBasicAuth
+from requests.adapters import HTTPAdapter
+from requests.exceptions import ProxyError
+from requests.utils import select_proxy
+from urllib3.connection import HTTPConnection, HTTPSConnection
+from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
 
 DEFAULT_TIMEOUT_SECONDS = 30
 MAX_TIMEOUT_SECONDS = 300
+
+ResolvedAddress = tuple[int, int, int, tuple]
+
+
+class _PinnedConnectionMixin:
+    """Open a socket only to addresses that passed SSRF validation."""
+
+    validated_addresses: tuple[ResolvedAddress, ...]
+
+    def __init__(self, *args, validated_addresses: tuple[ResolvedAddress, ...], **kwargs):
+        self.validated_addresses = validated_addresses
+        super().__init__(*args, **kwargs)
+
+    def _new_conn(self):
+        last_error = None
+        last_error_was_timeout = False
+        for family, socktype, proto, sockaddr in self.validated_addresses:
+            sock = None
+            try:
+                sock = socket.socket(family, socktype, proto)
+                for option in self.socket_options or ():
+                    sock.setsockopt(*option)
+                if self.timeout is not None:
+                    sock.settimeout(self.timeout)
+                if self.source_address:
+                    sock.bind(self.source_address)
+                sock.connect(sockaddr)
+                sys.audit('http.client.connect', self, self.host, self.port)
+                return sock
+            except OSError as error:
+                last_error = error
+                last_error_was_timeout = isinstance(error, socket.timeout)
+                if sock is not None:
+                    sock.close()
+
+        if last_error_was_timeout:
+            raise ConnectTimeoutError(
+                self,
+                f'Connection to {self.host} timed out. (connect timeout={self.timeout})',
+            ) from last_error
+        raise NewConnectionError(self, f'Failed to connect to a validated address: {last_error}') from last_error
+
+
+class _PinnedHTTPConnection(_PinnedConnectionMixin, HTTPConnection):
+    pass
+
+
+class _PinnedHTTPSConnection(_PinnedConnectionMixin, HTTPSConnection):
+    pass
+
+
+class _PinnedHTTPConnectionPool(HTTPConnectionPool):
+    ConnectionCls = _PinnedHTTPConnection
+
+
+class _PinnedHTTPSConnectionPool(HTTPSConnectionPool):
+    ConnectionCls = _PinnedHTTPSConnection
+
+
+class _PinnedAddressAdapter(HTTPAdapter):
+    """Use the original hostname for HTTP/TLS while connecting to validated IPs."""
+
+    def __init__(self, validated_addresses: tuple[ResolvedAddress, ...]):
+        self.validated_addresses = validated_addresses
+        self._pinned_pools = []
+        super().__init__()
+
+    def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
+        if select_proxy(request.url, proxies):
+            raise ProxyError('Proxies are not supported by the public-network HTTP tool')
+
+        host_params, pool_kwargs = self.build_connection_pool_key_attributes(request, verify, cert)
+        scheme = host_params.pop('scheme')
+        pool_class = _PinnedHTTPSConnectionPool if scheme == 'https' else _PinnedHTTPConnectionPool
+        pool = pool_class(
+            **host_params,
+            **pool_kwargs,
+            maxsize=1,
+            block=True,
+            validated_addresses=self.validated_addresses,
+        )
+        self._pinned_pools.append(pool)
+        return pool
+
+    def close(self):
+        for pool in self._pinned_pools:
+            pool.close()
+        self._pinned_pools.clear()
+        super().close()
 
 
 def execute_request(
@@ -60,7 +156,7 @@ def execute_request(
     Raises ``requests.RequestException`` on transport-level failures.
     """
     resolved_url = _resolve_path_params(url, path_params)
-    _validate_public_url(resolved_url)
+    validated_addresses = _validate_public_url(resolved_url)
 
     req_headers = dict(headers or {})
     req_auth = None
@@ -91,7 +187,7 @@ def execute_request(
         req_kwargs['timeout'] = DEFAULT_TIMEOUT_SECONDS
 
     start = time.monotonic()
-    resp = requests.request(**req_kwargs)
+    resp = _request_with_validated_addresses(req_kwargs, validated_addresses)
     elapsed_ms = round((time.monotonic() - start) * 1000)
 
     return _build_response(resp, elapsed_ms)
@@ -102,7 +198,16 @@ def execute_request(
 # ---------------------------------------------------------------------------
 
 
-def _validate_public_url(url: str) -> None:
+def _request_with_validated_addresses(req_kwargs: Dict[str, Any], addresses: tuple[ResolvedAddress, ...]):
+    """Execute one request using only the DNS addresses already validated."""
+    scheme = urlsplit(req_kwargs['url']).scheme.lower()
+    with requests.Session() as session:
+        session.trust_env = False
+        session.mount(f'{scheme}://', _PinnedAddressAdapter(addresses))
+        return session.request(**req_kwargs)
+
+
+def _validate_public_url(url: str) -> tuple[ResolvedAddress, ...]:
     """Reject malformed URLs and destinations outside the public Internet."""
     parsed = urlsplit(url)
     if parsed.scheme.lower() not in {'http', 'https'}:
@@ -132,7 +237,8 @@ def _validate_public_url(url: str) -> None:
     if not resolved:
         raise requests.ConnectionError(f'URL hostname {parsed.hostname!r} could not be resolved')
 
-    for _family, _socktype, _proto, _canonname, sockaddr in resolved:
+    validated = []
+    for family, socktype, proto, _canonname, sockaddr in resolved:
         raw_address = sockaddr[0].split('%', 1)[0]
         try:
             address = ipaddress.ip_address(raw_address)
@@ -142,6 +248,8 @@ def _validate_public_url(url: str) -> None:
             ) from None
         if not _is_public_address(address):
             raise ValueError(f'URL hostname {parsed.hostname!r} resolves to a non-public network address')
+        validated.append((family, socktype, proto, sockaddr))
+    return tuple(validated)
 
 
 def _is_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
