@@ -100,7 +100,11 @@ IconButtonProps<T, S, F> & { formContext?: Record<string, any> }) {
 		// Tell the broker where to return tokens. Web hosts redirect back to the
 		// current page; hosts that can't receive a web redirect (VS Code) supply
 		// a deep link via oauthReturnUrl that they intercept out-of-band.
-		url.searchParams.set('baseURL', oauthReturnUrl || window.location.href);
+		// The host's return URL is provider-agnostic and historically names the
+		// google bounce path; route this provider's result through the microsoft
+		// bounce so the editor deep link carries the right provider label.
+		const returnUrl = (oauthReturnUrl || window.location.href).replace('/auth/vscode/google', '/auth/vscode/microsoft');
+		url.searchParams.set('baseURL', returnUrl);
 
 		// Pass the selected tier's scopes explicitly, keyed by the node's
 		// provider — the broker grants identity plus exactly the requested

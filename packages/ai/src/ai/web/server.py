@@ -310,7 +310,10 @@ class WebServer:
         self.add_route('/version', version, ['GET'], public=True)
         # OAuth bounce endpoints must stay registered even when standardEndpoints
         # is off (cloud/eaas), else the Gmail-tool Google OAuth deep-link 401s.
+        # One route per provider: the bounce derives the editor deep-link path
+        # (/auth/<provider>) from the route's last segment.
         self.add_route('/auth/vscode/google', vscode_oauth_bounce, ['GET'], public=True)
+        self.add_route('/auth/vscode/microsoft', vscode_oauth_bounce, ['GET'], public=True)
 
         # Configure the Uvicorn server immediately upon initialization
         self.server = self._configure_server()
