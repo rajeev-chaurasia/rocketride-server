@@ -201,13 +201,20 @@ class Reader(ReaderBase):
         Convert various image formats to PNG bytes.
 
         Args:
-            image_data: Image as bytes, numpy array, or PIL Image
+            image_data: Image as a bytes-like buffer, numpy array, or PIL Image
 
         Returns:
             Image as PNG bytes
+
+        Raises:
+            TypeError: If the value is not something this can turn into an image.
         """
-        if isinstance(image_data, bytes):
-            return image_data
+        # Any buffer, not just `bytes`. The AVI lanes accumulate a stream into a
+        # `bytearray` — that is what every writeImage in the tree builds — so a
+        # `bytes`-only check sent every streamed image to the fallback below and
+        # OCR'd the repr of the buffer instead of the picture.
+        if isinstance(image_data, (bytes, bytearray, memoryview)):
+            return bytes(image_data)
 
         if isinstance(image_data, np.ndarray):
             # Handle grayscale images
@@ -224,8 +231,14 @@ class Reader(ReaderBase):
             image_data.save(buffer, format='PNG')
             return buffer.getvalue()
 
-        # Fallback: try to convert to string then encode
-        return str(image_data).encode('utf-8')
+        # Anything else is a programming error, and it must say so HERE.
+        #
+        # This used to `str(image_data).encode('utf-8')`, which for a buffer
+        # produced the ASCII text `bytearray(b'\xff\xd8...')` and handed it on as
+        # an image. The failure then surfaced two layers away as Pillow's
+        # "cannot identify image file <_io.BytesIO object at 0x...>", which names
+        # neither the type that was wrong nor the node that passed it.
+        raise TypeError(f'OCR needs an image buffer, a numpy array or a PIL Image, not {type(image_data).__name__}')
 
     def _extract_text(self, result) -> str:
         """

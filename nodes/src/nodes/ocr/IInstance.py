@@ -140,12 +140,19 @@ class IInstance(IInstanceBase):
             if not self.image_data:
                 return
 
+            # Settled into `bytes` once, here, rather than left as the mutable
+            # accumulator: everything downstream — the reader, the table
+            # extractor, Pillow — is written for a bytes-like image, and a
+            # `bytearray` slipping past an `isinstance(..., bytes)` check is how
+            # a picture became the ASCII repr of itself.
+            image = bytes(self.image_data)
+
             # If the image is a GIF, iterate through the frames and
             # convert each frame to a format readable by OpenCV (e.g., PNG)
             # Text grabbed from each frame will be concatenated into a single string
             # separated by newlines and sent to the text lane
             if mimeType == 'image/gif':
-                gif = Image.open(io.BytesIO(self.image_data))
+                gif = Image.open(io.BytesIO(image))
                 text_list = []
                 try:
                     while True:
@@ -164,10 +171,10 @@ class IInstance(IInstanceBase):
             else:
                 # Acquire the lock before starting the OCR process
                 with self.IGlobal.readerLock:
-                    text = self.IGlobal.reader.read(self.image_data)
+                    text = self.IGlobal.reader.read(image)
 
             # Read the tables by OCR model , invoke writeTable
-            self.extract_tables_from_image(self.image_data, self.instance.writeTable)
+            self.extract_tables_from_image(image, self.instance.writeTable)
 
             if isinstance(text, list):
                 text = ' '.join(text)
