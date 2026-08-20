@@ -50,9 +50,10 @@ Four security guardrails are enforced before every request:
 The node ships one profile, **Default**, which sets `serverName` to `http`.
 
 Whitelist patterns are checked against the final URL after path parameters are resolved.
-Invalid, empty, or malformed whitelist entries fail configuration validation instead of
-silently removing the intended restriction. Regex matching starts at the beginning of
-the URL; add `$` when the entire URL must match.
+An empty `urlWhitelist` (`[]`) allows all public URLs and emits a warning. Empty entries
+such as `[{"whitelistPattern": ""}]`, and invalid or malformed patterns, fail configuration
+validation instead of silently removing the intended restriction. Regex matching starts
+at the beginning of the URL; add `$` when the entire URL must match.
 
 The node connects directly to the validated destination and does not use environment
 proxies or implicit `.netrc` credentials. `REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE`
