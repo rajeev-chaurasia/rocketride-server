@@ -300,9 +300,10 @@ function makeTestAction() {
 				.filter((file) => path.basename(file) !== 'extension.test.ts')
 				.sort();
 
+			// Fail rather than pass silently: this target exists because these tests
+			// previously ran nowhere, so a glob that matches nothing must not read as green.
 			if (testFiles.length === 0) {
-				task.output = 'No vscode test files found';
-				return;
+				throw new Error('No vscode test files found under src/test/ — expected at least one *.test.ts');
 			}
 
 			// The VS Code package has no package scripts or test dependencies of its own;
