@@ -53,7 +53,14 @@ function makeSyncAiAction() {
     return {
         run: async (ctx, task) => {
             task.output = 'Scanning for changes...';
-            const stats = await syncDir(SRC_DIR, DIST_DIR, { mirror: false, package: true });
+            // node_modules must never reach dist/server: dev installs inside src
+            // (e.g. modules/mcp/apps) carry pnpm symlinks that copyfile cannot
+            // handle (ENOTSUP), and runtime JS deps ship bundled, not raw.
+            const stats = await syncDir(SRC_DIR, DIST_DIR, {
+                mirror: false,
+                package: true,
+                ignore: ['**/__pycache__/**', '**/node_modules/**'],
+            });
             task.output = formatSyncStats(stats);
         }
     };
