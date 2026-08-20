@@ -59,6 +59,7 @@ import { useToolbarOrientation } from './toolbar';
 import CreateNodePanel from './panels/create-node/CreateNodePanel';
 import CloudCanvasPrompt from './CloudCanvasPrompt';
 import EmptyCanvasPrompt from './EmptyCanvasPrompt';
+import { shouldShowCloudPrompt as getShouldShowCloudPrompt } from './cloudPromptVisibility';
 import NodeConfigPanel from './panels/node-config';
 import FitIcon from '../../../assets/icons/FitIcon';
 import LockIcon from '../../../assets/icons/LockIcon';
@@ -228,7 +229,18 @@ export default function Canvas({ cloudPromptDismissed, onDismissCloudPrompt, onD
 	const { onUndo, onRedo, onViewportChange, isDirty, isNew, onSave, onExport, initialViewport, isConnected, cloudConnectionConfigured, onOpenCloudSetup } = useFlowProject();
 	const { fitView, zoomIn, zoomOut, setViewport } = useReactFlow();
 
-	const shouldShowCloudPrompt = Boolean(isConnected && !isReadonly && !isLocked && onOpenCloudSetup && onDismissCloudPrompt && onDismissCloudPromptForever && !cloudConnectionConfigured && !cloudPromptDismissed);
+	const shouldShowCloudPrompt = getShouldShowCloudPrompt({
+		isConnected: Boolean(isConnected),
+		isReadonly,
+		isLocked,
+		isFlowReady,
+		nodeCount: nodes.length,
+		hasCloudSetupHandler: Boolean(onOpenCloudSetup),
+		hasDismissHandler: Boolean(onDismissCloudPrompt),
+		hasDismissForeverHandler: Boolean(onDismissCloudPromptForever),
+		cloudConnectionConfigured: Boolean(cloudConnectionConfigured),
+		cloudPromptDismissed: Boolean(cloudPromptDismissed),
+	});
 
 	// Keep a ref so the restore handler always sees the latest viewport value
 	// without needing to re-register the event listener.

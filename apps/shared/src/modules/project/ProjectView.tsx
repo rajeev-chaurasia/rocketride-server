@@ -313,6 +313,14 @@ const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, serv
 	}));
 
 	const [prefs, setPrefs] = useState<Record<string, unknown>>(() => initialPrefs ?? {});
+	useEffect(() => {
+		if (!initialPrefs) return;
+		setPrefs((prev) => {
+			const next = { ...prev, ...initialPrefs };
+			const hasChanged = Object.keys(next).length !== Object.keys(prev).length || Object.keys(next).some((key) => next[key] !== prev[key]);
+			return hasChanged ? next : prev;
+		});
+	}, [initialPrefs]);
 
 	// --- Stable callback refs ------------------------------------------------
 
@@ -412,11 +420,6 @@ const ProjectView: React.FC<IProjectViewProps> = ({ project, documentTitle, serv
 	);
 
 	const [cloudPromptDismissedForActivation, setCloudPromptDismissedForActivation] = useState(false);
-	useEffect(() => {
-		const handleViewActivated = () => setCloudPromptDismissedForActivation(false);
-		window.addEventListener('canvas:restoreViewport', handleViewActivated);
-		return () => window.removeEventListener('canvas:restoreViewport', handleViewActivated);
-	}, []);
 
 	const handleOpenCloudSetup = useCallback(() => {
 		setCloudPromptDismissedForActivation(true);

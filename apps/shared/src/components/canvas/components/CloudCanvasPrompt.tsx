@@ -13,6 +13,12 @@
 import { type CSSProperties, type ReactElement, useEffect, useRef } from 'react';
 
 import { commonStyles } from 'shell';
+// Deliberate deep import via shell's published `./src/*` subpath: these overlay-stack
+// helpers are what DetailPanel uses to keep Escape from crossing between layers, but they
+// are not re-exported from `shell`'s index. Importing them here keeps this prompt on the
+// shared stack without widening shell's public API surface (which the gallery mirrors).
+// @ts-expect-error -- the shell source subpath requires its .tsx suffix.
+import { acquireOverlayLayer, isTopOverlayLayer, releaseOverlayLayer } from 'shell/src/components/modal/Modal.tsx';
 
 // =============================================================================
 // RocketRide mark
@@ -69,18 +75,23 @@ interface CloudCanvasPromptProps {
 export default function CloudCanvasPrompt({ onOpenCloudSetup, onDismiss, onDismissForever }: CloudCanvasPromptProps): ReactElement {
 	const cardRef = useRef<HTMLDivElement>(null);
 	const openerRef = useRef<HTMLElement | null>(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+	const onDismissRef = useRef(onDismiss);
+	onDismissRef.current = onDismiss;
 
 	useEffect(() => {
-		cardRef.current?.focus();
+		const layer = acquireOverlayLayer(false);
+		if (document.activeElement === null || document.activeElement === document.body) cardRef.current?.focus();
 		const handleKeyDown = (event: KeyboardEvent) => {
-			if (event.key === 'Escape') onDismiss();
+			if (event.defaultPrevented || !isTopOverlayLayer(layer)) return;
+			if (event.key === 'Escape') onDismissRef.current();
 		};
-		window.addEventListener('keydown', handleKeyDown);
+		document.addEventListener('keydown', handleKeyDown);
 		return () => {
-			window.removeEventListener('keydown', handleKeyDown);
-			openerRef.current?.focus();
+			document.removeEventListener('keydown', handleKeyDown);
+			releaseOverlayLayer(layer);
+			if (cardRef.current?.contains(document.activeElement)) openerRef.current?.focus();
 		};
-	}, [onDismiss]);
+	}, []);
 
 	return (
 		<div style={styles.overlay}>
