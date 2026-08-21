@@ -221,3 +221,62 @@ def test_two_identical_calls_in_one_wave_flag_exactly_one():
         f'{len(flagged)} of 2 identical in-wave results were flagged; the fingerprint check and write must not race'
     )
     assert len(tools.invocations) == 2, 'both calls still run'
+
+
+class _FailingThenRepeatingTools(_RepeatingTools):
+    """Fails the first call, then returns the same rows for every later call."""
+
+    def invoke(self, tool_name: str, args: Dict[str, Any]) -> Any:
+        self.invocations.append((tool_name, args))
+        if len(self.invocations) == 1:
+            raise RuntimeError('upstream unavailable')
+        return {'files': self.rows}
+
+
+def test_a_failed_call_does_not_poison_the_fingerprint_index():
+    """
+    An error never reaches the store path, so a retry is not mistaken for a repeat.
+
+    A failure followed by a successful call is progress, and flagging that first
+    success as a duplicate would tell the planner the opposite.
+    """
+    plans = [_search('a'), _search('b'), _search('c'), {'done': True, 'answer': 'x', 'scratch': ''}]
+    ii = _FakeIInstance(_FailingThenRepeatingTools())
+    d = _driver(plans)
+    payload = d.run_agent(ii, _question(), emit_answers_lane=False)
+
+    entries = _results(payload['stack'][0]['payload'])
+    errored = [e for e in entries if e.get('error')]
+    assert len(errored) == 1, 'the first call should have failed'
+    first_success = next(e for e in entries if not e.get('error'))
+    assert 'deduplicated' not in first_success, 'the first successful result is new information'
+
+
+def test_identical_results_from_different_tools_are_still_flagged():
+    """
+    The fingerprint is of the result, not the call, so a match across tools counts.
+
+    Two tools returning the same data means the second added nothing, which is the
+    signal regardless of which tool produced it.
+    """
+    tools = _RepeatingTools()
+    tools.list.append(
+        {
+            'name': 'drive.file_list',
+            'description': 'List files.',
+            'inputSchema': {'type': 'object', 'properties': {}},
+        }
+    )
+    plans = [
+        _search('a'),
+        {'tool_calls': [{'tool': 'drive.file_list', 'args': {}}], 'scratch': ''},
+        {'done': True, 'answer': 'x', 'scratch': ''},
+    ]
+    ii = _FakeIInstance(tools)
+    d = _driver(plans)
+    payload = d.run_agent(ii, _question(), emit_answers_lane=False)
+
+    entries = _results(payload['stack'][0]['payload'])
+    assert len(entries) == 2
+    assert entries[1].get('deduplicated') is True
+    assert entries[0]['key'] in entries[1]['note']
