@@ -63,10 +63,9 @@ _PEEK_MAX_ARRAY_ITEMS = 50
 # covering most single-record API responses in one read.
 _PEEK_DEFAULT_LENGTH = 8000
 
-# Nesting depth past which a summary stops descending. A summary is read by a model,
-# so beyond a handful of levels it stops informing, and the cap doubles as the guard
-# against a self-referential or pathologically deep result, which otherwise recurses
-# until RecursionError and costs the tool its result.
+# Nesting depth past which a summary stops descending: past a few levels it stops
+# informing the model, and the cap is also what keeps a cyclic result from recursing
+# until RecursionError and costing the tool its result.
 _SUMMARY_MAX_DEPTH = 6
 
 # Rows of a list-of-dicts always sampled in a structural summary, whatever they cost.
@@ -116,7 +115,6 @@ def _describe(value: Any, depth: int = 0) -> str:
     if depth > _SUMMARY_MAX_DEPTH:
         return '...'
 
-    pad = _INDENT * depth
     if value is None:
         return 'null'
     if isinstance(value, bool):
@@ -138,7 +136,7 @@ def _describe(value: Any, depth: int = 0) -> str:
             # Collect field names from up to 5 rows to handle sparse rows
             # where early rows may be missing fields that appear later.
             keys = list(dict.fromkeys(k for row in value[:5] if isinstance(row, dict) for k in row))
-            rows = _sample_rows(value, pad, depth)
+            rows = _sample_rows(value, depth)
             header = f'{n} items, fields: {keys}'
             if len(rows) < n:
                 # Say the sample is partial, so a lookup peeks the key instead of
@@ -153,17 +151,17 @@ def _describe(value: Any, depth: int = 0) -> str:
     return str(value)
 
 
-def _sample_rows(value: list, pad: str, depth: int) -> List[str]:
+def _sample_rows(value: list, depth: int) -> List[str]:
     """Render as many rows of *value* as the summary budget allows.
 
     Args:
         value: The list of dicts being summarised.
-        pad: Indentation prefix for the current depth.
         depth: Current nesting depth.
 
     Returns:
         The rendered rows, always at least _SUMMARY_MIN_ROWS where available.
     """
+    pad = _INDENT * depth
     rows: List[str] = []
     spent = 0
     for i, row in enumerate(value):
@@ -394,7 +392,7 @@ def _store_and_preview(
     key: str,
     result: Any,
     context: AgentContext,
-    agent_base: AgentBase = None,
+    agent_base: AgentBase,
 ) -> Dict[str, Any]:
     """Store *result* in memory under *key* and return a compact summary dict.
 
