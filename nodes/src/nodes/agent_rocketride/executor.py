@@ -165,8 +165,8 @@ def _sample_rows(value: list, depth: int) -> List[str]:
     rows: List[str] = []
     spent = 0
     for i, row in enumerate(value):
-        # The branch above is chosen from the first item alone, so a later row can be
-        # a scalar. Widening the window past two rows made that reachable.
+        # _describe picks this branch from the first item alone, so a later row can
+        # be a scalar. Widening the window past two rows made that reachable.
         body = _describe_dict(row, depth + 1) if isinstance(row, dict) else _describe(row, depth + 1)
         text = f'{pad}{_INDENT}row[{i}]:\n{body}'
         if i >= _SUMMARY_MIN_ROWS and spent + len(text) > _SUMMARY_ROW_BUDGET:
