@@ -26,11 +26,12 @@ The path component is a JMESPath expression and may itself contain colons
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import copy_context
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import jmespath
 
@@ -356,11 +357,32 @@ def _auto_key(wave_name: str, idx: int) -> str:
     return f'{wave_name}.r{idx}'
 
 
+def _result_fingerprint(result: Any) -> Optional[str]:
+    """Fingerprint a tool result so an identical one can be recognised later.
+
+    Args:
+        result: The value a tool returned.
+
+    Returns:
+        A hex digest, or None if *result* cannot be encoded. default=str mirrors
+        planner._json_default, since results can carry Decimal and datetime from
+        database tools.
+    """
+    try:
+        encoded = json.dumps(result, sort_keys=True, ensure_ascii=False, default=str)
+    except (ValueError, RecursionError):
+        # A cyclic result is stored and summarised by the time this runs. Dedup only
+        # advises the planner, so dropping the signal costs less than the result.
+        return None
+    return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+
+
 def _store_and_preview(
     tool: str,
     key: str,
     result: Any,
     context: AgentContext,
+    agent_base: AgentBase = None,
 ) -> Dict[str, Any]:
     """Store *result* in memory under *key* and return a compact summary dict.
 
@@ -373,6 +395,10 @@ def _store_and_preview(
     The full result is stored as a native Python object in memory so that
     memory.peek can later extract specific fields via JMESPath without
     re-parsing a JSON string.
+
+    A result identical to one already stored this run also carries `deduplicated`
+    and a `note` naming the earlier key. It signals, it never blocks: repeating a
+    call is often legitimate, so the call still ran and the result is still stored.
     """
     try:
         context.memory.put(key, result)
@@ -380,8 +406,28 @@ def _store_and_preview(
         error(f'rocketride wave memory.put key={key!r} failed: {exc}')
         raise
 
-    summary = _describe(result)
-    return {'tool': tool, 'key': key, 'summary': summary}
+    entry = {'tool': tool, 'key': key, 'summary': _describe(result)}
+
+    seen = getattr(agent_base, 'seen_results', None)
+    if seen is None:
+        return entry
+
+    fingerprint = _result_fingerprint(result)
+    if fingerprint is None:
+        return entry
+
+    prior_key = seen.get(fingerprint)
+    if prior_key is None:
+        seen[fingerprint] = key
+        return entry
+
+    entry['deduplicated'] = True
+    entry['note'] = (
+        f'This result is identical to {prior_key}, which is already in memory, so this call '
+        f'produced no new information. Read {prior_key} with memory.peek, or change approach: '
+        f'repeating a call that returns the same data will not advance the task.'
+    )
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +545,7 @@ def _execute_wave_calls(
             # Store the result in memory and return a structural summary.
             # The summary is what gets injected into the next planning prompt;
             # the full result stays in memory for later memory.peek access.
-            return _store_and_preview(tool, key, result, context)
+            return _store_and_preview(tool, key, result, context, agent_base)
 
         except Exception as exc:
             err_msg = f'{type(exc).__name__}: {exc}'
