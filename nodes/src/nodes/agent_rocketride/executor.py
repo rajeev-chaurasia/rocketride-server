@@ -62,6 +62,14 @@ _PEEK_MAX_ARRAY_ITEMS = 50
 # covering most single-record API responses in one read.
 _PEEK_DEFAULT_LENGTH = 8000
 
+# Rows of a list-of-dicts always sampled in a structural summary, whatever they cost.
+_SUMMARY_MIN_ROWS = 2
+
+# Character budget for the rows sampled beyond _SUMMARY_MIN_ROWS. Narrow rows such
+# as {id, name, mimeType} fit in full, which is what a find-by-name task needs to
+# converge; wide or deeply nested rows exhaust it immediately and still stop at two.
+_SUMMARY_ROW_BUDGET = 4000
+
 # Compiled regex for {{memory.ref:key:format:path}} template tags.
 #
 # Capture groups:
@@ -91,8 +99,10 @@ def _describe(value: Any, depth: int = 0) -> str:
     Design decisions:
     - Strings longer than 80 chars are truncated with a char count so the LLM
       knows it is a large value and should use chunked reading if needed.
-    - Lists of dicts show field names and the first two rows so the LLM can
-      see both the schema and representative data.
+    - Lists of dicts show field names, then as many rows as fit a character
+      budget, so narrow rows are listed in full and a lookup can be answered
+      from the summary. The header reports how many rows were shown when some
+      are omitted, so the LLM knows the sample is partial.
     - Lists of primitives show a short sample (first 3 items).
     - Depth is tracked so nested structures are indented readably.
     """
@@ -118,17 +128,41 @@ def _describe(value: Any, depth: int = 0) -> str:
             # Collect field names from up to 5 rows to handle sparse rows
             # where early rows may be missing fields that appear later.
             keys = list(dict.fromkeys(k for row in value[:5] if isinstance(row, dict) for k in row))
-            lines = [f'{n} items, fields: {keys}']
-            # Show first 2 rows as sample data so the LLM can see real values
-            for i, row in enumerate(value[:2]):
-                lines.append(f'{pad}{_INDENT}row[{i}]:\n{_describe_dict(row, depth + 1)}')
-            return '\n'.join(lines)
+            rows = _sample_rows(value, pad, depth)
+            header = f'{n} items, fields: {keys}'
+            if len(rows) < n:
+                # Say the sample is partial, so a lookup peeks the key instead of
+                # re-running the search that produced it.
+                header += f' (showing {len(rows)} of {n})'
+            return '\n'.join([header] + rows)
         # Non-dict list — show a short JSON sample
         sample = json.dumps(value[:3], ensure_ascii=False)
         return f'{n} items, sample: {sample}'
     if isinstance(value, dict):
         return _describe_dict(value, depth)
     return str(value)
+
+
+def _sample_rows(value: list, pad: str, depth: int) -> List[str]:
+    """Render as many rows of *value* as the summary budget allows.
+
+    Args:
+        value: The list of dicts being summarised.
+        pad: Indentation prefix for the current depth.
+        depth: Current nesting depth.
+
+    Returns:
+        The rendered rows, always at least _SUMMARY_MIN_ROWS where available.
+    """
+    rows: List[str] = []
+    spent = 0
+    for i, row in enumerate(value):
+        text = f'{pad}{_INDENT}row[{i}]:\n{_describe_dict(row, depth + 1)}'
+        if i >= _SUMMARY_MIN_ROWS and spent + len(text) > _SUMMARY_ROW_BUDGET:
+            break
+        rows.append(text)
+        spent += len(text)
+    return rows
 
 
 def _describe_dict(d: dict, depth: int) -> str:
