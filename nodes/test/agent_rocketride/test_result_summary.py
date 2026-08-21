@@ -204,3 +204,44 @@ def test_a_scalar_after_the_first_row_does_not_crash():
 
     assert '4 items' in summary
     assert '42' in summary, 'the scalar row should still be described, not dropped'
+
+
+def test_a_self_referential_result_is_summarised_rather_than_lost():
+    """
+    A cycle used to recurse until RecursionError, which cost the tool its result.
+
+    The executor catches it, so the run survived, but the planner saw a recursion
+    error instead of the data the tool actually returned.
+    """
+    executor = _load_executor()
+    result = {'rows': [{'a': 1}]}
+    result['self'] = result
+
+    summary = executor._describe(result)
+
+    assert 'rows' in summary
+    assert '...' in summary, 'the cycle should terminate in a marker, not an exception'
+
+
+def test_a_pathologically_deep_result_terminates():
+    """The same cap covers depth that is legitimate but far past useful."""
+    executor = _load_executor()
+    deep = cursor = {}
+    for _ in range(2000):
+        cursor['n'] = {}
+        cursor = cursor['n']
+
+    summary = executor._describe(deep)
+
+    assert summary.count('n:') <= executor._SUMMARY_MAX_DEPTH + 1
+    assert summary.endswith('...')
+
+
+def test_ordinary_nesting_is_untouched_by_the_cap():
+    """The cap must not truncate the shapes real results actually have."""
+    executor = _load_executor()
+
+    summary = executor._describe([{'id': 'x', 'meta': {'name': 'y', 'tags': ['a']}}])
+
+    assert '...' not in summary
+    assert '"y"' in summary

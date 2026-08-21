@@ -63,6 +63,12 @@ _PEEK_MAX_ARRAY_ITEMS = 50
 # covering most single-record API responses in one read.
 _PEEK_DEFAULT_LENGTH = 8000
 
+# Nesting depth past which a summary stops descending. A summary is read by a model,
+# so beyond a handful of levels it stops informing, and the cap doubles as the guard
+# against a self-referential or pathologically deep result, which otherwise recurses
+# until RecursionError and costs the tool its result.
+_SUMMARY_MAX_DEPTH = 6
+
 # Rows of a list-of-dicts always sampled in a structural summary, whatever they cost.
 _SUMMARY_MIN_ROWS = 2
 
@@ -107,6 +113,9 @@ def _describe(value: Any, depth: int = 0) -> str:
     - Lists of primitives show a short sample (first 3 items).
     - Depth is tracked so nested structures are indented readably.
     """
+    if depth > _SUMMARY_MAX_DEPTH:
+        return '...'
+
     pad = _INDENT * depth
     if value is None:
         return 'null'
