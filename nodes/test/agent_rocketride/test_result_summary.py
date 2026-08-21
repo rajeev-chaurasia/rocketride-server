@@ -189,3 +189,18 @@ def test_empty_and_non_dict_lists_are_untouched():
 
     assert executor._describe([]) == '[] (0 items)'
     assert executor._describe([1, 2, 3, 4]) == '4 items, sample: [1, 2, 3]'
+
+
+def test_a_scalar_after_the_first_row_does_not_crash():
+    """
+    The list-of-dicts branch is chosen from the first item alone.
+
+    A scalar later in the list used to be out of reach because only two rows were
+    ever rendered. Widening the window made it reachable, so it has to be handled.
+    """
+    executor = _load_executor()
+
+    summary = executor._describe([{'a': 1}, {'a': 2}, 42, {'a': 4}])
+
+    assert '4 items' in summary
+    assert '42' in summary, 'the scalar row should still be described, not dropped'

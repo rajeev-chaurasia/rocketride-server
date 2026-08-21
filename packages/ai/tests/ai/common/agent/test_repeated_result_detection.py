@@ -190,3 +190,34 @@ def test_removed_key_lets_an_identical_result_store_again():
         'the earlier key was removed, so its fingerprint must be forgotten rather than '
         'pointing the planner at a key that no longer resolves'
     )
+
+
+def test_two_identical_calls_in_one_wave_flag_exactly_one():
+    """
+    A wave dispatches its calls on a thread pool, so the check and the write race.
+
+    Both could read an empty slot and neither would be flagged. Exactly one entry
+    should stay unflagged as the original.
+    """
+    plans = [
+        {
+            'tool_calls': [
+                {'tool': 'drive.file_search', 'args': {'query': 'a'}},
+                {'tool': 'drive.file_search', 'args': {'query': 'b'}},
+            ],
+            'scratch': '',
+        },
+        {'done': True, 'answer': 'x', 'scratch': ''},
+    ]
+    tools = _RepeatingTools()
+    ii = _FakeIInstance(tools)
+    d = _driver(plans)
+    payload = d.run_agent(ii, _question(), emit_answers_lane=False)
+
+    entries = _results(payload['stack'][0]['payload'])
+    assert len(entries) == 2
+    flagged = [e for e in entries if e.get('deduplicated')]
+    assert len(flagged) == 1, (
+        f'{len(flagged)} of 2 identical in-wave results were flagged; the fingerprint check and write must not race'
+    )
+    assert len(tools.invocations) == 2, 'both calls still run'
