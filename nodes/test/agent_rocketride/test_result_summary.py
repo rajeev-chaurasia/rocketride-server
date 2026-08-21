@@ -31,8 +31,7 @@ _PKG = 'agent_rocketride'
 
 
 def _load_executor():
-    """
-    Load the node's executor module with its engine dependencies stubbed.
+    """Load the node's executor module with its engine dependencies stubbed.
 
     Returns:
         The executor module. sys.modules is left as it was found.
@@ -80,8 +79,7 @@ def _load_executor():
 
 
 def _drive_files(count, target_index=None, target_name='Email Template.docx'):
-    """
-    Build a Drive-style file listing, optionally naming one row as the lookup target.
+    """Build a Drive-style file listing, optionally naming one row as the lookup target.
 
     Args:
         count: How many files to generate.
@@ -105,8 +103,7 @@ def _drive_files(count, target_index=None, target_name='Email Template.docx'):
 
 
 def test_narrow_rows_are_listed_in_full():
-    """
-    A default-sized Drive page is fully visible, which is what lets a lookup converge.
+    """A default-sized Drive page is fully visible, which is what lets a lookup converge.
 
     file_search defaults to pageSize 25. Showing two of those was the #2032 loop.
     """
@@ -124,8 +121,7 @@ def test_narrow_rows_are_listed_in_full():
 
 
 def test_wide_rows_still_stop_at_two():
-    """
-    Context economy is preserved: two wide rows exhaust the budget between them.
+    """Context economy is preserved: two wide rows exhaust the budget between them.
 
     Width here means field count, not value length. Long strings are already
     truncated to 80 characters by _describe, so they cost little on their own.
@@ -192,8 +188,7 @@ def test_empty_and_non_dict_lists_are_untouched():
 
 
 def test_a_scalar_after_the_first_row_does_not_crash():
-    """
-    The list-of-dicts branch is chosen from the first item alone.
+    """The list-of-dicts branch is chosen from the first item alone.
 
     A scalar later in the list used to be out of reach because only two rows were
     ever rendered. Widening the window made it reachable, so it has to be handled.
@@ -207,8 +202,7 @@ def test_a_scalar_after_the_first_row_does_not_crash():
 
 
 def test_a_self_referential_result_is_summarised_rather_than_lost():
-    """
-    A cycle used to recurse until RecursionError, which cost the tool its result.
+    """A cycle used to recurse until RecursionError, which cost the tool its result.
 
     The executor catches it, so the run survived, but the planner saw a recursion
     error instead of the data the tool actually returned.
@@ -245,3 +239,58 @@ def test_ordinary_nesting_is_untouched_by_the_cap():
 
     assert '...' not in summary
     assert '"y"' in summary
+
+
+class _RecordingMemory:
+    """Memory channel that records what was stored, mirroring the {ok} contract."""
+
+    def __init__(self):
+        self.store = {}
+
+    def put(self, key, value):
+        self.store[key] = value
+        return {'ok': True}
+
+
+class _FakeContext:
+    def __init__(self):
+        self.memory = _RecordingMemory()
+
+
+class _FakeAgent:
+    def __init__(self):
+        self.seen_results = {}
+
+
+def test_a_cyclic_result_is_not_reported_as_an_error():
+    """A cycle survived the summary but was still lost when it reached the fingerprint.
+
+    memory.put has already succeeded by then, so raising here would tell the planner
+    the tool failed while its result sat in memory, unreachable.
+    """
+    executor = _load_executor()
+    result = {'rows': [{'a': 1}]}
+    result['self'] = result
+    context, agent = _FakeContext(), _FakeAgent()
+
+    entry = executor._store_and_preview('drive.list', 'wave-0.r0', result, context, agent)
+
+    assert 'error' not in entry
+    assert entry['key'] == 'wave-0.r0'
+    assert 'rows' in entry['summary']
+    assert context.memory.store['wave-0.r0'] is result
+    assert agent.seen_results == {}, 'an unfingerprintable result must not claim a slot'
+
+
+def test_fingerprinting_still_flags_a_repeat_of_an_encodable_result():
+    """Skipping the cycle must not disable detection for everything after it."""
+    executor = _load_executor()
+    context, agent = _FakeContext(), _FakeAgent()
+    result = {'rows': [{'a': 1}]}
+
+    first = executor._store_and_preview('drive.list', 'wave-0.r0', result, context, agent)
+    second = executor._store_and_preview('drive.list', 'wave-1.r0', result, context, agent)
+
+    assert 'deduplicated' not in first
+    assert second['deduplicated'] is True
+    assert 'wave-0.r0' in second['note']
