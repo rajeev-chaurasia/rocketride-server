@@ -289,6 +289,44 @@ class TestHallucination:
         result = engine.check_hallucination('OK.', source_documents=['Some document text.'])
         assert result['passed']
 
+    def test_empty_sources_fail_when_grounding_required(self):
+        """Nothing retrieved is the case a model is most likely to answer from memory.
+
+        Passing there stood the guard down at the one moment it was needed.
+        """
+        engine = _make_engine(require_grounding=True)
+        result = engine.check_hallucination('Apple net income was $94.7B.', source_documents=[])
+
+        assert not result['passed']
+        assert result['severity'] == 'high'
+        assert 'cannot be grounded' in result['details']
+
+    def test_grounded_output_unaffected_by_require_grounding(self):
+        """The flag decides the empty case only; it must not change a grounded answer."""
+        sources = ['The capital of France is Paris. It is located in Europe.']
+        output = 'The capital of France is Paris, located in Europe.'
+
+        assert _make_engine(require_grounding=False).check_hallucination(output, sources)['passed']
+        assert _make_engine(require_grounding=True).check_hallucination(output, sources)['passed']
+
+    def test_require_grounding_reaches_the_check_with_coverage_off(self):
+        """The knob dispatches on its own, or it reads as a silent no-op.
+
+        The basic profile ships enable_hallucination_check false, so gating the new
+        behaviour behind it would make the flag do nothing exactly where it is set.
+        """
+        engine = _make_engine(enable_hallucination_check=False, require_grounding=True)
+        result = engine.evaluate('Some confident claim.', mode='output', context={'source_documents': []})
+
+        assert any(v['rule'] == 'hallucination' for v in result['violations'])
+
+    def test_coverage_off_and_grounding_off_runs_no_check(self):
+        """Both off is today's behaviour and must stay silent."""
+        engine = _make_engine(enable_hallucination_check=False, require_grounding=False)
+        result = engine.evaluate('Some confident claim.', mode='output', context={'source_documents': []})
+
+        assert not any(v['rule'] == 'hallucination' for v in result['violations'])
+
 
 # ============================================================================
 # Content Safety
@@ -1124,6 +1162,7 @@ class TestConfigWiring:
             'enable_content_safety',
             'enable_pii_detection',
             'enable_hallucination_check',
+            'require_grounding',
             'max_input_length',
             'max_tokens_estimate',
             'expected_format',
@@ -1131,6 +1170,16 @@ class TestConfigWiring:
 
         missing = required_knobs - custom_keys
         assert not missing, f'Custom profile is missing knobs: {missing}'
+
+    def test_only_strict_requires_grounding_by_default(self):
+        """Strict already blocks on ungrounded output, so it is where refusal belongs.
+
+        basic is the default profile and must keep answering as it does today.
+        """
+        profiles = self._load_services_json()['preconfig']['profiles']
+
+        assert profiles['strict']['require_grounding'] is True
+        assert profiles['basic']['require_grounding'] is False
 
     def test_config_roundtrip_creates_valid_engine(self):
         """Simulate Config.getNodeConfig merging a profile and verify the engine can be instantiated."""
