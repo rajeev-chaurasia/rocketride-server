@@ -28,6 +28,14 @@ _PROMPT_DIR = os.path.join(
 )
 
 
+class _FakeInstruction:
+    """Mirrors QuestionInstruction, which the node identifies by subtitle."""
+
+    def __init__(self, subtitle, instructions):
+        self.subtitle = subtitle
+        self.instructions = instructions
+
+
 class _FakeQuestion:
     """Enough of Question for the node: instructions, documents and context."""
 
@@ -47,7 +55,7 @@ class _FakeQuestion:
         self.documents.extend(documents or [])
 
     def addInstruction(self, title, instruction):
-        self.instructions.append((title, instruction))
+        self.instructions.append(_FakeInstruction(title, instruction))
 
     def getPrompt(self):
         return ''
@@ -122,11 +130,11 @@ def node():
 
 
 def _titles(inst):
-    return [title for title, _ in inst.question.instructions]
+    return [i.subtitle for i in inst.question.instructions]
 
 
 def _grounding_text(inst):
-    return next((body for title, body in inst.question.instructions if title == 'Grounding'), None)
+    return next((i.instructions for i in inst.question.instructions if i.subtitle == 'Grounding'), None)
 
 
 def test_retrieved_documents_get_a_grounding_instruction(node):
@@ -176,7 +184,7 @@ def test_operator_instructions_are_kept_and_come_first(node):
     node.closing()
 
     assert _titles(node) == ['User Instruction 1', 'User Instruction 2', 'Grounding']
-    assert node.question.instructions[0][1] == 'Answer as a financial analyst.'
+    assert node.question.instructions[0].instructions == 'Answer as a financial analyst.'
 
 
 def test_the_retrieval_flag_resets_between_objects(node):
@@ -189,3 +197,33 @@ def test_the_retrieval_flag_resets_between_objects(node):
     assert node.retrieval_ran is False
     node.closing()
     assert _titles(node) == ['User Instruction']
+
+
+def test_repeated_turns_keep_one_grounding_instruction(node):
+    """The question is never reset, so closing() adds to the previous turn's list.
+
+    The operator instructions already accumulate that way on develop. This node must
+    not double the rate by stacking a grounding rule on every turn as well.
+    """
+    for turn in range(3):
+        node.open(None)
+        node.writeDocuments([f'document for turn {turn}'])
+        node.closing()
+
+    assert _titles(node).count('Grounding') == 1
+    assert _grounding_text(node) == _grounding_text(node)
+
+
+def test_a_later_empty_turn_replaces_the_grounding_rule(node):
+    """A turn that retrieves nothing must not inherit the previous turn's rule."""
+    node.open(None)
+    node.writeDocuments(['a retrieved passage'])
+    node.closing()
+    assert 'Base your answer on the documents' in _grounding_text(node)
+
+    node.open(None)
+    node.writeDocuments([])
+    node.closing()
+
+    assert _titles(node).count('Grounding') == 1
+    assert 'do not have the information' in _grounding_text(node)
