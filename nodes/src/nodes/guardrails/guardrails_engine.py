@@ -211,6 +211,7 @@ class GuardrailsEngine:
         self.enable_content_safety = config.get('enable_content_safety', True)
         self.enable_pii_detection = config.get('enable_pii_detection', True)
         self.enable_hallucination_check = config.get('enable_hallucination_check', True)
+        self.require_grounding = config.get('require_grounding', False)
         self.max_input_length = config.get('max_input_length', 0)
         self.max_tokens_estimate = config.get('max_tokens_estimate', 0)
         self.blocked_topics = [t.strip().lower() for t in config.get('blocked_topics', []) if t.strip()]
@@ -370,18 +371,28 @@ class GuardrailsEngine:
 
         Args:
             output: The LLM output text to verify.
-            source_documents: List of source document texts. If empty/None,
-                              the check passes with a warning.
+            source_documents: List of source document texts. If empty/None, the check
+                              passes unless require_grounding is set.
 
         Returns:
             A check result dict.
         """
         if not source_documents:
+            # Nothing retrieved is when a model is most likely to answer from memory,
+            # so skipping here stood the guard down at the one moment it was needed.
+            # Callers that require grounding get a failure instead.
+            if not self.require_grounding:
+                return {
+                    'rule': 'hallucination',
+                    'passed': True,
+                    'severity': 'low',
+                    'details': 'No source documents provided; hallucination check skipped',
+                }
             return {
                 'rule': 'hallucination',
-                'passed': True,
-                'severity': 'low',
-                'details': 'No source documents provided; hallucination check skipped',
+                'passed': False,
+                'severity': 'high',
+                'details': 'No source documents provided; the answer cannot be grounded',
             }
 
         # Combine source documents into one text block for matching
@@ -633,7 +644,9 @@ class GuardrailsEngine:
 
         elif mode == 'output':
             # Output guardrails
-            if self.enable_hallucination_check:
+            # require_grounding has to reach the check on its own, or it reads as a
+            # silent no-op wherever the coverage check happens to be off.
+            if self.enable_hallucination_check or self.require_grounding:
                 source_docs = context.get('source_documents', [])
                 results.append(self.check_hallucination(text, source_docs))
 
