@@ -27,6 +27,14 @@ from ai.common.schema import Question
 from rocketlib import debug, Entry
 
 
+_GROUNDING_TITLE = 'Grounding'
+
+
+def _is_grounding(instruction):
+    """Report whether an accumulated instruction is one this node added."""
+    return getattr(instruction, 'subtitle', None) == _GROUNDING_TITLE
+
+
 # Appended when retrieval ran and returned something, so the answer is drawn from the
 # documents rather than from what the model happens to remember.
 _GROUNDING_INSTRUCTION = (
@@ -52,11 +60,13 @@ class IInstance(IInstanceBase):
         self.has_output = False
         self.question = Question()
         self.retrieval_ran = False
+        self.documents_received = False
 
     def open(self, entry: Entry):
         # Reset per object: the instance is reused, so a previous turn's retrieval
         # must not decide this turn's instruction.
         self.retrieval_ran = False
+        self.documents_received = False
 
     def writeQuestions(self, question: Question):
         """
@@ -72,6 +82,8 @@ class IInstance(IInstanceBase):
         # A store dispatches this lane even when its search found nothing, so being
         # called at all is what separates "retrieval missed" from "no retrieval here".
         self.retrieval_ran = True
+        if documents:
+            self.documents_received = True
 
         # Create a question from documents
         self.question.addDocuments(documents)
@@ -113,11 +125,17 @@ class IInstance(IInstanceBase):
 
             # Only a pipeline that retrieves gets a grounding rule. A prompt node used
             # to merge branches has no documents lane, so it is left exactly as it was.
+            #
+            # The question is never reset between objects, so closing() re-adds to a list
+            # that already holds the previous turn's entries. Replacing our own entry
+            # keeps one grounding rule in the prompt however many turns the instance runs.
             if self.retrieval_ran:
-                if self.question.documents:
-                    self.question.addInstruction('Grounding', _GROUNDING_INSTRUCTION)
-                else:
-                    self.question.addInstruction('Grounding', _ABSTAIN_INSTRUCTION)
+                # Read this turn's retrieval, not question.documents: that list is never
+                # reset either, so a turn that found nothing would otherwise be told to
+                # ground itself in the documents a previous question retrieved.
+                body = _GROUNDING_INSTRUCTION if self.documents_received else _ABSTAIN_INSTRUCTION
+                self.question.instructions = [i for i in self.question.instructions if not _is_grounding(i)]
+                self.question.addInstruction(_GROUNDING_TITLE, body)
 
             debug(f'Enhanced question: {self.question.getPrompt()}')
 
