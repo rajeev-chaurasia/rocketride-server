@@ -356,6 +356,17 @@ class TestHallucination:
             result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True)
             assert result['passed'], reply
 
+    def test_an_empty_answer_is_not_an_ungrounded_answer(self):
+        """Blank output asserts nothing, so there is nothing to ground.
+
+        IInstance short-circuits blank text before evaluate(), but the engine is
+        public and directly tested, so it should not depend on that.
+        """
+        engine = _make_engine(require_grounding=True)
+
+        for blank in ('', '   ', '\n\t'):
+            assert engine.check_hallucination(blank, source_documents=[], retrieval_ran=True)['passed']
+
     def test_evaluate_defaults_to_retrieval_having_run(self):
         """A caller that does not report the lane keeps the stricter reading."""
         engine = _make_engine(require_grounding=True)
