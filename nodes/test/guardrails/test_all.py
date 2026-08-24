@@ -1172,6 +1172,7 @@ class TestConfigWiring:
             'enable_content_safety',
             'enable_pii_detection',
             'enable_hallucination_check',
+            'require_grounding',
             'max_input_length',
             'max_tokens_estimate',
             'blocked_topics',
