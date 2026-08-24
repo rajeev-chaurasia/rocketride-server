@@ -320,6 +320,49 @@ class TestHallucination:
 
         assert any(v['rule'] == 'hallucination' for v in result['violations'])
 
+    def test_a_pipeline_with_no_documents_lane_is_not_a_retrieval_miss(self):
+        """No documents lane at all is not the same as a search that matched nothing.
+
+        An empty source list alone cannot tell them apart, so failing on it dropped
+        correct answers from every plain chat, summariser or classifier pipeline
+        that had a Strict guardrails node on it.
+        """
+        engine = _make_engine(require_grounding=True)
+        result = engine.check_hallucination('Paris is the capital of France.', source_documents=[], retrieval_ran=False)
+
+        assert result['passed']
+
+    def test_a_retrieval_miss_still_fails(self):
+        """The case this exists for: the lane was dispatched and matched nothing."""
+        engine = _make_engine(require_grounding=True)
+        result = engine.check_hallucination('Apple net income was $94.7B.', source_documents=[], retrieval_ran=True)
+
+        assert not result['passed']
+        assert result['severity'] == 'high'
+
+    def test_an_abstention_is_not_an_ungrounded_answer(self):
+        """An abstention asserts nothing, so there is nothing to ground.
+
+        The prompt node asks the model to decline after a miss; blocking that would
+        discard the refusal this feature exists to produce.
+        """
+        engine = _make_engine(require_grounding=True)
+
+        for reply in (
+            'I do not have the information needed to answer that question.',
+            "I don't have the information to answer that.",
+            'No documents were retrieved, so I cannot answer.',
+        ):
+            result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True)
+            assert result['passed'], reply
+
+    def test_evaluate_defaults_to_retrieval_having_run(self):
+        """A caller that does not report the lane keeps the stricter reading."""
+        engine = _make_engine(require_grounding=True)
+        result = engine.evaluate('A confident claim.', mode='output', context={'source_documents': []})
+
+        assert any(v['rule'] == 'hallucination' for v in result['violations'])
+
     def test_coverage_off_and_grounding_off_runs_no_check(self):
         """Both off is today's behaviour and must stay silent."""
         engine = _make_engine(enable_hallucination_check=False, require_grounding=False)
@@ -1180,6 +1223,7 @@ class TestConfigWiring:
 
         assert profiles['strict']['require_grounding'] is True
         assert profiles['basic']['require_grounding'] is False
+        assert profiles['custom']['require_grounding'] is False, 'the README lists Strict as the only default'
 
     def test_config_roundtrip_creates_valid_engine(self):
         """Simulate Config.getNodeConfig merging a profile and verify the engine can be instantiated."""

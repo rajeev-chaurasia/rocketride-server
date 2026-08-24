@@ -33,10 +33,12 @@ class IInstance(IInstanceBase):
         """Initialize the guardrails instance state."""
         super().__init__()
         self.source_documents = []
+        self.retrieval_ran = False
 
     def open(self, entry: Entry):
         """Reset per-object state."""
         self.source_documents = []
+        self.retrieval_ran = False
 
     def writeQuestions(self, question: Question):
         """Run input guardrails on the question before forwarding.
@@ -120,9 +122,13 @@ class IInstance(IInstanceBase):
             self._forward_answer(answer)
             return
 
-        # Build context for output checks
+        # Build context for output checks. retrieval_ran separates "the store
+        # searched and matched nothing" from "this pipeline has no documents lane
+        # at all"; an empty source list alone cannot tell them apart, and failing
+        # the second would drop correct answers from every non-retrieval pipeline.
         context = {
             'source_documents': self.source_documents,
+            'retrieval_ran': self.retrieval_ran,
         }
 
         # Run output guardrails
@@ -157,6 +163,10 @@ class IInstance(IInstanceBase):
         Args:
             documents: List of Doc objects from the pipeline.
         """
+        # Set on dispatch, not on content: a hit whose documents carry no usable
+        # text still means retrieval ran, and the loop below skips those.
+        self.retrieval_ran = True
+
         for doc in documents:
             if hasattr(doc, 'page_content'):
                 content = doc.page_content
@@ -176,3 +186,4 @@ class IInstance(IInstanceBase):
     def close(self):
         """Reset state on close."""
         self.source_documents = []
+        self.retrieval_ran = False

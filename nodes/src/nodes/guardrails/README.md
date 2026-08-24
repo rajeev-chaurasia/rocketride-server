@@ -51,7 +51,7 @@ Three built-in profiles control which fields are exposed in the UI and set sensi
 | Profile            | Behaviour                                                                                                   |
 |--------------------|-------------------------------------------------------------------------------------------------------------|
 | Basic *(default)*  | Prompt injection + PII detection, `warn` mode. Only `policy_mode` is configurable in the UI.               |
-| Strict             | All checks enabled plus `require_grounding`, `block` on violation, `max_input_length` 50000, `max_tokens_estimate` 4096. Exposes `policy_mode`, `max_tokens_estimate`, and `expected_format`. |
+| Strict             | All checks enabled plus `require_grounding`, `block` on violation, `max_input_length` 50000, `max_tokens_estimate` 4096. Exposes `policy_mode`, `max_tokens_estimate`, and `expected_format`. Requires the `documents` lane to be wired to have any effect. |
 | Custom             | All checks enabled, `warn` mode. Every field is configurable individually.                                  |
 
 ---
@@ -70,7 +70,7 @@ Run on the `questions` lane before the question is forwarded:
 
 Run on the `answers` lane before the answer is forwarded:
 
-- **Hallucination** (rule `hallucination`, high severity): sentence-level grounding check. Each output sentence is evaluated for keyword overlap (3+ character non-stop words) against the combined source documents; sentences with less than 30% coverage are flagged. When no documents have been received on the `documents` lane the check is skipped, unless `require_grounding` is set, in which case the answer is a violation: nothing was retrieved, so nothing supports it. Strict enables `require_grounding`; Basic does not.
+- **Hallucination** (rule `hallucination`, high severity): sentence-level grounding check. Each output sentence is evaluated for keyword overlap (3+ character non-stop words) against the combined source documents; sentences with less than 30% coverage are flagged. When no documents have been received the check is skipped, unless `require_grounding` is set **and** the `documents` lane was actually dispatched. A pipeline with no `documents` lane never retrieves, so its answers are not treated as ungrounded. An answer that declines to answer is also allowed through, since it asserts nothing and is the outcome the prompt node asks for after a miss. Strict enables `require_grounding`; Basic and Custom do not.
 - **Content safety** (rule `content_safety`, critical severity): regex patterns across three categories: self-harm, violence (weapon and explosive construction), and illegal activity (hacking, theft, counterfeiting).
 - **PII leak** (rule `pii_leak`, high severity): pattern matches for `email`, `phone_us`, `ssn`, `credit_card`, and `ip_address`.
 - **Format compliance** (rule `format_compliance`, medium severity): only runs when `expected_format` is set. `json` must parse cleanly; `markdown` requires at least one markdown element (heading, bold, code, list marker); `bullet_list` and `numbered_list` require at least half the non-empty lines to be list items.

@@ -363,7 +363,31 @@ class GuardrailsEngine:
     # Output guardrails
     # -------------------------------------------------------------------------
 
-    def check_hallucination(self, output: str, source_documents: Optional[List[str]] = None) -> Dict[str, Any]:
+    # An answer that declines to answer asserts nothing, so there is nothing to ground.
+    # Blocking it would discard the very refusal require_grounding is meant to produce.
+    ABSTENTION_MARKERS = (
+        'do not have',
+        "don't have",
+        'not have the information',
+        'no documents were retrieved',
+        'not provided',
+        'not available',
+        'does not contain',
+        'do not contain',
+        'cannot answer',
+        'unable to answer',
+        'no information',
+    )
+
+    @classmethod
+    def _is_abstention(cls, output: str) -> bool:
+        """Report whether *output* declines to answer rather than asserting something."""
+        body = output.strip().lower().replace('\u2019', "'")
+        return any(marker in body for marker in cls.ABSTENTION_MARKERS)
+
+    def check_hallucination(
+        self, output: str, source_documents: Optional[List[str]] = None, retrieval_ran: bool = True
+    ) -> Dict[str, Any]:
         """Verify that claims in output are grounded in source documents.
 
         Performs a sentence-level grounding check. Each sentence in the output
@@ -380,8 +404,11 @@ class GuardrailsEngine:
         if not source_documents:
             # Nothing retrieved is when a model is most likely to answer from memory,
             # so skipping here stood the guard down at the one moment it was needed.
-            # Callers that require grounding get a failure instead.
-            if not self.require_grounding:
+            # Callers that require grounding get a failure instead, but only when a
+            # retrieval actually ran and missed, and only for an answer that asserts
+            # something: a pipeline with no documents lane never retrieves, and an
+            # abstention is the outcome this is meant to produce.
+            if not self.require_grounding or not retrieval_ran or self._is_abstention(output):
                 return {
                     'rule': 'hallucination',
                     'passed': True,
@@ -648,7 +675,10 @@ class GuardrailsEngine:
             # silent no-op wherever the coverage check happens to be off.
             if self.enable_hallucination_check or self.require_grounding:
                 source_docs = context.get('source_documents', [])
-                results.append(self.check_hallucination(text, source_docs))
+                # Default True so a caller that does not report the lane keeps the
+                # old behaviour for the coverage check.
+                ran = context.get('retrieval_ran', True)
+                results.append(self.check_hallucination(text, source_docs, retrieval_ran=ran))
 
             if self.enable_content_safety:
                 results.append(self.check_content_safety(text))
