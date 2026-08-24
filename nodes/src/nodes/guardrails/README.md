@@ -35,6 +35,7 @@ Question text is assembled from both the question objects and any attached conte
 | `enable_content_safety` | boolean | Default true. Detect harmful or unsafe content in output |
 | `enable_pii_detection` | boolean | Default true. Detect personal identifiable information (emails, phones, SSNs, credit cards) in output |
 | `enable_hallucination_check` | boolean | Default false. Verify that output claims are grounded in source documents |
+| `require_grounding` | boolean | Default false. Treat an answer as a violation when the `documents` lane was dispatched and returned nothing. Strict enables it |
 | `max_input_length` | number | Default 0. Maximum character count for input text (0 = no limit) |
 | `max_tokens_estimate` | number | Default 0. Maximum estimated token count for input text (0 = no limit) |
 | `expected_format` | string | Default empty. Validate that output matches this format (empty = no check) |

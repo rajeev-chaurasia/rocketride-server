@@ -379,6 +379,14 @@ class GuardrailsEngine:
         'no information',
     )
 
+    # A figure carries the claim this check exists to catch. Nothing is grounded in
+    # the empty-retrieval branch, so a stated amount is unsupported however the
+    # sentence around it is hedged.
+    FIGURE_PATTERN = re.compile(
+        r'[$\u00a3\u20ac]\s*\d|\d\s*%|\d[\d,.]*\s*(?:billion|million|thousand|bn|m\b|k\b)|\d{1,3}(?:,\d{3})+',
+        re.IGNORECASE,
+    )
+
     @classmethod
     def _is_abstention(cls, output: str) -> bool:
         """Report whether *output* declines to answer rather than asserting something."""
@@ -387,7 +395,12 @@ class GuardrailsEngine:
         # before reaching here, but the engine should not depend on that.
         if not body:
             return True
-        return any(marker in body for marker in cls.ABSTENTION_MARKERS)
+        if not any(marker in body for marker in cls.ABSTENTION_MARKERS):
+            return False
+        # A marker anywhere used to be enough, which let "the figure is $94.7B, but
+        # the source is not available" through: the hedge earned the bypass while the
+        # invented amount rode along with it.
+        return not cls.FIGURE_PATTERN.search(body)
 
     def check_hallucination(
         self, output: str, source_documents: Optional[List[str]] = None, retrieval_ran: bool = True
