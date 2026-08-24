@@ -27,8 +27,6 @@ from ai.common.schema import Question
 from rocketlib import debug, Entry
 
 
-_GROUNDING_TITLE = 'Grounding'
-
 # Appended when retrieval ran and returned something, so the answer is drawn from the
 # documents rather than from what the model happens to remember.
 _GROUNDING_INSTRUCTION = (
@@ -124,7 +122,7 @@ class IInstance(IInstanceBase):
             # to merge branches has no documents lane, so it is left exactly as it was.
             if self.retrieval_ran:
                 body = _GROUNDING_INSTRUCTION if self.documents_received else _ABSTAIN_INSTRUCTION
-                self.question.addInstruction(_GROUNDING_TITLE, body)
+                self.question.addInstruction('Grounding', body)
 
             debug(f'Enhanced question: {self.question.getPrompt()}')
 
