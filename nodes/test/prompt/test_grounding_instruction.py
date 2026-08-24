@@ -200,18 +200,15 @@ def test_the_retrieval_flag_resets_between_objects(node):
 
 
 def test_repeated_turns_keep_one_grounding_instruction(node):
-    """The question is never reset, so closing() adds to the previous turn's list.
-
-    The operator instructions already accumulate that way on develop. This node must
-    not double the rate by stacking a grounding rule on every turn as well.
-    """
+    """open() starts a fresh question, so nothing carries over between objects."""
     for turn in range(3):
         node.open(None)
         node.writeDocuments([f'document for turn {turn}'])
         node.closing()
 
-    assert _titles(node).count('Grounding') == 1
-    assert _grounding_text(node) == _grounding_text(node)
+    assert _titles(node) == ['User Instruction', 'Grounding']
+    assert 'Base your answer on the documents' in _grounding_text(node)
+    assert node.question.documents == ['document for turn 2'], 'a turn must not inherit earlier documents'
 
 
 def test_a_later_empty_turn_replaces_the_grounding_rule(node):
@@ -227,3 +224,4 @@ def test_a_later_empty_turn_replaces_the_grounding_rule(node):
 
     assert _titles(node).count('Grounding') == 1
     assert 'do not have the information' in _grounding_text(node)
+    assert node.question.documents == [], 'the abstain rule must not sit above stale documents'

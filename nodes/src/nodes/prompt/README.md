@@ -20,7 +20,9 @@ When the `documents` lane is connected, the node appends a `Grounding` instructi
 | connected | none | say the information is not available, do not answer from memory |
 | not connected | n/a | none, the question is left exactly as before |
 
-The third row is what keeps a prompt node used to merge branches unchanged. Nothing is blocked here: the instruction asks the model to abstain, and the [guardrails](../guardrails/README.md) node is what refuses delivery if it answers anyway.
+The third row is what keeps a prompt node used to merge branches unchanged. Nothing is blocked here: the instruction asks the model to abstain, and the [guardrails](../guardrails/README.md) node with `require_grounding` is what refuses delivery if it answers anyway. An abstention passes that guard, so the refusal reaches the user.
+
+State does not carry between objects: each one starts a fresh question, so a later turn is never grounded in an earlier turn's documents.
 
 The node registers as a `filter` with class type `text` and runs as a pure Python transformation (no external service or model is called).
 
