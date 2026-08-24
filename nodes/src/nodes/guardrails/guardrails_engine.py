@@ -383,6 +383,10 @@ class GuardrailsEngine:
     def _is_abstention(cls, output: str) -> bool:
         """Report whether *output* declines to answer rather than asserting something."""
         body = output.strip().lower().replace('\u2019', "'")
+        # An empty answer asserts nothing either. The node short-circuits blank text
+        # before reaching here, but the engine should not depend on that.
+        if not body:
+            return True
         return any(marker in body for marker in cls.ABSTENTION_MARKERS)
 
     def check_hallucination(
