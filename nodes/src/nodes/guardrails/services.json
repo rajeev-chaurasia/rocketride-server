@@ -152,7 +152,7 @@
 				"enable_content_safety": true,
 				"enable_pii_detection": true,
 				"enable_hallucination_check": true,
-				"require_grounding": true,
+				"require_grounding": false,
 				"max_input_length": 0,
 				"max_tokens_estimate": 0,
 				"expected_format": "",
