@@ -356,6 +356,33 @@ class TestHallucination:
             result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True)
             assert result['passed'], reply
 
+    def test_a_hedged_fabrication_is_not_an_abstention(self):
+        """A marker anywhere used to earn the bypass, so an invented figure rode along.
+
+        Hedging is common model behaviour, so this is the shape that would have
+        reopened the hole this check exists to close.
+        """
+        engine = _make_engine(require_grounding=True)
+
+        for reply in (
+            'Apple net income was $94.7B, but the source is not available.',
+            'The figure is $94.7 billion. No documents were retrieved.',
+            'Revenue grew 12%, though that is not available in the sources.',
+            'Net income was 41,733 million, but not provided here.',
+        ):
+            result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True)
+            assert not result['passed'], reply
+
+    def test_an_abstention_may_still_echo_the_question(self):
+        """A year or a plain count is not the invented amount being guarded against."""
+        engine = _make_engine(require_grounding=True)
+
+        for reply in (
+            'I do not have data for 2024.',
+            'The 3 documents provided do not contain that figure.',
+        ):
+            assert engine.check_hallucination(reply, source_documents=[], retrieval_ran=True)['passed'], reply
+
     def test_an_empty_answer_is_not_an_ungrounded_answer(self):
         """Blank output asserts nothing, so there is nothing to ground.
 
