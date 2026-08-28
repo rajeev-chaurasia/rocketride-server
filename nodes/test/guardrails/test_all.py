@@ -425,6 +425,58 @@ class TestHallucination:
             result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True, question_text=question)
             assert not result['passed'], reply
 
+    def test_the_common_ways_a_model_declines_are_recognised(self):
+        """A refusal the phrase list misses is a refusal Strict drops.
+
+        Seven of eleven realistic phrasings were missed before, including "no data
+        available" and "not found in the documents", which is the same silent drop
+        the grounding path exists to avoid.
+        """
+        engine = _make_engine(require_grounding=True)
+
+        for reply in (
+            'No data available for that period.',
+            'That information was not found in the documents.',
+            'I cannot determine that from the provided sources.',
+            'The answer is not specified in the documents.',
+            'That figure is not mentioned anywhere in the sources.',
+            'There is insufficient information to answer.',
+            'No relevant documents were retrieved.',
+        ):
+            assert engine.check_hallucination(reply, source_documents=[], retrieval_ran=True)['passed'], reply
+
+    def test_a_wider_phrase_list_does_not_widen_the_hedge(self):
+        """A fabrication using one of the added phrases is still judged on its figure."""
+        engine = _make_engine(require_grounding=True)
+
+        for reply in (
+            'Net income was $94.7B, but that is not specified in the documents.',
+            'Revenue grew 12%, though no data supports it.',
+        ):
+            result = engine.check_hallucination(
+                reply, source_documents=[], retrieval_ran=True, question_text='What was the result?'
+            )
+            assert not result['passed'], reply
+
+    def test_a_quoted_figure_is_matched_whatever_punctuation_surrounds_it(self):
+        """The comparison is between figures, not between their spacing.
+
+        The pattern keeps a trailing space when no scale suffix follows and can take a
+        sentence-final period with it, and an answer may write "12 %" where the question
+        wrote "12%". Comparing raw matches rejected a figure the question did name, which
+        drops an honest refusal under Strict.
+        """
+        engine = _make_engine(require_grounding=True)
+
+        for reply, question in (
+            ('That is not available for the $5 charge.', 'Was the fee $5?'),
+            ('I do not have the information about the $5.', 'Was the fee $5?'),
+            ('I do not have the 12 % figure you asked about.', 'What drove the 12% growth?'),
+            ('I cannot answer about the £1,250.50 charge you asked about.', 'Why the £1,250.50 charge?'),
+        ):
+            result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True, question_text=question)
+            assert result['passed'], reply
+
     def test_no_question_recorded_falls_back_to_the_marker(self):
         """Guardrails wired to documents and answers but not questions has no question.
 

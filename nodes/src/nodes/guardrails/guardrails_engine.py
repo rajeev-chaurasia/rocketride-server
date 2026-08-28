@@ -376,12 +376,24 @@ class GuardrailsEngine:
         'do not contain',
         'cannot answer',
         'unable to answer',
+        'cannot determine',
+        'unable to determine',
         'no information',
+        'no data',
+        'no relevant documents',
+        'not found',
+        'not specified',
+        'not stated',
+        'not mentioned',
+        'not disclosed',
+        'insufficient information',
     )
 
     # A figure carries the claim this check exists to catch. Nothing is grounded in
     # the empty-retrieval branch, so a stated amount is unsupported however the
     # sentence around it is hedged.
+    _WHITESPACE = re.compile(r'\s+')
+
     FIGURE_PATTERN = re.compile(
         r'[$£€]\s*[\d,.]+\s*(?:billion|million|thousand|bn|b\b|m\b|k\b)?'
         r'|[\d,.]+\s*%'
@@ -418,8 +430,13 @@ class GuardrailsEngine:
         # source is not available" through. Requiring no figure at all then blocked the
         # commoner case, an answer declining to confirm the figure it was asked about,
         # so only a figure the question did not mention counts as a claim.
-        asked = question_text.lower()
-        return not any(f for f in cls.FIGURE_PATTERN.findall(body) if f not in asked)
+        # Compare the figures, not their spacing. The pattern keeps a trailing space
+        # when the optional scale suffix is absent and can swallow a sentence-final
+        # period, and an answer may write "12 %" where the question wrote "12%", so a
+        # raw containment test rejects a figure the question did name.
+        asked = cls._WHITESPACE.sub('', question_text.lower())
+        figures = (cls._WHITESPACE.sub('', m).strip('.,') for m in cls.FIGURE_PATTERN.findall(body))
+        return not any(f for f in figures if f and f not in asked)
 
     def check_hallucination(
         self,
