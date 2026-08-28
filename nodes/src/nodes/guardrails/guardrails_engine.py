@@ -388,8 +388,17 @@ class GuardrailsEngine:
     )
 
     @classmethod
-    def _is_abstention(cls, output: str) -> bool:
-        """Report whether *output* declines to answer rather than asserting something."""
+    def _is_abstention(cls, output: str, question_text: str = '') -> bool:
+        """Report whether *output* declines to answer rather than asserting something.
+
+        Args:
+            output: The answer to classify.
+            question_text: The question it answers. A figure quoted back from the
+                question is a reference, so it does not make the answer a claim.
+
+        Returns:
+            True when the answer declines rather than asserts.
+        """
         body = output.strip().lower().replace('\u2019', "'")
         # An empty answer asserts nothing either. The node short-circuits blank text
         # before reaching here, but the engine should not depend on that.
@@ -397,13 +406,19 @@ class GuardrailsEngine:
             return True
         if not any(marker in body for marker in cls.ABSTENTION_MARKERS):
             return False
-        # A marker anywhere used to be enough, which let "the figure is $94.7B, but
-        # the source is not available" through: the hedge earned the bypass while the
-        # invented amount rode along with it.
-        return not cls.FIGURE_PATTERN.search(body)
+        # A marker alone used to be enough, which let "the figure is $94.7B, but the
+        # source is not available" through. Requiring no figure at all then blocked the
+        # commoner case, an answer declining to confirm the figure it was asked about,
+        # so only a figure the question did not mention counts as a claim.
+        asked = question_text.lower()
+        return not any(f for f in cls.FIGURE_PATTERN.findall(body) if f not in asked)
 
     def check_hallucination(
-        self, output: str, source_documents: Optional[List[str]] = None, retrieval_ran: bool = True
+        self,
+        output: str,
+        source_documents: Optional[List[str]] = None,
+        retrieval_ran: bool = True,
+        question_text: str = '',
     ) -> Dict[str, Any]:
         """Verify that claims in output are grounded in source documents.
 
@@ -425,7 +440,11 @@ class GuardrailsEngine:
             # retrieval actually ran and missed, and only for an answer that asserts
             # something: a pipeline with no documents lane never retrieves, and an
             # abstention is the outcome this is meant to produce.
-            if not self.require_grounding or not retrieval_ran or self._is_abstention(output):
+            if (
+                not self.require_grounding
+                or not retrieval_ran
+                or self._is_abstention(output, question_text)
+            ):
                 return {
                     'rule': 'hallucination',
                     'passed': True,
@@ -695,7 +714,11 @@ class GuardrailsEngine:
                 # Default True so a caller that does not report the lane keeps the
                 # old behaviour for the coverage check.
                 ran = context.get('retrieval_ran', True)
-                results.append(self.check_hallucination(text, source_docs, retrieval_ran=ran))
+                results.append(
+                    self.check_hallucination(
+                        text, source_docs, retrieval_ran=ran, question_text=context.get('question_text', '')
+                    )
+                )
 
             if self.enable_content_safety:
                 results.append(self.check_content_safety(text))

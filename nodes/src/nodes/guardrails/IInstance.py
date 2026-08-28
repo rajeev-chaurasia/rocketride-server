@@ -34,11 +34,13 @@ class IInstance(IInstanceBase):
         super().__init__()
         self.source_documents = []
         self.retrieval_ran = False
+        self.question_text = ''
 
     def open(self, entry: Entry):
         """Reset per-object state."""
         self.source_documents = []
         self.retrieval_ran = False
+        self.question_text = ''
 
     def writeQuestions(self, question: Question):
         """Run input guardrails on the question before forwarding.
@@ -63,6 +65,9 @@ class IInstance(IInstanceBase):
             text_parts.extend(question.context)
 
         full_text = ' '.join(text_parts)
+        # Kept for the output pass: a figure the answer quotes back from the question
+        # is a reference, not a claim the model invented.
+        self.question_text = full_text
 
         if not full_text.strip():
             # Nothing to check, forward as-is
@@ -129,6 +134,7 @@ class IInstance(IInstanceBase):
         context = {
             'source_documents': self.source_documents,
             'retrieval_ran': self.retrieval_ran,
+            'question_text': self.question_text,
         }
 
         # Run output guardrails
@@ -187,3 +193,4 @@ class IInstance(IInstanceBase):
         """Reset state on close."""
         self.source_documents = []
         self.retrieval_ran = False
+        self.question_text = ''
