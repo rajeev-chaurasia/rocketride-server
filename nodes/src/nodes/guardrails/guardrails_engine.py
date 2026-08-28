@@ -393,6 +393,9 @@ class GuardrailsEngine:
     # the empty-retrieval branch, so a stated amount is unsupported however the
     # sentence around it is hedged.
     _WHITESPACE = re.compile(r'\s+')
+    # A question writing $94.7B and an answer writing $94.7 billion name the same
+    # amount, so the scale word is folded to its initial before they are compared.
+    _SCALE_WORDS = (('billion', 'b'), ('bn', 'b'), ('million', 'm'), ('thousand', 'k'))
 
     FIGURE_PATTERN = re.compile(
         r'[$£€]\s*[\d,.]+\s*(?:billion|million|thousand|bn|b\b|m\b|k\b)?'
@@ -434,9 +437,17 @@ class GuardrailsEngine:
         # when the optional scale suffix is absent and can swallow a sentence-final
         # period, and an answer may write "12 %" where the question wrote "12%", so a
         # raw containment test rejects a figure the question did name.
-        asked = cls._WHITESPACE.sub('', question_text.lower())
-        figures = (cls._WHITESPACE.sub('', m).strip('.,') for m in cls.FIGURE_PATTERN.findall(body))
+        asked = cls._normalise(question_text)
+        figures = (cls._normalise(m) for m in cls.FIGURE_PATTERN.findall(body))
         return not any(f for f in figures if f and f not in asked)
+
+    @classmethod
+    def _normalise(cls, text: str) -> str:
+        """Reduce a figure or a question to the form the comparison is made in."""
+        out = text.lower()
+        for word, initial in cls._SCALE_WORDS:
+            out = out.replace(word, initial)
+        return cls._WHITESPACE.sub('', out).strip('.,')
 
     def check_hallucination(
         self,
