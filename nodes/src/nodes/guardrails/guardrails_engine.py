@@ -440,11 +440,7 @@ class GuardrailsEngine:
             # retrieval actually ran and missed, and only for an answer that asserts
             # something: a pipeline with no documents lane never retrieves, and an
             # abstention is the outcome this is meant to produce.
-            if (
-                not self.require_grounding
-                or not retrieval_ran
-                or self._is_abstention(output, question_text)
-            ):
+            if not self.require_grounding or not retrieval_ran or self._is_abstention(output, question_text):
                 return {
                     'rule': 'hallucination',
                     'passed': True,
