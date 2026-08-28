@@ -360,7 +360,10 @@ class TestHallucination:
         """A marker anywhere used to earn the bypass, so an invented figure rode along.
 
         Hedging is common model behaviour, so this is the shape that would have
-        reopened the hole this check exists to close.
+        reopened the hole this check exists to close. The question is supplied because
+        a figure is judged against it; with no question recorded the marker alone
+        decides, which
+        test_no_question_recorded_falls_back_to_the_marker covers.
         """
         engine = _make_engine(require_grounding=True)
 
@@ -370,7 +373,12 @@ class TestHallucination:
             'Revenue grew 12%, though that is not available in the sources.',
             'Net income was 41,733 million, but not provided here.',
         ):
-            result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True)
+            result = engine.check_hallucination(
+                reply,
+                source_documents=[],
+                retrieval_ran=True,
+                question_text='What were the results for FY2024?',
+            )
             assert not result['passed'], reply
 
     def test_an_abstention_may_quote_the_figure_it_declines_to_confirm(self):
@@ -395,6 +403,37 @@ class TestHallucination:
         ):
             result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True, question_text=question)
             assert result['passed'], reply
+
+    def test_a_shared_leading_digit_is_not_the_same_figure(self):
+        """The currency branch has to consume the whole amount, not its first digit.
+
+        Matching only the symbol and one digit made the containment test read as
+        "does the question mention any amount starting the same way", so a fabricated
+        $94.7B rode through any question quoting a $9 amount.
+        """
+        engine = _make_engine(require_grounding=True)
+
+        for reply, question in (
+            ('Net income was $94.7B, but the source is not available.', 'Was revenue $9 billion in 2024?'),
+            ('Net income was $94.7B, but the source is not available.', 'Did they spend $9.50 on it?'),
+            ('Profit was $12.3 million, though that is not provided.', 'Was the fee $1?'),
+        ):
+            result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True, question_text=question)
+            assert not result['passed'], reply
+
+    def test_no_question_recorded_falls_back_to_the_marker(self):
+        """Guardrails wired to documents and answers but not questions has no question.
+
+        With nothing to attribute a figure to, applying the test anyway would drop
+        honest refusals again, which is the failure this whole path avoids.
+        """
+        engine = _make_engine(require_grounding=True)
+
+        for reply in (
+            'I do not have the information to answer about the $94.7B figure you mentioned.',
+            'I do not have that figure; the index holds 1,200 documents.',
+        ):
+            assert engine.check_hallucination(reply, source_documents=[], retrieval_ran=True)['passed'], reply
 
     def test_a_figure_absent_from_the_question_is_still_a_claim(self):
         """The question makes a quoted figure a reference; an invented one is not in it."""
