@@ -384,7 +384,7 @@ class GuardrailsEngine:
     # sentence around it is hedged.
     FIGURE_PATTERN = re.compile(
         r'[$£€]\s*[\d,.]+\s*(?:billion|million|thousand|bn|b\b|m\b|k\b)?'
-        r'|\d\s*%'
+        r'|[\d,.]+\s*%'
         r'|\d[\d,.]*\s*(?:billion|million|thousand|bn|m\b|k\b)'
         r'|\d{1,3}(?:,\d{3})+',
         re.IGNORECASE,
