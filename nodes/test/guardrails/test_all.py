@@ -373,6 +373,42 @@ class TestHallucination:
             result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True)
             assert not result['passed'], reply
 
+    def test_an_abstention_may_quote_the_figure_it_declines_to_confirm(self):
+        """Declining to confirm a figure normally repeats it, which is not a claim.
+
+        A finance chatbot is asked "was net income $94.7B?" all day, and the honest
+        answer echoes the amount. Treating any digit as an assertion blocked exactly
+        the refusal this feature exists to deliver.
+        """
+        engine = _make_engine(require_grounding=True)
+
+        for reply, question in (
+            (
+                'I do not have the information to answer about the $94.7B figure you mentioned.',
+                'Was net income $94.7B?',
+            ),
+            (
+                'The documents do not contain anything about the 12% growth you asked about.',
+                'What drove the 12% growth?',
+            ),
+            ('I do not have data on the 2,000 unit shipment you mentioned.', 'Tell me about the 2,000 unit shipment.'),
+        ):
+            result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True, question_text=question)
+            assert result['passed'], reply
+
+    def test_a_figure_absent_from_the_question_is_still_a_claim(self):
+        """The question makes a quoted figure a reference; an invented one is not in it."""
+        engine = _make_engine(require_grounding=True)
+
+        result = engine.check_hallucination(
+            'Apple net income was $94.7B, but the source is not available.',
+            source_documents=[],
+            retrieval_ran=True,
+            question_text='What was net income for FY2024?',
+        )
+
+        assert not result['passed']
+
     def test_an_abstention_may_still_echo_the_question(self):
         """A year or a plain count is not the invented amount being guarded against."""
         engine = _make_engine(require_grounding=True)
