@@ -383,7 +383,10 @@ class GuardrailsEngine:
     # the empty-retrieval branch, so a stated amount is unsupported however the
     # sentence around it is hedged.
     FIGURE_PATTERN = re.compile(
-        r'[$\u00a3\u20ac]\s*\d|\d\s*%|\d[\d,.]*\s*(?:billion|million|thousand|bn|m\b|k\b)|\d{1,3}(?:,\d{3})+',
+        r'[$£€]\s*[\d,.]+\s*(?:billion|million|thousand|bn|b\b|m\b|k\b)?'
+        r'|\d\s*%'
+        r'|\d[\d,.]*\s*(?:billion|million|thousand|bn|m\b|k\b)'
+        r'|\d{1,3}(?:,\d{3})+',
         re.IGNORECASE,
     )
 
@@ -406,6 +409,11 @@ class GuardrailsEngine:
             return True
         if not any(marker in body for marker in cls.ABSTENTION_MARKERS):
             return False
+        # The node records the question only when the questions lane runs. Without it a
+        # figure cannot be attributed to either side, and applying the test anyway would
+        # drop honest refusals, so the marker alone decides.
+        if not question_text.strip():
+            return True
         # A marker alone used to be enough, which let "the figure is $94.7B, but the
         # source is not available" through. Requiring no figure at all then blocked the
         # commoner case, an answer declining to confirm the figure it was asked about,
