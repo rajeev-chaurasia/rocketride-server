@@ -477,6 +477,42 @@ class TestHallucination:
             result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True, question_text=question)
             assert result['passed'], reply
 
+    def test_the_same_amount_written_two_ways_is_one_figure(self):
+        """A question writing $94.7B and an answer writing $94.7 billion mean the same.
+
+        Taken from a live reply: asked "Was Apple net income $94.7B in FY2024?", the
+        model declined and repeated the amount in longhand, and the comparison read the
+        two forms as different figures.
+        """
+        engine = _make_engine(require_grounding=True)
+        reply = (
+            "I don't have the specific financial data or supporting documents needed to "
+            "confirm Apple's net income for FY2024. Based on the information available to "
+            "me, I cannot verify whether Apple's net income was $94.7 billion."
+        )
+
+        result = engine.check_hallucination(
+            reply,
+            source_documents=[],
+            retrieval_ran=True,
+            question_text='Was Apple net income $94.7B in FY2024?',
+        )
+
+        assert result['passed']
+
+    def test_folding_the_scale_word_does_not_match_a_different_amount(self):
+        """$9 billion and $94.7B are still different figures once folded."""
+        engine = _make_engine(require_grounding=True)
+
+        result = engine.check_hallucination(
+            'Net income was $94.7 billion, but that is not available.',
+            source_documents=[],
+            retrieval_ran=True,
+            question_text='Was revenue $9 billion in 2024?',
+        )
+
+        assert not result['passed']
+
     def test_no_question_recorded_falls_back_to_the_marker(self):
         """Guardrails wired to documents and answers but not questions has no question.
 
