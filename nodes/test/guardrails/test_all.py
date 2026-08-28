@@ -407,9 +407,9 @@ class TestHallucination:
     def test_a_shared_leading_digit_is_not_the_same_figure(self):
         """The currency branch has to consume the whole amount, not its first digit.
 
-        Matching only the symbol and one digit made the containment test read as
-        "does the question mention any amount starting the same way", so a fabricated
-        $94.7B rode through any question quoting a $9 amount.
+        Matching a partial figure made the containment test read as "does the question
+        mention any amount that shares a fragment", so a fabricated $94.7B rode through
+        a question quoting $9. The percent branch had the same flaw, comparing 12% as 2%.
         """
         engine = _make_engine(require_grounding=True)
 
@@ -417,6 +417,10 @@ class TestHallucination:
             ('Net income was $94.7B, but the source is not available.', 'Was revenue $9 billion in 2024?'),
             ('Net income was $94.7B, but the source is not available.', 'Did they spend $9.50 on it?'),
             ('Profit was $12.3 million, though that is not provided.', 'Was the fee $1?'),
+            ('Revenue grew 12%, though that is not available in the sources.', 'Was growth 2%?'),
+            ('Margin was 45%, but the documents do not contain it.', 'Did margin hit 5%?'),
+            ('Net income was 41,733 million, but not provided here.', 'Was it 733 million?'),
+            ('Net income was 94.7 billion, though not available.', 'Was it 4.7 billion?'),
         ):
             result = engine.check_hallucination(reply, source_documents=[], retrieval_ran=True, question_text=question)
             assert not result['passed'], reply
