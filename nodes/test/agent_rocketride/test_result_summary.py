@@ -294,3 +294,34 @@ def test_fingerprinting_still_flags_a_repeat_of_an_encodable_result():
     assert 'deduplicated' not in first
     assert second['deduplicated'] is True
     assert 'wave-0.r0' in second['note']
+
+
+def test_a_result_with_unorderable_keys_is_not_reported_as_an_error():
+    """sort_keys raises TypeError on keys it cannot order, which default= never covers.
+
+    A dict keyed by both an int and a string comes back from any tool that returns row
+    indexes beside named metadata. As with a cycle, memory.put has already succeeded,
+    so raising here would report a working tool as failed.
+    """
+    executor = _load_executor()
+    result = {1: 'first', 'name': 'mixed'}
+    context, agent = _FakeContext(), _FakeAgent()
+
+    entry = executor._store_and_preview('db.query', 'wave-0.r0', result, context, agent)
+
+    assert 'error' not in entry
+    assert context.memory.store['wave-0.r0'] is result
+    assert agent.seen_results == {}, 'an unfingerprintable result must not claim a slot'
+
+
+def test_a_result_with_an_unencodable_key_is_not_reported_as_an_error():
+    """The other TypeError from sort_keys: a key json cannot encode at all."""
+    executor = _load_executor()
+    result = {(1, 2): 'tuple key'}
+    context, agent = _FakeContext(), _FakeAgent()
+
+    entry = executor._store_and_preview('db.query', 'wave-0.r0', result, context, agent)
+
+    assert 'error' not in entry
+    assert context.memory.store['wave-0.r0'] is result
+    assert agent.seen_results == {}

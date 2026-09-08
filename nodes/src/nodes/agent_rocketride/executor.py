@@ -380,9 +380,11 @@ def _result_fingerprint(result: Any) -> Optional[str]:
     """
     try:
         encoded = json.dumps(result, sort_keys=True, ensure_ascii=False, default=str)
-    except (ValueError, RecursionError):
-        # A cyclic result is stored and summarised by the time this runs. Dedup only
-        # advises the planner, so dropping the signal costs less than the result.
+    except (TypeError, ValueError, RecursionError):
+        # sort_keys raises TypeError on keys that cannot be ordered or encoded, and
+        # default= is consulted for values only, never keys. The result is stored and
+        # summarised by the time this runs. Dedup only advises the planner, so dropping
+        # the signal costs less than the result.
         return None
     return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
 
