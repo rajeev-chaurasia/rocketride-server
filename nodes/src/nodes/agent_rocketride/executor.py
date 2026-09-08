@@ -50,7 +50,7 @@ _MAX_WORKERS = 8
 # API from blocking the entire wave indefinitely.
 _TOOL_TIMEOUT_S = 120
 
-# Indentation used by _describe() when rendering nested structures.
+# Indentation used when rendering nested structures.
 _INDENT = '  '
 
 # Maximum array items returned by a memory.peek tool call with a JMESPath path.
@@ -71,10 +71,24 @@ _SUMMARY_MAX_DEPTH = 6
 # Rows of a list-of-dicts always sampled in a structural summary, whatever they cost.
 _SUMMARY_MIN_ROWS = 2
 
-# Character budget for the rows sampled beyond _SUMMARY_MIN_ROWS. Narrow rows such
-# as {id, name, mimeType} fit in full, which is what a find-by-name task needs to
-# converge; wide or deeply nested rows exhaust it immediately and still stop at two.
-_SUMMARY_ROW_BUDGET = 4000
+# Character budget for a whole summary. A dict splits its share between the fields
+# that hold containers, so a result with many lists cannot cost more than a result
+# with one. Narrow rows such as {id, name, mimeType} still fit in full, which is what
+# a find-by-name task needs to converge.
+_SUMMARY_BUDGET = 4000
+
+# Smallest share a field can be given. Without it a result with many fields would
+# hand each one too little to render a single row.
+_SUMMARY_MIN_SHARE = 300
+
+# Ceiling applied to the finished summary. The budget is divided rather than
+# multiplied on the way down, so this only catches the overshoot from always
+# rendering _SUMMARY_MIN_ROWS.
+_SUMMARY_HARD_CAP = 6000
+
+# Appended when the cap trims a summary, so the planner peeks instead of assuming
+# it saw everything.
+_SUMMARY_TRUNCATED = '\n... (truncated, peek the key for the rest)'
 
 # Compiled regex for {{memory.ref:key:format:path}} template tags.
 #
@@ -94,7 +108,7 @@ _REF_PATTERN = re.compile(r'\{\{memory\.ref:([^}:]+)(?::([^}:]+))?(?::([^}]+))?\
 # ---------------------------------------------------------------------------
 
 
-def _describe(value: Any, depth: int = 0) -> str:
+def _describe(value: Any) -> str:
     """Return a compact structural summary of *value* for LLM context.
 
     The summary is shown in the "Previous tool results" section of the prompt
@@ -102,13 +116,27 @@ def _describe(value: Any, depth: int = 0) -> str:
     It shows field names, array lengths, and sample values — enough for the
     LLM to formulate a correct JMESPath path for memory.peek.
 
+    Every planning wave resends every prior summary, so size here is paid
+    repeatedly. The result is bounded by _SUMMARY_HARD_CAP.
+    """
+    summary = _render(value, 0, _SUMMARY_BUDGET)
+    if len(summary) > _SUMMARY_HARD_CAP:
+        # The notice counts against the cap, so the returned string never exceeds it.
+        keep = _SUMMARY_HARD_CAP - len(_SUMMARY_TRUNCATED)
+        return f'{summary[:keep]}{_SUMMARY_TRUNCATED}'
+    return summary
+
+
+def _render(value: Any, depth: int, budget: int) -> str:
+    """Render *value* within *budget* characters.
+
     Design decisions:
     - Strings longer than 80 chars are truncated with a char count so the LLM
       knows it is a large value and should use chunked reading if needed.
-    - Lists of dicts show field names, then as many rows as fit a character
-      budget, so narrow rows are listed in full and a lookup can be answered
-      from the summary. The header reports how many rows were shown when some
-      are omitted, so the LLM knows the sample is partial.
+    - Lists of dicts show field names, then as many rows as fit the budget,
+      so narrow rows are listed in full and a lookup can be answered from the
+      summary. The header reports how many rows were shown when some are
+      omitted, so the LLM knows the sample is partial.
     - Lists of primitives show a short sample (first 3 items).
     - Depth is tracked so nested structures are indented readably.
     """
@@ -136,7 +164,7 @@ def _describe(value: Any, depth: int = 0) -> str:
             # Collect field names from up to 5 rows to handle sparse rows
             # where early rows may be missing fields that appear later.
             keys = list(dict.fromkeys(k for row in value[:5] if isinstance(row, dict) for k in row))
-            rows = _sample_rows(value, depth)
+            rows = _sample_rows(value, depth, budget)
             header = f'{n} items, fields: {keys}'
             if len(rows) < n:
                 # Say the sample is partial, so a lookup peeks the key instead of
@@ -147,41 +175,50 @@ def _describe(value: Any, depth: int = 0) -> str:
         sample = json.dumps(value[:3], ensure_ascii=False)
         return f'{n} items, sample: {sample}'
     if isinstance(value, dict):
-        return _describe_dict(value, depth)
+        return _describe_dict(value, depth, budget)
     return str(value)
 
 
-def _sample_rows(value: list, depth: int) -> List[str]:
-    """Render as many rows of *value* as the summary budget allows.
+def _sample_rows(value: list, depth: int, budget: int) -> List[str]:
+    """Render as many rows of *value* as *budget* allows.
 
     Args:
         value: The list of dicts being summarised.
         depth: Current nesting depth.
+        budget: Characters this list may spend.
 
     Returns:
         The rendered rows, always at least _SUMMARY_MIN_ROWS where available.
+        The first _SUMMARY_MIN_ROWS count against the budget too, so wide rows
+        exhaust it and the sample stops at two.
     """
     pad = _INDENT * depth
     rows: List[str] = []
     spent = 0
     for i, row in enumerate(value):
-        # _describe picks this branch from the first item alone, so a later row can
+        # _render picks this branch from the first item alone, so a later row can
         # be a scalar. Widening the window past two rows made that reachable.
-        body = _describe_dict(row, depth + 1) if isinstance(row, dict) else _describe(row, depth + 1)
+        body = _render(row, depth + 1, budget)
         text = f'{pad}{_INDENT}row[{i}]:\n{body}'
-        if i >= _SUMMARY_MIN_ROWS and spent + len(text) > _SUMMARY_ROW_BUDGET:
+        if i >= _SUMMARY_MIN_ROWS and spent + len(text) > budget:
             break
         rows.append(text)
         spent += len(text)
     return rows
 
 
-def _describe_dict(d: dict, depth: int) -> str:
-    """Render a dict as indented key: value lines using _describe for values."""
+def _describe_dict(d: dict, depth: int, budget: int) -> str:
+    """Render a dict as indented key: value lines using _render for values.
+
+    The budget is split between the fields holding containers rather than handed
+    to each in turn, so what a lookup can answer does not depend on key order.
+    """
     pad = _INDENT * depth
+    containers = sum(1 for v in d.values() if isinstance(v, (list, dict)) and v)
+    share = max(_SUMMARY_MIN_SHARE, budget // containers) if containers else budget
     lines = []
     for k, v in d.items():
-        desc = _describe(v, depth + 1)
+        desc = _render(v, depth + 1, share)
         if '\n' in desc:
             # Multi-line value — put it on its own line below the key
             lines.append(f'{pad}{k}:\n{desc}')

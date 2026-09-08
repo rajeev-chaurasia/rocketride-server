@@ -165,7 +165,7 @@ def test_row_budget_bounds_the_summary():
 
     summary = executor._describe(files)
 
-    assert len(summary) < executor._SUMMARY_ROW_BUDGET * 2
+    assert len(summary) <= executor._SUMMARY_HARD_CAP
     assert summary.count('row[') < 5000
     assert '5000 items' in summary
 
@@ -325,3 +325,33 @@ def test_a_result_with_an_unencodable_key_is_not_reported_as_an_error():
     assert 'error' not in entry
     assert context.memory.store['wave-0.r0'] is result
     assert agent.seen_results == {}
+
+
+def test_many_list_fields_cannot_exceed_the_summary_cap():
+    """Each list used to get its own budget, so a result with twenty of them paid twenty times.
+
+    The summary is resent in every planning prompt, so this is charged once per wave.
+    """
+    executor = _load_executor()
+    wide = {f'field_{i}': _drive_files(200) for i in range(20)}
+
+    summary = executor._describe(wide)
+
+    assert len(summary) <= executor._SUMMARY_HARD_CAP, (
+        f'summary is {len(summary)} chars; a per-list budget lets a wide result grow without bound'
+    )
+
+
+def test_summary_does_not_depend_on_key_order():
+    """A noisy field must not spend the budget a later field needs to be answerable."""
+    executor = _load_executor()
+    noise = [{'ts': f'10:{i:02d}', 'msg': 'x' * 60} for i in range(300)]
+    files = _drive_files(25, target_index=17)
+
+    noise_first = executor._describe({'log': noise, 'files': files})
+    files_first = executor._describe({'files': files, 'log': noise})
+
+    assert ('Email Template.docx' in noise_first) == ('Email Template.docx' in files_first), (
+        'the same result answers the lookup or not depending on key order'
+    )
+    assert len(noise_first) == len(files_first)
