@@ -479,6 +479,12 @@ class TestHallucination:
             'Sure, here is a summary of what we discussed: the plan is on track.',
             'Could you clarify which contract you mean?',
             'Understood, I will use the second option.',
+            # Naming something is not asserting anything about it. Treating a
+            # capitalised word as a claim blocks these, which is the same silent
+            # drop as the phrase list, so the signal stays on stated figures.
+            "OK, I'll check the Salesforce data next time.",
+            'I do not have that. The Help Center may cover it.',
+            'Unfortunately that is not in the documents. Try the Overview section instead.',
         ):
             result = engine.evaluate(
                 reply,
