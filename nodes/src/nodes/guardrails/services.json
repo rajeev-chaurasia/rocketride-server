@@ -300,6 +300,7 @@
 			"object": "strict",
 			"properties": [
 				"policy_mode",
+				"require_grounding",
 				"max_tokens_estimate",
 				"expected_format"
 			]
