@@ -53,6 +53,7 @@ class IInstance(IInstanceBase):
         self.question = Question()
         self.retrieval_ran = False
         self.documents_received = False
+        self.other_context = False
 
     def open(self, entry: Entry):
         # The instance is reused across objects. Without a fresh question the
@@ -62,6 +63,7 @@ class IInstance(IInstanceBase):
         self.question = Question()
         self.retrieval_ran = False
         self.documents_received = False
+        self.other_context = False
 
     def writeQuestions(self, question: Question):
         """
@@ -88,7 +90,7 @@ class IInstance(IInstanceBase):
         Collect text for merging.
         """
         # Create a question from text
-
+        self.other_context = True
         self.question.addContext(text)
 
     def writeTable(self, table: str):
@@ -96,6 +98,7 @@ class IInstance(IInstanceBase):
         Collect table data for merging.
         """
         # Create a question from table data
+        self.other_context = True
         self.question.addContext(table)
 
     def closing(self):
@@ -118,10 +121,12 @@ class IInstance(IInstanceBase):
                 instruction_name = f'User Instruction {i + 1}' if len(instructions) > 1 else 'User Instruction'
                 self.question.addInstruction(instruction_name, instruction)
 
-            # Only a pipeline that retrieves gets a grounding rule. A prompt node used
-            # to merge branches has no documents lane, so it is left exactly as it was.
+            # Only a pipeline that retrieves gets a grounding rule, so a prompt node
+            # merging branches is left exactly as it was. A miss forces an abstention
+            # only when no other lane supplied context that could answer the question.
             if self.retrieval_ran:
-                body = _GROUNDING_INSTRUCTION if self.documents_received else _ABSTAIN_INSTRUCTION
+                grounded = self.documents_received or self.other_context
+                body = _GROUNDING_INSTRUCTION if grounded else _ABSTAIN_INSTRUCTION
                 self.question.addInstruction('Grounding', body)
 
             debug(f'Enhanced question: {self.question.getPrompt()}')

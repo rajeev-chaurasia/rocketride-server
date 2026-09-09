@@ -14,13 +14,16 @@ If no `instructions` are configured, the default profile supplies a single instr
 
 When the `documents` lane is connected, the node appends a `Grounding` instruction after your own. A store dispatches that lane even when its search matched nothing, so the node can tell a retrieval miss from a pipeline that does not retrieve at all:
 
-| Documents lane | Documents received | Appended instruction |
-|---|---|---|
-| connected | one or more | answer from the documents provided, introduce no new figures |
-| connected | none | say the information is not available, do not answer from memory |
-| not connected | n/a | none, the question is left exactly as before |
+| Documents lane | Documents received | Other context | Appended instruction |
+|---|---|---|---|
+| connected | one or more | any | answer from the documents provided, introduce no new figures |
+| connected | none | none | say the information is not available, do not answer from memory |
+| connected | none | text or table | answer from the documents provided, introduce no new figures |
+| not connected | n/a | any | none, the question is left exactly as before |
 
-The third row is what keeps a prompt node used to merge branches unchanged. Nothing is blocked here: the instruction asks the model to abstain, and the [guardrails](../guardrails/README.md) node with `require_grounding` is what refuses delivery if it answers anyway. An abstention passes that guard, so the refusal reaches the user.
+The third row matters when a prompt merges a store with another source: the `text` and `table` lanes carry context of their own, so a retrieval miss beside a web search is still answerable and is not turned into a refusal. The last row is what keeps a prompt node used to merge branches unchanged.
+
+Nothing is blocked here: the instruction asks the model to abstain, and the [guardrails](/nodes/guardrails) node with `require_grounding` is what refuses delivery if it answers anyway. A refusal asserts no figure, so it passes that guard and reaches the user.
 
 State does not carry between objects: each one starts a fresh question, so a later turn is never grounded in an earlier turn's documents.
 
